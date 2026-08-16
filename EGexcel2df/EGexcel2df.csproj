@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>EGexcel2df</AssemblyName>
+    <RootNamespace>EGexcel2df</RootNamespace>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <Version>3.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>HerryABU</Company>
+    <Product>EGtools</Product>
+    <Copyright>Copyright © 2026 HerryABU</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The comparison engine lives in EGtools.Core. -->
+    <ProjectReference Include="..\EGtools.Core\EGtools.Core.csproj" />
+  </ItemGroup>
+
+</Project>

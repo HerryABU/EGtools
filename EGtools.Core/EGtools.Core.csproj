@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>EGtools.Core</RootNamespace>
+    <AssemblyName>EGtools.Core</AssemblyName>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <Version>3.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>HerryABU</Company>
+    <Product>EGtools</Product>
+    <Copyright>Copyright © 2026 HerryABU</Copyright>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- MuPDF engine (same as Python/Node reference). Pulls native runtimes for win-x64. -->
+    <PackageReference Include="MuPDFCore" Version="1.2.1" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+<Project>
+  <!-- When building outside Visual Studio (plain `dotnet build`), the Windows
+       App SDK PRI-generation MSBuild tasks are resolved from a path under the
+       .NET SDK that does not exist. Point them at the VS BuildTools AppxPackage
+       folder that actually ships those tasks. Only affects non-VS builds. -->
+  <PropertyGroup>
+    <AppxMSBuildToolsPath Condition="'$(AppxMSBuildToolsPath)' == '' and !Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v$(VisualStudioVersion)\AppxPackage\Microsoft.Build.Packaging.Pri.Tasks.dll')">C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Microsoft\VisualStudio\v18.0\AppxPackage\</AppxMSBuildToolsPath>
+  </PropertyGroup>
+</Project>

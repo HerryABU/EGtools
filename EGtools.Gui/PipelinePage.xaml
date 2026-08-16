@@ -1,0 +1,81 @@
+<Page
+    x:Class="EGtools.Gui.PipelinePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:EGtools.Gui"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+  <ScrollViewer>
+    <StackPanel Spacing="16" Padding="24,20" MaxWidth="960" HorizontalAlignment="Left">
+      <TextBlock x:Name="Title" FontSize="22" FontWeight="Bold" />
+      <TextBlock x:Name="Desc" TextWrapping="Wrap" Foreground="Gray" />
+
+      <Border Background="{ThemeResource CardBg}"
+              BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="10" Padding="14">
+        <StackPanel Spacing="14">
+          <StackPanel Spacing="6">
+            <TextBlock x:Name="OldLabel" FontWeight="SemiBold" />
+            <Border x:Name="OldDrop" AllowDrop="True" Height="66"
+                    Background="{ThemeResource DropBg}"
+                    BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="8"
+                    DragOver="OldDrop_DragOver" Drop="OldDrop_Drop">
+              <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <SymbolIcon Symbol="Document" Width="20" Height="20" />
+                <TextBlock x:Name="OldDropText" VerticalAlignment="Center" />
+              </StackPanel>
+            </Border>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBox x:Name="OldBox" Width="420" IsReadOnly="True" PlaceholderText="old.pdf 或 old.xlsx" />
+              <Button x:Name="OldBtn" Click="OldBtn_Click" />
+            </StackPanel>
+          </StackPanel>
+
+          <StackPanel Spacing="6">
+            <TextBlock x:Name="NewLabel" FontWeight="SemiBold" />
+            <Border x:Name="NewDrop" AllowDrop="True" Height="66"
+                    Background="{ThemeResource DropBg}"
+                    BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="8"
+                    DragOver="NewDrop_DragOver" Drop="NewDrop_Drop">
+              <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <SymbolIcon Symbol="Document" Width="20" Height="20" />
+                <TextBlock x:Name="NewDropText" VerticalAlignment="Center" />
+              </StackPanel>
+            </Border>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBox x:Name="NewBox" Width="420" IsReadOnly="True" PlaceholderText="new.pdf 或 new.xlsx" />
+              <Button x:Name="NewBtn" Click="NewBtn_Click" />
+            </StackPanel>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <Border Background="{ThemeResource CardBg}"
+              BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="10" Padding="14">
+        <StackPanel Spacing="10">
+          <StackPanel Orientation="Horizontal" Spacing="18">
+            <StackPanel Spacing="4">
+              <TextBlock x:Name="LayoutLabel" />
+              <ComboBox x:Name="LayoutCombo" SelectedIndex="0" Width="190" />
+            </StackPanel>
+            <StackPanel Spacing="4">
+              <TextBlock x:Name="GroupLabel" />
+              <ComboBox x:Name="GroupCombo" SelectedIndex="0" Width="170" />
+            </StackPanel>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBox x:Name="OutBox" Width="420" IsReadOnly="True" PlaceholderText="report.xlsx" />
+            <Button x:Name="OutBtn" Click="OutBtn_Click" />
+          </StackPanel>
+          <Button x:Name="RunBtn" Click="RunBtn_Click" Background="#2563EB" Foreground="#FFFFFF" FontWeight="SemiBold" CornerRadius="6" Padding="16,8" />
+          <ProgressBar x:Name="ProgressBar" Height="6" IsIndeterminate="False" Value="0" />
+          <TextBox x:Name="LogBox" Height="180" AcceptsReturn="True" IsReadOnly="True"
+                   FontFamily="Consolas" FontSize="11" TextWrapping="Wrap"
+                   ScrollViewer.VerticalScrollBarVisibility="Auto" />
+          <Button x:Name="OpenBtn" Click="OpenBtn_Click" IsEnabled="False" />
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

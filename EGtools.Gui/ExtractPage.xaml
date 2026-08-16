@@ -1,0 +1,107 @@
+<Page
+    x:Class="EGtools.Gui.ExtractPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:EGtools.Gui"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+  <ScrollViewer>
+    <StackPanel Spacing="16" Padding="24,20" MaxWidth="960" HorizontalAlignment="Left">
+      <TextBlock x:Name="Title" FontSize="22" FontWeight="Bold" />
+
+      <!-- Drop zone (drag & drop + click to add) -->
+      <Border x:Name="DropZone" AllowDrop="True"
+              Background="{ThemeResource DropBg}"
+              BorderBrush="{ThemeResource DropBorder}" BorderThickness="2"
+              CornerRadius="10" Height="120" DragOver="DropZone_DragOver" Drop="DropZone_Drop">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+          <SymbolIcon Symbol="Upload" Width="34" Height="34" />
+          <TextBlock x:Name="DropText" TextAlignment="Center" />
+          <Button x:Name="AddBtn" Click="AddBtn_Click"
+                  Background="#2563EB" Foreground="#FFFFFF" FontWeight="SemiBold"
+                  CornerRadius="6" Padding="16,8" />
+        </StackPanel>
+      </Border>
+
+      <!-- File list (batch) -->
+      <Border Background="{ThemeResource CardBg}"
+              BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="10" Padding="14">
+        <StackPanel Spacing="10">
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <TextBlock x:Name="FilesLabel" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <TextBlock x:Name="CountText" Foreground="#8A8A8A" VerticalAlignment="Center" />
+            <Button x:Name="ClearBtn" Click="ClearBtn_Click" Margin="0,0,0,0" />
+          </StackPanel>
+          <ListView x:Name="FileList" Height="160" SelectionMode="None"
+                    ScrollViewer.VerticalScrollBarVisibility="Auto">
+            <ListView.ItemTemplate>
+              <DataTemplate>
+                <Grid ColumnSpacing="8">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                  <Button Grid.Column="1" Content="X" FontSize="11" Padding="6,2"
+                          Click="RemoveItem_Click" Tag="{Binding}" />
+                </Grid>
+              </DataTemplate>
+            </ListView.ItemTemplate>
+          </ListView>
+        </StackPanel>
+      </Border>
+
+      <!-- Options -->
+      <Border Background="{ThemeResource CardBg}"
+              BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="10" Padding="14">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Options" FontWeight="SemiBold" />
+          <StackPanel Orientation="Horizontal" Spacing="18">
+            <StackPanel Spacing="4">
+              <TextBlock x:Name="FormatLabel" />
+              <ComboBox x:Name="FormatCombo" SelectedIndex="0" Width="170" />
+            </StackPanel>
+            <StackPanel Spacing="4">
+              <TextBlock x:Name="LayoutLabel" />
+              <ComboBox x:Name="LayoutCombo" SelectedIndex="0" Width="190" />
+            </StackPanel>
+            <StackPanel Spacing="4">
+              <TextBlock x:Name="GroupLabel" />
+              <ComboBox x:Name="GroupCombo" SelectedIndex="0" Width="170" />
+            </StackPanel>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBox x:Name="TagBox" Width="160" Text="V3" />
+            <TextBlock x:Name="TagLabel" VerticalAlignment="Center" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBox x:Name="RefBox" Width="380" IsReadOnly="True" PlaceholderText="reference.xlsx" />
+            <Button x:Name="RefBtn" Click="RefBtn_Click" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock x:Name="OutLabel" VerticalAlignment="Center" />
+            <TextBox x:Name="OutBox" Width="360" IsReadOnly="True" PlaceholderText="output folder" />
+            <Button x:Name="OutBtn" Click="OutBtn_Click" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <!-- Run -->
+      <Border Background="{ThemeResource CardBg}"
+              BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="10" Padding="14">
+        <StackPanel Spacing="10">
+          <Button x:Name="RunBtn" Click="RunBtn_Click"
+                  Background="#2563EB" Foreground="#FFFFFF" FontWeight="SemiBold"
+                  CornerRadius="6" Padding="16,8" />
+          <ProgressBar x:Name="ProgressBar" Height="6" IsIndeterminate="False" Value="0" />
+          <TextBox x:Name="LogBox" Height="170" AcceptsReturn="True" IsReadOnly="True"
+                   FontFamily="Consolas" FontSize="11" TextWrapping="Wrap"
+                   ScrollViewer.VerticalScrollBarVisibility="Auto" />
+          <Button x:Name="OpenBtn" Click="OpenBtn_Click" IsEnabled="False" />
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

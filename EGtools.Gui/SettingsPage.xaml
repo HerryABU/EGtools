@@ -1,0 +1,38 @@
+<Page
+    x:Class="EGtools.Gui.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:EGtools.Gui"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+  <ScrollViewer>
+    <StackPanel Spacing="16" Padding="24,20" MaxWidth="640" HorizontalAlignment="Left">
+      <TextBlock x:Name="Title" FontSize="22" FontWeight="Bold" />
+
+      <Border Background="{ThemeResource CardBg}"
+              BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="10" Padding="14">
+        <StackPanel Spacing="10">
+          <TextBlock x:Name="LangLabel" FontWeight="SemiBold" />
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <RadioButton x:Name="LangZh" GroupName="Lang" Checked="LangZh_Checked" />
+            <RadioButton x:Name="LangEn" GroupName="Lang" Checked="LangEn_Checked" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <Border Background="{ThemeResource CardBg}"
+              BorderBrush="{ThemeResource CardBorder}" BorderThickness="1" CornerRadius="10" Padding="14">
+        <StackPanel Spacing="10">
+          <TextBlock x:Name="ThemeLabel" FontWeight="SemiBold" />
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <RadioButton x:Name="ThemeSystem" GroupName="Theme" Checked="ThemeSystem_Checked" />
+            <RadioButton x:Name="ThemeLight" GroupName="Theme" Checked="ThemeLight_Checked" />
+            <RadioButton x:Name="ThemeDark" GroupName="Theme" Checked="ThemeDark_Checked" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

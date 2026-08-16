@@ -1,0 +1,41 @@
+<Window
+    x:Class="EGtools.Gui.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:EGtools.Gui"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <NavigationView x:Name="NavView"
+                    PaneDisplayMode="Left"
+                    IsBackButtonVisible="Collapsed"
+                    IsSettingsVisible="False"
+                    SelectionChanged="NavView_SelectionChanged">
+        <NavigationView.PaneHeader>
+            <StackPanel Orientation="Horizontal" Spacing="10" Margin="8,4,8,4" VerticalAlignment="Center">
+                <Image x:Name="LogoImg" Width="34" Height="34"/>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="EGtools" FontSize="19" FontWeight="Bold" />
+                    <TextBlock Text="v3.0.0" FontSize="11" Foreground="Gray" />
+                </StackPanel>
+            </StackPanel>
+        </NavigationView.PaneHeader>
+
+        <NavigationView.MenuItems>
+            <NavigationViewItem x:Name="NavExtract" Tag="Extract" IsSelected="True" />
+            <NavigationViewItem x:Name="NavCompare" Tag="Compare" />
+            <NavigationViewItem x:Name="NavPipeline" Tag="Pipeline" />
+            <NavigationViewItem x:Name="NavSettings" Tag="Settings" />
+            <NavigationViewItem x:Name="NavAbout" Tag="About" />
+        </NavigationView.MenuItems>
+
+        <NavigationView.PaneFooter>
+            <Button x:Name="LangBtn" Click="LangBtn_Click"
+                    HorizontalAlignment="Stretch" Margin="12,8,12,12"
+                    HorizontalContentAlignment="Center" />
+        </NavigationView.PaneFooter>
+
+        <Frame x:Name="ContentFrame" />
+    </NavigationView>
+</Window>

@@ -1,0 +1,106 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <!-- Compatibility floor: Windows App SDK 1.6 + .NET 10 both support down to
+         Windows 10 1809 (build 17763). Declaring it explicitly keeps the app's
+         manifest from demanding Win10 2004+ and lets it run on every Win10
+         1809+ and every Windows 11 build. (No WinUI 3 / .NET 10 support exists
+         for Win10 older than 1809, so that is the hard floor.) -->
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- FRAMEWORK-DEPENDENT WinUI 3 (unpackaged): the Windows App Runtime is
+         provided by the SYSTEM (a single, registered WindowsAppRuntime.1.6
+         package). The bootstrap resolves that ONE runtime via AddPackageDependency
+         and the framework DLLs come from it exclusively — there are NO loose
+         in-folder framework DLLs to mix with a different runtime version.
+         This avoids the 0xC000027B native assertion that hits SELF-CONTAINED
+         unpackaged apps on machines that already have a NEWER registered
+         WindowsAppRuntime: there, AddPackageDependency resolves to the system
+         package while the self-contained loose 6000.457 framework DLLs are ALSO
+         loaded, so two incompatible Microsoft.ui.xaml.dll versions end up in one
+         process (silent crash, no window, no log).
+         The matching WindowsAppRuntime 1.6 is installed by the setup program when
+         absent (see build_installer.iss), and the user's machine already has it.
+         WindowsAppSdkUndockedRegFreeWinRTInitialize is OFF: that flag is only for
+         the self-contained (local/undocked) runtime and would DllImport a local
+         Microsoft.WindowsAppRuntime.dll that does not exist in this layout. -->
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <WindowsAppSdkUndockedRegFreeWinRTInitialize>false</WindowsAppSdkUndockedRegFreeWinRTInitialize>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- .NET 10 self-contained WinUI 3 fix: ReadyToRun native images of the
+         framework assemblies break the self-contained loader at startup
+         (STATUS_ASSERTION_FAILURE 0xC000027b in Microsoft.UI.Xaml.dll).
+         Disable R2R and trimming so the loader gets plain IL+runtime JIT. -->
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishTrimmed>false</PublishTrimmed>
+    <TrimMode>copyused</TrimMode>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <!-- Ensure the XAML markup compiler does NOT emit its own Program/Main.
+         (GenerateProgramFile=false is supposed to define DISABLE_XAML_GENERATED_MAIN,
+         but when WindowsAppSdkBootstrapInitialize=false that target is skipped, so we
+         define it explicitly to avoid a duplicate Main collision with our Program.cs.) -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Keep WindowsAppSdkBootstrapInitialize=true so the SDK generates the
+         Microsoft.WindowsAppSDK.Release/Runtime version-info source (needed by our
+         explicit bootstrap call) AND copies the self-contained runtime. But REMOVE
+         the SDK's MddBootstrapAutoInitializer (a module initializer) because it
+         calls Environment.Exit(hr) on bootstrap failure — a silent, undiagnosable
+         exit that left the GUI "unstartable". Our Program.Main calls
+         Bootstrap.TryInitialize() itself and reports the HRESULT instead. -->
+    <Compile Remove="$(NuGetPackageRoot)microsoft.windowsappsdk/1.6.250402001/include/MddBootstrapAutoInitializer.cs" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Self-contained unpackaged WinUI 3 apps must bootstrap the Windows App
+         SDK runtime at startup. We do this EXPLICITLY in our own Program.Main
+         (see Program.cs): we keep WindowsAppSdkBootstrapInitialize=true so the SDK
+         generates the version-info source and copies the runtime, but we strip the
+         SDK's auto-initializer (above) and call Bootstrap.TryInitialize() ourselves,
+         surfacing any failure (hr + log + MessageBox) instead of a silent exit. -->
+    <WindowsAppSdkBootstrapInitialize>true</WindowsAppSdkBootstrapInitialize>
+    <RootNamespace>EGtools.Gui</RootNamespace>
+    <AssemblyName>EGtools</AssemblyName>
+    <Version>3.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>HerryABU</Company>
+    <Product>EGtools</Product>
+    <Copyright>Copyright © 2026 HerryABU</Copyright>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250402001" />
+  </ItemGroup>
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\EGtools.Core\EGtools.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\logo.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- Unpackaged WinUI 3 apps resolve ms-appx:///Xxx.xaml at runtime through the
+       app PRI (EGtools.pri) plus the loose compiled XBF resources next to the EXE.
+       `dotnet publish` DROPS these files, so a published/installed app fails to load
+       ANY window/page XAML (XamlParseException "XAML parsing failed" at
+       InitializeComponent) even though bin\ works. Copy them into the publish
+       output so the installed app can resolve its XAML resources. -->
+  <Target Name="CopyWinUIResourcesToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <_WinUIResFiles Include="$(OutputPath)**\*.xbf;$(OutputPath)*.pri" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_WinUIResFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

@@ -1,0 +1,114 @@
+# ===========================================================================
+# EGtools — .gitignore
+# .NET 9/10 + WinUI 3 / Windows App SDK + Inno Setup + Visual Studio + OS
+# ===========================================================================
+
+# -------- Build output (generated, never commit) --------
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+
+# .NET / MSBuild
+*.user
+*.userosscache
+*.sln.docstates
+*.msbuild.assemblyfoldersex.cache
+*.msbuild.tfmmanifest
+*.cache
+*.binlog
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# WinUI 3 / Windows App SDK generated artifacts
+*.xbf
+*.pri
+AppPackages/
+BundleArtifacts/
+*_wpftmp.csproj
+Generated Files/
+
+# R/gen generated for Android (not used here, but standard)
+*.generated.cs
+
+# -------- Test / coverage --------
+[Tt]est[Rr]esult*/
+*.testrun
+*.trx
+.coverage
+.coveragexml
+[Oo]verage/
+
+# -------- IDE / editor --------
+.vs/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln.iml
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# -------- Logs / temp / diagnostics --------
+*.log
+*.logs/
+xc.log
+__fd_*.txt
+__inst_*.txt
+__res_*.txt
+__rt_*.txt
+__ver_*.txt
+rt_*.txt
+rt_*.log
+wer.log
+curl_*.txt
+wer.*
+
+# -------- Local redistributable binaries (third-party, fetched on build) --------
+# See redist/README.md for how to obtain these.
+redist/*
+!redist/README.md
+
+# -------- Published / packaged deliverables (regenerable) --------
+DIST/
+installer/
+publish/
+*.msi
+
+# -------- Workspace tooling state (not project source) --------
+.workbuddy/
+
+# -------- OS / misc --------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+[Dd]esktop.ini
+*.lnk
+
+# -------- NuGet --------
+.nuget/
+*.nupkg
+NuGet.Config
+packages/
+# except build/ and target specific (standard)
+!packages/repositories.config
+
+# -------- Rider --------
+.razor/
