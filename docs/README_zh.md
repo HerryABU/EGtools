@@ -1,4 +1,4 @@
-# EGtools v3.0.0
+# EGtools v4.2.1
 
 **工程图纸材料表提取与对比工具集** — 由 **HerryABU** 制作并签名。
 
@@ -18,7 +18,7 @@ EGtools 是一套面向 CAD 等轴测（isometric）PDF 图纸的桌面工具，
 
 ### 1.1 安装包（推荐）
 
-运行安装目录中的 **`EGtools-3.0.0-x64.exe`**（Inno Setup 制作）：
+运行安装目录中的 **`EGtools-4.2.1-x64.exe`**（Inno Setup 制作）：
 
 - 自动检测并安装 **Windows App Runtime**（WinUI 3 运行依赖，若已安装则跳过）。
 - 默认安装到 `C:\Program Files\EGtools\`，并在桌面创建快捷方式。
@@ -26,7 +26,7 @@ EGtools 是一套面向 CAD 等轴测（isometric）PDF 图纸的桌面工具，
 
 ### 1.2 绿色运行（免安装）
 
-将 `DIST\` 目录整体复制即可使用，需本机已安装 **Windows App Runtime 1.7.x**（或运行 `runtime\windowsappruntimeinstall.exe`）。
+将 `DIST\` 目录整体复制即可使用，需本机已安装 **Windows App Runtime 1.6.x**（或运行 `redist\WindowsAppRuntimeInstall-x64.exe`）。
 直接双击 `EGtools.exe` 启动图形界面；命令行工具见第 3 节。
 
 ---
@@ -94,6 +94,7 @@ EGpdf2excel [输入...] [选项]
   | `-G, --group-header MODE` | 表内分组小标题处理：`embed`（默认，前缀到描述）/ `omit`（省略）。 |
   | `-C, --component MODE` | 组件列布局：`merged`（默认，并入描述，8 列）/ `separate`（独立列，9 列）。 |
   | `--tag NAME` | 文件名标签（默认 `V3`）→ `<pdf>_<tag>.csv/.xlsx`。 |
+  | `--config FILE.json` | 抽取配置（词表 / 列坐标 / 页面区间等）；缺省读取 exe 同级 `config.json`，再退回内置默认。 |
   | `-v, --verbose` | 详细进度（每页、警告）输出到 stderr。 |
   | `-h, --help` | 显示帮助并退出。 |
 
@@ -115,7 +116,7 @@ EGexcel2df <旧图纸.xlsx> <新图纸.xlsx> [选项]
   | 选项 | 说明 |
   | --- | --- |
   | `-h, --help` | 显示帮助。 |
-  | `-v, --version` | 显示版本号（3.0.0）。 |
+  | `-v, --version` | 显示版本号（4.2.1）。 |
   | `-o, --output <文件>` | 输出 Excel 路径（默认 `图纸变化清单_<时间戳>.xlsx`）。 |
   | `--sheet1 <名称\|序号>` | 旧图纸读取的工作表（默认第 1 个）。 |
   | `--sheet2 <名称\|序号>` | 新图纸读取的工作表（默认第 1 个）。 |
@@ -137,7 +138,7 @@ EGexcel2df <旧图纸.xlsx> <新图纸.xlsx> [选项]
 
 ## 4. 版本与许可
 
-- **版本**：3.0.0
+- **版本**：4.2.1
 - **作者 / 签名**：HerryABU
 - **许可证**：AGPL-3.0
-- **运行依赖**：Windows 10/11 (x64)，.NET 10 运行时（GUI 由 Windows App Runtime 1.7 提供 WinUI 3）。
+- **运行依赖**：Windows 10 1809+ / 11 (x64)。CLI 与 GUI 均以 .NET 9 **自包含**方式发布（无需安装 .NET 运行时）；GUI 由 Windows App Runtime 1.6 提供 WinUI 3（安装包自动补装）。

@@ -3,6 +3,10 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 # 'dotnet' is expected on PATH (e.g. via the .NET SDK installer). Override here if needed.
 $dotnet = 'dotnet'
+# Disable MSBuild node reuse so each build/publish exits cleanly and releases file
+# locks (avoids "Access to the path ... is denied" when consecutive steps rebuild
+# the shared DLLs into each app folder).
+$env:MSBUILDDISABLENODEREUSE = '1'
 
 function Step($msg){ Write-Host "`n===== $msg =====" -ForegroundColor Cyan }
 
@@ -28,6 +32,8 @@ function Step($msg){ Write-Host "`n===== $msg =====" -ForegroundColor Cyan }
 
 $projects = @(
     'EGtools.Core\EGtools.Core.csproj',
+    'EGpdf2excel.Engine\EGpdf2excel.Engine.csproj',
+    'EGexcel2df.Engine\EGexcel2df.Engine.csproj',
     'EGpdf2excel\EGpdf2excel.csproj',
     'EGexcel2df\EGexcel2df.csproj',
     'EGtools.Gui\EGtools.Gui.csproj'
@@ -39,6 +45,8 @@ foreach ($p in $projects) {
     $dir = Split-Path "$root\$p"
     Remove-Item -Recurse -Force "$dir\obj","$dir\bin" -ErrorAction SilentlyContinue
 }
+# Shut down any lingering MSBuild/compiler servers so their file handles release.
+& $dotnet build-server shutdown | Out-Null
 
 # ---- 1. Explicit restore for every project (/p: form) ----
 Step 'Restore all projects (explicit, /p: form)'
@@ -47,23 +55,25 @@ foreach ($p in $projects) {
     if ($LASTEXITCODE -ne 0) { throw "Restore failed: $p" }
 }
 
-# ---- 2. Build Core (reference engine) ----
-Step 'Build EGtools.Core'
-& $dotnet build "$root\EGtools.Core\EGtools.Core.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 --no-restore
-if ($LASTEXITCODE -ne 0) { throw "Core build failed" }
+# ---- 2. Build the shared Core + the two split engine DLLs ----
+Step 'Build EGtools.Core + engine DLLs'
+foreach ($p in @('EGtools.Core\EGtools.Core.csproj','EGpdf2excel.Engine\EGpdf2excel.Engine.csproj','EGexcel2df.Engine\EGexcel2df.Engine.csproj')) {
+    & $dotnet build "$root\$p" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 --no-restore -m:1 -nodeReuse:false
+    if ($LASTEXITCODE -ne 0) { throw "Build failed: $p" }
+}
 
 # ---- 3. Publish CLIs (fully self-contained) ----
 Step 'Publish EGpdf2excel'
-& $dotnet publish "$root\EGpdf2excel\EGpdf2excel.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:SelfContained=true /p:PublishTrimmed=false --no-restore -o "$root\DIST\EGpdf2excel"
+& $dotnet publish "$root\EGpdf2excel\EGpdf2excel.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:SelfContained=true /p:PublishTrimmed=false --no-restore -m:1 -nodeReuse:false -o "$root\DIST\EGpdf2excel"
 if ($LASTEXITCODE -ne 0) { throw "EGpdf2excel publish failed" }
 
 Step 'Publish EGexcel2df'
-& $dotnet publish "$root\EGexcel2df\EGexcel2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:SelfContained=true /p:PublishTrimmed=false --no-restore -o "$root\DIST\EGexcel2df"
+& $dotnet publish "$root\EGexcel2df\EGexcel2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:SelfContained=true /p:PublishTrimmed=false --no-restore -m:1 -nodeReuse:false -o "$root\DIST\EGexcel2df"
 if ($LASTEXITCODE -ne 0) { throw "EGexcel2df publish failed" }
 
 # ---- 4. Publish GUI (WinUI 3, self-contained .NET + self-contained WinAppSDK) ----
 Step 'Publish EGtools.Gui (FolderProfile: SelfContained + WindowsAppSDKSelfContained)'
-& $dotnet publish "$root\EGtools.Gui\EGtools.Gui.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:PublishProfile=FolderProfile --no-restore
+& $dotnet publish "$root\EGtools.Gui\EGtools.Gui.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:PublishProfile=FolderProfile --no-restore -m:1 -nodeReuse:false
 if ($LASTEXITCODE -ne 0) { throw "GUI publish failed" }
 
 # ---- 5. Ensure VC++ 2022 runtime DLLs in every app dir ----
@@ -91,7 +101,7 @@ Step 'Compile installer (ISCC)'
 $iscc = 'C:\Users\QBZ95\AppData\Local\Programs\Inno Setup 6\ISCC.exe'
 & $iscc "$root\build_installer.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
-$out = "$root\installer\EGtools-3.0.0-x64.exe"
+$out = "$root\installer\EGtools-4.2.1-x64.exe"
 if (-not (Test-Path $out)) { throw "Installer not produced" }
 Start-Sleep -Seconds 2
 $size = (Get-Item $out).Length

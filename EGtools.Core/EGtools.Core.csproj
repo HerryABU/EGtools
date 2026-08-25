@@ -7,15 +7,15 @@
     <RootNamespace>EGtools.Core</RootNamespace>
     <AssemblyName>EGtools.Core</AssemblyName>
     <GenerateProgramFile>false</GenerateProgramFile>
-    <Version>3.0.0</Version>
-    <AssemblyVersion>3.0.0.0</AssemblyVersion>
-    <FileVersion>3.0.0.0</FileVersion>
+    <Version>4.2.1</Version>
+    <AssemblyVersion>4.2.1.0</AssemblyVersion>
+    <FileVersion>4.2.1.0</FileVersion>
     <Company>HerryABU</Company>
     <Product>EGtools</Product>
     <Copyright>Copyright © 2026 HerryABU</Copyright>
   </PropertyGroup>
-  <ItemGroup>
-    <!-- MuPDF engine (same as Python/Node reference). Pulls native runtimes for win-x64. -->
-    <PackageReference Include="MuPDFCore" Version="1.2.1" />
-  </ItemGroup>
+  <!-- EGtools.Core is now a thin SHARED library: only the logging seam
+       (ForwardingWriter) lives here. The two processing engines were split out
+       into EGpdf2excel.Engine (PDF -> Excel) and EGexcel2df.Engine
+       (Excel -> change comparison), which both reference this project. -->
 </Project>

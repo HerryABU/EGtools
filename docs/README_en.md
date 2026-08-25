@@ -1,4 +1,4 @@
-# EGtools v3.0.0
+# EGtools v4.2.1
 
 **A toolkit for extracting and comparing engineering drawing material tables** — made and signed by **HerryABU**.
 
@@ -18,7 +18,7 @@ EGtools is a desktop toolkit for CAD isometric PDF drawings. It bundles two comm
 
 ### 1.1 Installer (recommended)
 
-Run **`EGtools-3.0.0-x64.exe`** (built with Inno Setup):
+Run **`EGtools-4.2.1-x64.exe`** (built with Inno Setup):
 
 - Automatically detects and installs the **Windows App Runtime** (the WinUI 3 dependency; skipped if already present).
 - Installs to `C:\Program Files\EGtools\` by default and creates a desktop shortcut.
@@ -26,7 +26,7 @@ Run **`EGtools-3.0.0-x64.exe`** (built with Inno Setup):
 
 ### 1.2 Portable (no install)
 
-Copy the `DIST\` folder as-is. Requires the **Windows App Runtime 1.7.x** on the machine (or run `runtime\windowsappruntimeinstall.exe`).
+Copy the `DIST\` folder as-is. Requires the **Windows App Runtime 1.6.x** on the machine (or run `redist\WindowsAppRuntimeInstall-x64.exe`).
 Double-click `EGtools.exe` to launch the GUI; see Section 3 for the CLI tools.
 
 ---
@@ -94,6 +94,7 @@ EGpdf2excel [inputs...] [options]
   | `-G, --group-header MODE` | In-table group banner handling: `embed` (default, prefix to DESCRIPTION) / `omit`. |
   | `-C, --component MODE` | Component column layout: `merged` (default, folded into DESCRIPTION, 8 cols) / `separate` (own column, 9 cols). |
   | `--tag NAME` | Filename tag (default `V3`) → `<pdf>_<tag>.csv/.xlsx`. |
+  | `--config FILE.json` | Extraction config (vocab / column coords / page ranges, etc.); defaults to `config.json` next to the exe, then the built-in defaults. |
   | `-v, --verbose` | Detailed progress (per-page, warnings) to stderr. |
   | `-h, --help` | Show this help and exit. |
 
@@ -115,7 +116,7 @@ EGexcel2df <old.xlsx> <new.xlsx> [options]
   | Option | Description |
   | --- | --- |
   | `-h, --help` | Show help. |
-  | `-v, --version` | Show version (3.0.0). |
+  | `-v, --version` | Show version (4.2.1). |
   | `-o, --output <file>` | Output Excel path (default `图纸变化清单_<timestamp>.xlsx`). |
   | `--sheet1 <name\|index>` | Worksheet to read from the old file (default first). |
   | `--sheet2 <name\|index>` | Worksheet to read from the new file (default first). |
@@ -137,7 +138,7 @@ EGexcel2df <old.xlsx> <new.xlsx> [options]
 
 ## 4. Version & License
 
-- **Version**: 3.0.0
+- **Version**: 4.2.1
 - **Author / Signer**: HerryABU
 - **License**:AGPL-3.0
-- **Runtime**: Windows 10/11 (x64); .NET 10 runtime (GUI uses WinUI 3 via Windows App Runtime 1.7).
+- **Runtime**: Windows 10 1809+ / 11 (x64). Both CLIs and the GUI are published as **.NET 9 self-contained** (no .NET runtime install needed); the GUI uses WinUI 3 via Windows App Runtime 1.6 (auto-installed by the installer).

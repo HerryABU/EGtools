@@ -148,7 +148,7 @@ public sealed partial class ExtractPage : Page
         int rc = 0;
         try
         {
-            await Task.Run(() => rc = EGtools.Core.PdfExtractor.Run(args.ToArray(), Log));
+            await Task.Run(() => rc = EGpdf2excel.Engine.PdfExtractor.Run(args.ToArray(), Log));
         }
         catch (Exception ex) { Log($"[异常] {ex.Message}"); }
 

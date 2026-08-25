@@ -7,8 +7,9 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using EGtools.Core;
 
-namespace EGtools.Core
+namespace EGexcel2df.Engine
 {
     // ------------------------------------------------------------------
     //  Self-contained XLSX reader (no third-party NuGet dependency).
@@ -423,7 +424,7 @@ namespace EGtools.Core
     // ------------------------------------------------------------------
     public class ExcelTools
     {
-        const string VERSION = "3.0.0";
+        const string VERSION = "4.2.1";
         const string APP = "EGexcel2df";
 
         private static int MainCore(string[] args)
@@ -515,7 +516,7 @@ namespace EGtools.Core
             sb.AppendLine();
             sb.AppendLine("【选项 / Options】");
             sb.AppendLine("  -h, --help                 显示本帮助 / Show this help");
-            sb.AppendLine("  -v, --version              显示版本号 (3.0.0) / Show version (3.0.0)");
+            sb.AppendLine("  -v, --version              显示版本号 (4.2.1) / Show version (4.2.1)");
             sb.AppendLine("  -o, --output <文件>        指定输出 Excel 路径 (默认: 图纸变化清单_<时间戳>.xlsx)");
             sb.AppendLine("                             Specify output Excel path (default: 图纸变化清单_<时间戳>.xlsx)");
             sb.AppendLine("      --sheet1 <名称|序号>   旧图纸读取的工作表 (默认第 1 个)");

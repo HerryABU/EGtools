@@ -8,6 +8,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using MuPDFCore;
+using MuPDFCore.StructuredText;
+using EGtools.Core;
 
 // Cross-language materials-table extractor in C# (.NET / MS toolchain).
 // Uses MuPDFCore (the .NET binding of MuPDF -- the SAME engine as the
@@ -40,28 +42,14 @@ using MuPDFCore;
 //   Output columns (separate): pipe no | TABLE | NO | DN(mm) | COMPONENT |
 //                             项目/DESCRIPTION | QTY | WEIGHT(kg) | PAGE.
 
-namespace EGtools.Core
+namespace EGpdf2excel.Engine
 {
     public class PdfExtractor
 {
-    // ---- constants (identical to extract_fitz.py / mupdf_extract.cpp) ----
-    const double B_NO_MAX = 1135, B_DN_MAX = 1172, B_DESC_MAX = 1537, B_QTY_MAX = 1567;
-    static readonly Regex PIPE_RE = new Regex(@"408\.101\.P\d+", RegexOptions.IgnoreCase);
-    static readonly HashSet<string> DN_HEADER_TOKENS = new HashSet<string> { "mm", "(mm)", "dn", "no", "n", "o" };
-    static readonly HashSet<string> LABELS = new HashSet<string> { "no","dn","qty","weight","total","fabrication","erection","materials","component","description","summary" };
-    static readonly string[] SUMMARY_SUBSTR = { "total","fabrication","erection","materials","weight","summary" };
-    static readonly HashSet<string> COMP_KEYWORDS = new HashSet<string> { "PIPE","PIPES","TEE","ELBOW","ELBOWS","FLANGE","FLANGES","REDUCER","REDUCERS","OLET","OLETS","GASKET","GASKETS","BOLT","BOLTS","NUT","NUTS","VALVE","VALVES","SPECTACLE","BLIND","STUD","STUDS","WASHER","WASHERS","SUPPORT","SUPPORTS","WELD","NECK","NIPPLE","CAP","COUPLING","BUSH","UNION","CLAMP","BRANCH","SLEEVE","ADAPTER" };
-    static readonly HashSet<string> SECTION_KEYWORDS = new HashSet<string> { "fittings","flanges","valves","pipes","supports","bolts","nuts","washers","gaskets","olets","components","studs","screws","connectors","spools","materials","fabrication","erection" };
-    // Group sub-headers inside a table (FITTINGS, VALVES, FLANGES, GASKET, ...).
-    // Detected as a line in the component/description x-zone whose English-letter
-    // tokens include one of these AND which has NO NO-number anchor on its baseline.
-    static readonly HashSet<string> GROUP_KEYWORDS = new HashSet<string>(COMP_KEYWORDS) { "FITTINGS" };
-    // A "type banner" (PIPE / PIPES) is a section header whose keyword is itself a
-    // concrete component type that also appears as the row's COMPONENT; the
-    // reference workbook keeps it in the description. All other section headers
-    // (FITTINGS, FLANGES, GASKETS, SUPPORTS, ...) are CATEGORY headers removed
-    // from the description.
-    static readonly HashSet<string> TYPE_BANNER = new HashSet<string> { "PIPE", "PIPES" };
+    // ---- configuration (externalizable: see ExtractConfig.cs + config.json) ----
+    // All vocabularies, regex patterns and page-layout parameters live in Config;
+    // nothing here is hard-coded for a specific drawing convention.
+    static ExtractConfig Config = null!;
 
     // Output column headers. When ComponentSeparate is set, a COMPONENT column is
     // inserted between DN(mm) and 项目/DESCRIPTION (9 cols); otherwise COMPONENT is
@@ -92,7 +80,7 @@ namespace EGtools.Core
         foreach (var tok in desc.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
         {
             var bare = new string(tok.Where(c => char.IsLetter(c)).ToArray()).ToUpperInvariant();
-            if (COMP_KEYWORDS.Contains(bare)) outp.Add(tok); else break;
+            if (Config.ComponentKeywords.Contains(bare)) outp.Add(tok); else break;
         }
         return string.Join(" ", outp);
     }
@@ -100,15 +88,7 @@ namespace EGtools.Core
     // Compressed (space-less) multi-word component names that appear run together
     // in the PDF (e.g. "PIPESUPPORT", "WELDOLET"). Mapped to the canonical spaced
     // form the reference workbook uses. Checked as a PREFIX of the leading text
-    // before the single-keyword greedy match.
-    static readonly Dictionary<string, string> COMP_CANON = new Dictionary<string, string>
-    {
-        { "WELDOLET", "WELD OLET" },
-        { "WELDNECKFLANGE", "WELD NECK FLANGE" },
-        { "BLINDFLANGE", "BLIND FLANGE" },
-        { "PIPESUPPORT", "PIPE SUPPORT" },
-        { "SPECTACLEFLANGE", "SPECTACLE FLANGE" },
-    };
+    // before the single-keyword greedy match. Loaded from Config.ComponentCanon.
     static string RecoverComponent(string raw)
     {
         if (string.IsNullOrEmpty(raw)) return "";
@@ -121,12 +101,12 @@ namespace EGtools.Core
             while (pos < up.Length)
             {
                 string canon = "";
-                foreach (var kv in COMP_CANON)
+                foreach (var kv in Config.ComponentCanon)
                     if (up.Length - pos >= kv.Key.Length && up.Substring(pos, kv.Key.Length) == kv.Key && kv.Key.Length > canon.Length)
                         canon = kv.Key;
-                if (canon.Length > 0) { outp.Add(COMP_CANON[canon]); pos += canon.Length; yielded = true; continue; }
+                if (canon.Length > 0) { outp.Add(Config.ComponentCanon[canon]); pos += canon.Length; yielded = true; continue; }
                 string hit = "";
-                foreach (var kw in COMP_KEYWORDS)
+                foreach (var kw in Config.ComponentKeywords)
                     if (up.Length - pos >= kw.Length && up.Substring(pos, kw.Length) == kw && kw.Length > hit.Length)
                         hit = kw;
                 if (hit.Length == 0) break;
@@ -160,12 +140,12 @@ namespace EGtools.Core
         while (pos < up.Length)
         {
             string canon = "";
-            foreach (var kv in COMP_CANON)
+            foreach (var kv in Config.ComponentCanon)
                 if (up.Length - pos >= kv.Key.Length && up.Substring(pos, kv.Key.Length) == kv.Key && kv.Key.Length > canon.Length)
                     canon = kv.Key;
             if (canon.Length > 0) { pos += canon.Length; continue; }
             string hit = "";
-            foreach (var kw in COMP_KEYWORDS)
+            foreach (var kw in Config.ComponentKeywords)
                 if (up.Length - pos >= kw.Length && up.Substring(pos, kw.Length) == kw && kw.Length > hit.Length)
                     hit = kw;
             if (hit.Length == 0) break;
@@ -336,28 +316,33 @@ namespace EGtools.Core
 
     static List<Word> GetWords(MuPDFStructuredTextPage st, double H)
     {
-        var gs = new List<(double x0, double y0, double x1, double y1, double yc, string text)>();
+        // MuPDF's structured text does NOT emit space characters; instead a word
+        // boundary shows up as a gap between the INK BOXES of two consecutive
+        // glyphs (within a word the boxes are adjacent, ~0 gap; between words the
+        // gap is a fraction of the font size). We therefore carry each glyph's
+        // real ink box (ulx..urx from BoundingQuad) and split words on that gap.
+        var gs = new List<(double x0, double y0, double y1, double ulx, double urx, double sz, double yc, string text, bool space)>();
         foreach (var block in st)
         {
-            if (block.Type != 0) continue;
+            if (block.Type != MuPDFStructuredTextBlock.Types.Text) continue;
             foreach (var line in block)
             {
                 var chars = line.Characters.ToList();
                 for (int i = 0; i < chars.Count; i++)
                 {
                     var c = chars[i];
-                    string t = c.Character.ToString();
-                    if (t == " " || t == "\u00a0") continue;
+                    string t = c.Character;   // 2.x: already a string (char or surrogate pair)
+                    bool isSpace = t == " " || t == "\u00a0" || t == "\t";
                     double x0 = c.Origin.X;
                     double baseline = c.Origin.Y;
                     double sz = Convert.ToDouble(c.Size);
-                    double w = (i + 1 < chars.Count) ? (chars[i + 1].Origin.X - x0) : sz * 0.5;
-                    if (w < 0.3) w = sz * 0.5;
-                    double x1 = x0 + w;
+                    var q = c.BoundingQuad;
+                    double ulx = q.UpperLeft.X, urx = q.UpperRight.X;
+                    if (urx - ulx < 0.1) urx = ulx + sz * 0.5;   // degenerate quad fallback
                     double yc = baseline - sz / 2.0;
                     double y0 = baseline - sz;
                     double y1 = baseline;
-                    gs.Add((x0, y0, x1, y1, yc, t));
+                    gs.Add((x0, y0, y1, ulx, urx, sz, yc, isSpace ? "" : t, isSpace));
                 }
             }
         }
@@ -367,12 +352,12 @@ namespace EGtools.Core
             if (Math.Abs(a.yc - b.yc) > 4.0) return a.yc.CompareTo(b.yc);
             return a.x0.CompareTo(b.x0);
         });
-        var rows = new List<List<(double x0,double y0,double x1,double y1,double yc,string text)>>();
-        var cur = new List<(double,double,double,double,double,string)>();
+        var rows = new List<List<(double x0,double y0,double y1,double ulx,double urx,double sz,double yc,string text,bool space)>>();
+        var cur = new List<(double x0,double y0,double y1,double ulx,double urx,double sz,double yc,string text,bool space)>();
         double rowY = -1;
         foreach (var g in gs)
         {
-            if (rowY < 0 || Math.Abs(g.yc - rowY) > 4.0) { if (cur.Count > 0) rows.Add(cur); cur = new List<(double,double,double,double,double,string)>(); rowY = g.yc; }
+            if (rowY < 0 || Math.Abs(g.yc - rowY) > 4.0) { if (cur.Count > 0) rows.Add(cur); cur = new List<(double x0,double y0,double y1,double ulx,double urx,double sz,double yc,string text,bool space)>(); rowY = g.yc; }
             cur.Add(g);
         }
         if (cur.Count > 0) rows.Add(cur);
@@ -380,21 +365,23 @@ namespace EGtools.Core
         foreach (var row in rows)
         {
             row.Sort((a, b) => a.x0.CompareTo(b.x0));
-            Word w = null; bool has = false;
+            Word w = null; bool has = false; double wSz = 8;
             void Push() { if (has) { w.xc = (w.x0 + w.x1) / 2; w.yc = (w.y0 + w.y1) / 2; words.Add(w); } }
             foreach (var g in row)
             {
+                if (g.space) { Push(); has = false; continue; }   // explicit space -> word boundary
                 bool breakHere = false;
-                if (has) { double dx = g.x0 - w.x1; breakHere = dx > 8.0; }
+                if (has) { double d = g.ulx - w.x1; breakHere = d > Config.Page.WordGapFraction * wSz; }   // gap between ink boxes
                 if (breakHere) Push();
                 if (!has || breakHere)
                 {
-                    w = new Word { x0 = g.x0, y0 = g.y0, x1 = g.x1, y1 = g.y1, text = g.text };
+                    w = new Word { x0 = g.x0, y0 = g.y0, x1 = g.urx, y1 = g.y1, text = g.text };
+                    wSz = g.sz;
                     has = true;
                 }
                 else
                 {
-                    w.x1 = Math.Max(w.x1, g.x1); w.y0 = Math.Min(w.y0, g.y0); w.y1 = Math.Max(w.y1, g.y1);
+                    w.x1 = Math.Max(w.x1, g.urx); w.y0 = Math.Min(w.y0, g.y0); w.y1 = Math.Max(w.y1, g.y1);
                     w.text += g.text;
                 }
             }
@@ -406,18 +393,84 @@ namespace EGtools.Core
 
     static double PageH(List<Word> words) => words.Count > 0 ? words.Max(w => w.y1) : 1191;
 
-    static string ExtractPipeNo(List<Word> words, double W, double H)
+    // Identify the pipe/line number on this page WITHOUT regexes and WITHOUT any
+    // coordinate assumption. A line number is recognised purely by its *shape*:
+    // a dotted, segmented identifier with a numeric "area.unit" prefix and one
+    // letter-led segment (e.g. 408.101.P01, 401.102.P513, 405.101.P505_TP_S02).
+    // Every word whose shape matches is tallied and the most frequent one wins —
+    // a drawing repeats its line number on the title block and on every spool
+    // label, so the top vote is the right answer. The winning token is returned
+    // VERBATIM (suffixes like _TP / _S01 are preserved exactly as printed).
+    static string? ExtractPipeNo(List<Word> words, string pdfPath)
     {
-        var tb = words.Where(w => w.x0 > 0.70 * W && w.y0 > 0.70 * H && PIPE_RE.IsMatch(w.text)).ToList();
-        if (tb.Count > 0) { tb.Sort((a, b) => (b.x0 + b.y0).CompareTo(a.x0 + a.y0)); return tb[0].text.ToUpperInvariant(); }
-        var anyp = words.Where(w => PIPE_RE.IsMatch(w.text)).ToList();
-        if (anyp.Count > 0) { anyp.Sort((a, b) => (b.x0 + b.y0).CompareTo(a.x0 + a.y0)); return anyp[0].text.ToUpperInvariant(); }
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var w in words)
+        {
+            string t = w.text.Trim();
+            if (t.Length < 6 || !LooksLikeLineNo(t)) continue;
+            counts.TryGetValue(t, out int c); counts[t] = c + 1;
+        }
+        if (counts.Count > 0)
+            return counts.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key.Length).First().Key.ToUpperInvariant();
+
+        // fallback: scan the file name for a line-number-shaped token
+        if (Config.PipeNo.FallbackFromFileName && !string.IsNullOrEmpty(pdfPath))
+        {
+            var fn = Path.GetFileNameWithoutExtension(pdfPath);
+            foreach (var part in fn.Split('_', ' ', '-', '.'))
+            {
+                var t = part.Trim();
+                if (LooksLikeLineNo(t)) return t.ToUpperInvariant();
+            }
+        }
         return null;
+    }
+
+    // Structural classifier — pure character scanning, no regex, no position.
+    // Returns true for dotted, >=3-segment identifiers where at least two
+    // segments are numeric and exactly one segment is "letters followed by
+    // digits" (the "P" segment). An underscore-led suffix (_TP, _S01, ...) on
+    // the last segment is tolerated but does not change the classification.
+    static bool LooksLikeLineNo(string s)
+    {
+        if (s.IndexOf('.') < 0) return false;
+        string[] segs = s.Split('.');
+        if (segs.Length < 3) return false;
+        int numericSegs = 0, letterDigitSegs = 0;
+        foreach (var raw in segs)
+        {
+            string seg = raw;
+            int u = seg.IndexOf('_');
+            if (u == 0) return false;          // a segment can't start with '_'
+            if (u > 0) seg = seg.Substring(0, u);   // drop _TP / _S01 suffix for shape check only
+            if (seg.Length == 0) return false;
+            if (IsAllDigits(seg)) { numericSegs++; continue; }
+            if (IsLetterThenDigits(seg)) { letterDigitSegs++; continue; }
+            return false;                      // any other shape -> not a line number
+        }
+        return numericSegs >= 2 && letterDigitSegs == 1;
+    }
+
+    static bool IsAllDigits(string s)
+    {
+        foreach (char c in s) if (!char.IsDigit(c)) return false;
+        return true;
+    }
+
+    static bool IsLetterThenDigits(string s)
+    {
+        int i = 0;
+        while (i < s.Length && i < 4 && char.IsLetter(s[i])) i++;
+        if (i == 0 || i == s.Length) return false;   // need leading letter(s) AND trailing digits
+        for (int j = i; j < s.Length; j++) if (!char.IsDigit(s[j])) return false;
+        return true;
     }
 
     static List<double> FindHeaderRows(List<Word> words)
     {
-        var cand = words.Where(w => w.x0 > 1050 && w.x0 < 1660 && w.yc < 0.92 * PageH(words)).ToList();
+        double xLo = Config.Columns.HeaderXLo, xHi = Config.Columns.HeaderXHi;
+        double yMax = Config.Page.HeaderYMaxFraction * PageH(words);
+        var cand = words.Where(w => w.x0 > xLo && w.x0 < xHi && w.yc < yMax).ToList();
         cand.Sort((a, b) => a.yc.CompareTo(b.yc));
         var clusters = new List<List<Word>>(); var cur = new List<Word>(); double? cy = null;
         foreach (var w in cand)
@@ -440,7 +493,8 @@ namespace EGtools.Core
 
     static List<double> FindLabelBands(List<Word> words)
     {
-        var cand = words.Where(w => w.x0 > 1050 && w.x0 < 1660 && w.yc < 0.95 * PageH(words)).ToList();
+        double xLo = Config.Columns.HeaderXLo, xHi = Config.Columns.HeaderXHi;
+        var cand = words.Where(w => w.x0 > xLo && w.x0 < xHi && w.yc < Config.Page.HeaderYMaxFraction * PageH(words)).ToList();
         cand.Sort((a, b) => a.yc.CompareTo(b.yc));
         var clusters = new List<List<Word>>(); List<Word> cur = null; double? cy = null;
         foreach (var w in cand)
@@ -459,8 +513,8 @@ namespace EGtools.Core
                 var t = w.text.ToLowerInvariant();
                 foreach (Match m in Regex.Matches(t, @"[a-z0-9]+")) toks.Add(m.Value);
             }
-            foreach (var lab in SUMMARY_SUBSTR) if (clusterText.Contains(lab)) toks.Add(lab);
-            if (toks.Any(t => LABELS.Contains(t)))
+            foreach (var lab in Config.SummarySubstrings) if (clusterText.Contains(lab)) toks.Add(lab);
+            if (toks.Any(t => Config.Labels.Contains(t)))
                 bands.Add(cl.Average(w => w.yc));
         }
         return bands;
@@ -499,7 +553,8 @@ namespace EGtools.Core
     }
     static Dictionary<string, double> DetectTableColumns(List<Word> words, double titleY)
     {
-        var zone = words.Where(w => w.x0 > 1000 && w.x0 < 1700 && titleY - 12 <= w.yc && w.yc <= titleY + 45).ToList();
+        double xLo = Config.Columns.HeaderXLo - 100, xHi = Config.Columns.HeaderXHi + 100;
+        var zone = words.Where(w => w.x0 > xLo && w.x0 < xHi && titleY - 12 <= w.yc && w.yc <= titleY + 45).ToList();
         zone.Sort((a, b) => a.yc.CompareTo(b.yc));
         var clusters = new List<List<Word>>(); var cur = new List<Word>(); double? cy = null;
         foreach (var w in zone)
@@ -542,7 +597,7 @@ namespace EGtools.Core
     static bool IsSectionHeader(string txt)
     {
         var bare = Regex.Replace(Norm(txt), @"一-鿿", "");
-        return SECTION_KEYWORDS.Contains(bare);
+        return Config.SectionKeywords.Contains(bare);
     }
     static string CleanDesc(string text) => Regex.Replace(text, @"TOTAL(\s*\S*)*$", "", RegexOptions.IgnoreCase).Trim();
     static string JoinDesc(List<(double ly, string txt)> pairs)
@@ -577,17 +632,17 @@ namespace EGtools.Core
     {
         var bands = FindLabelBands(dataWords);
         var filt = dataWords.Where(w => !bands.Any(b => Math.Abs(w.yc - b) <= 4)).ToList();
-        var headerWords = new HashSet<string> { "mm", "(mm)" };
-        filt = filt.Where(w => !headerWords.Contains(Norm(w.text))).ToList();
-        filt = filt.Where(w => !(w.xc > B_NO_MAX && w.xc < B_DN_MAX && DN_HEADER_TOKENS.Contains(Norm(w.text)))).ToList();
+        // remove column-header / unit remnants ("mm", "(mm)", stray "DN"/"NO" tokens)
+        filt = filt.Where(w => !Config.DnHeaderTokens.Contains(Norm(w.text))).ToList();
 
-        double noX = cols.ContainsKey("NO") ? cols["NO"] : 1123;
-        double dnX = cols.ContainsKey("DN") ? cols["DN"] : 1142;
-        double qtyX = cols.ContainsKey("QTY") ? cols["QTY"] : 1548;
-        double wtX = cols.ContainsKey("WEIGHT") ? cols["WEIGHT"] : qtyX + 58;
-        double descX = cols.ContainsKey("DESCRIPTION") ? cols["DESCRIPTION"] : (dnX + qtyX) / 2;
-        double compX = cols.ContainsKey("COMPONENT") ? cols["COMPONENT"] : (dnX + descX) / 2;
+        double noX = Col("NO", 1123);
+        double dnX = Col("DN", 1142);
+        double qtyX = Col("QTY", 1548);
+        double wtX = Col("WEIGHT", qtyX + 58);
+        double descX = Col("DESCRIPTION", (dnX + qtyX) / 2);
+        double compX = Col("COMPONENT", (dnX + descX) / 2);
         double bNoDn = (noX + dnX) / 2, bDnDesc = (dnX + compX) / 2, bDescQty = qtyX - 25, bQtyWt = (qtyX + wtX) / 2;
+        double Col(string name, double dflt) => cols.TryGetValue(name, out var v) ? v : (Config.Columns.Fallback.TryGetValue(name, out var f) ? f : dflt);
         string ColOf(double xc)
         {
             if (xc < bNoDn) return "NO";
@@ -658,10 +713,10 @@ namespace EGtools.Core
                 foreach (var w in g)
                     foreach (var tk in Regex.Split(w.text, @"[^A-Za-z]+"))
                         if (tk.Length >= 2 && tk.All(char.IsLetter)) latin.Add(tk.ToUpperInvariant());
-                bool allKeyword = latin.Count > 0 && latin.All(t => GROUP_KEYWORDS.Contains(t));
+                bool allKeyword = latin.Count > 0 && latin.All(t => Config.GroupKeywords.Contains(t));
                 if (!allKeyword) continue;            // has descriptive Latin text -> real row, not a banner
                 if (anchors.Any(a => Math.Abs(a.yc - ly) <= 8)) continue; // real data row, not a banner
-                bool isType = latin.Any(t => TYPE_BANNER.Contains(t));
+                bool isType = latin.Any(t => Config.TypeBanner.Contains(t));
                 // Category banners are removed from the description; type banners
                 // (PIPE) are left in so they become the row's component + leading
                 // description text (matching the reference workbook).
@@ -796,34 +851,42 @@ namespace EGtools.Core
         }
         try
         {
-        using var ctx = new MuPDFContext(512L * 1024 * 1024);
+        using var ctx = new MuPDFContext(512u * 1024 * 1024);
         using var doc = new MuPDFDocument(ctx, workPath);
         int n = doc.Pages.Count;
         for (int pno = 0; pno < n; pno++)
         {
             if (Verbose && pno % 10 == 0) Console.Error.WriteLine($"  page {pno + 1}/{n}");
-            var st = doc.GetStructuredTextPage(pno, false);
+            // MuPDFCore 2.x lifetime contract: the page owns its blocks (and the
+            // blocks own their lines/characters), so disposing the page releases
+            // everything. It MUST be disposed while the MuPDFContext is still
+            // alive — otherwise the finalizer fires after ctx is gone and throws
+            // LifetimeManagementException ("parent disposed before child").
+            using var st = doc.GetStructuredTextPage(pno, false, StructuredTextFlags.None);
             double Hpage = doc.Pages[pno].Bounds.Height;
             var words = GetWords(st, Hpage);
             if (words.Count == 0) continue;
-            double Wmax = words.Max(w => w.x1), H = PageH(words);
-            var pipeNo = ExtractPipeNo(words, Wmax, H);
+            double H = PageH(words);
+            var pipeNo = ExtractPipeNo(words, pdfPath);
             var headers = FindHeaderRows(words);
             if (headers.Count == 0) { LogV($"  page {pno + 1}: no table header, skipped"); continue; }
-            string pn = pipeNo;
-            if (pn == null && pno <= 5) pn = "408.101.P01";
+            string pn = pipeNo ?? "UNKNOWN";
             var pageBands = FindLabelBands(words);
             for (int i = 0; i < headers.Count; i++)
             {
                 double hy = headers[i];
                 double yTop = hy + 6;
-                double hardBottom = 850;
+                double hardBottom = Config.Page.HardBottom ?? (H * Config.Page.AutoBottomFraction);
                 double yBottom = (i + 1 < headers.Count) ? headers[i + 1] - 6 : Math.Min(H - 5, hardBottom);
                 foreach (var b in pageBands) if (b > yTop) yBottom = Math.Min(yBottom, b - 4);
                 yBottom = Math.Min(yBottom, hardBottom);
                 if (yBottom <= yTop) continue;
                 var cols = DetectTableColumns(words, hy);
-                if (cols == null) cols = new Dictionary<string, double> { ["NO"] = 1123, ["DN"] = 1142, ["COMPONENT"] = 1221, ["DESCRIPTION"] = 1276, ["QTY"] = 1548, ["WEIGHT"] = 1606 };
+                if (cols == null)
+                {
+                    cols = new Dictionary<string, double>();
+                    foreach (var kv in Config.Columns.Fallback) cols[kv.Key] = kv.Value;
+                }
                 double xLo = cols.Values.Min() - 45, xHi = cols.Values.Max() + 45;
                 var dataWords = words.Where(w => w.xc > xLo && w.xc < xHi && w.yc >= yTop && w.yc <= yBottom).ToList();
                 string tableType = i == 0 ? "FABRICATION" : "ERECTION";
@@ -926,8 +989,8 @@ namespace EGtools.Core
     // ---- argument parsing / CLI ----
     static void PrintHelp()
     {
-        Console.WriteLine("EGpdf2excel v3.0.0 - 从等轴测 PDF 抽取预制/安装材料表");
-        Console.WriteLine("EGpdf2excel v3.0.0 - extract fabrication/erection material tables from isometric PDFs");
+        Console.WriteLine("EGpdf2excel v4.2.1 - 从等轴测 PDF 抽取预制/安装材料表");
+        Console.WriteLine("EGpdf2excel v4.2.1 - extract fabrication/erection material tables from isometric PDFs");
         Console.WriteLine("Copyright © 2026 HerryABU");
         Console.WriteLine();
         Console.WriteLine("用法 / Usage:");
@@ -951,6 +1014,9 @@ namespace EGtools.Core
         Console.WriteLine("  -r, --ref FILE.xlsx     参考工作簿；用其 DESCRIPTION 词表还原描述词间距");
         Console.WriteLine("                           Reference workbook; its DESCRIPTION vocabulary is");
         Console.WriteLine("                           used to reconstruct word spacing in descriptions.");
+        Console.WriteLine("  --config FILE.json      抽取配置(词表/正则/列坐标)；缺省读取 exe 同级 config.json");
+        Console.WriteLine("                           Extraction config (vocab/regex/columns); defaults to");
+        Console.WriteLine("                           config.json next to the executable.");
         Console.WriteLine("  -G, --group-header MODE 处理 PDF 表内分组横幅(FITTINGS/VALVES/FLANGES):");
         Console.WriteLine("                           How to treat the PDF's in-table group banners");
         Console.WriteLine("                           'embed' 把横幅前缀到每行 DESCRIPTION");
@@ -1008,7 +1074,7 @@ namespace EGtools.Core
     private static int MainCore(string[] args)
     {
         var inputs = new List<string>();
-        string outputDir = null, singleOut = null, format = "csv", tag = "V3", refPath = null;
+        string outputDir = null, singleOut = null, format = "csv", tag = "V3", refPath = null, configPath = null;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -1016,11 +1082,12 @@ namespace EGtools.Core
             switch (a)
             {
                 case "-h": case "--help": PrintHelp(); return 0;
-                case "--version": Console.WriteLine("EGpdf2excel v3.0.0"); return 0;
+                case "--version": Console.WriteLine("EGpdf2excel v4.2.1"); return 0;
                 case "-v": case "--verbose": Verbose = true; break;
                 case "-o": case "--output": { string v = take(""); if (v.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) || v.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) singleOut = v; else outputDir = v; break; }
                 case "-f": case "--format": format = take("csv").ToLowerInvariant(); break;
                 case "-r": case "--ref": refPath = take(""); break;
+                case "--config": configPath = take(""); break;
                 case "-G": case "--group-header": { string v = take("embed").ToLowerInvariant(); if (v != "embed" && v != "omit") { Console.Error.WriteLine($"Invalid --group-header '{v}' (embed|omit)"); return 2; } GroupHeaderMode = v; break; }
                 case "-C": case "--component": { string v = take("merged").ToLowerInvariant(); if (v != "merged" && v != "separate") { Console.Error.WriteLine($"Invalid --component '{v}' (merged|separate)"); return 2; } ComponentSeparate = (v == "separate"); break; }
                 case "--tag": tag = take("V3"); break;
@@ -1030,6 +1097,9 @@ namespace EGtools.Core
             }
         }
         if (format != "csv" && format != "xlsx" && format != "both") { Console.Error.WriteLine($"Invalid --format '{format}' (csv|xlsx|both)"); return 2; }
+
+        // Load external configuration (regex/vocab/layout) before processing.
+        Config = ExtractConfig.Load(configPath);
 
         if (ComponentSeparate)
             HEADERS = new[] { "pipe no", "TABLE", "NO", "DN(mm)", "COMPONENT", "项目/DESCRIPTION", "QTY", "WEIGHT(kg)", "PAGE" };

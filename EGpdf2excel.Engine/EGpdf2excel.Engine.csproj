@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>EGpdf2excel.Engine</RootNamespace>
+    <AssemblyName>EGpdf2excel.Engine</AssemblyName>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <Version>4.2.1</Version>
+    <AssemblyVersion>4.2.1.0</AssemblyVersion>
+    <FileVersion>4.2.1.0</FileVersion>
+    <Company>HerryABU</Company>
+    <Product>EGtools</Product>
+    <Copyright>Copyright © 2026 HerryABU</Copyright>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Shared logging seam (ForwardingWriter) lives in EGtools.Core. -->
+    <ProjectReference Include="..\EGtools.Core\EGtools.Core.csproj" />
+    <!-- MuPDF engine (same as Python/Node reference). v2.0.1 ships a RELEASE-built
+         native MuPDFWrapper.dll (imports MSVCP140.dll, NOT the debug MSVCP140D.dll /
+         ucrtbased.dll that 1.2.1 shipped and that broke clean Windows 10 machines). -->
+    <PackageReference Include="MuPDFCore" Version="2.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Externalizable extraction config (vocab/regex/columns). Flows to every
+         consumer's output (CLI + GUI) so it can be edited without recompiling. -->
+    <Content Include="config.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

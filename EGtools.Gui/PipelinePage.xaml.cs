@@ -65,7 +65,7 @@ public sealed partial class PipelinePage : Page
             var args = new List<string> { src, "-o", tempDir, "-f", "xlsx",
                 "-C", LayoutCombo.SelectedIndex == 1 ? "separate" : "merged",
                 "-G", GroupCombo.SelectedIndex == 1 ? "omit" : "embed", "--tag", sideTag };
-            int rc = await System.Threading.Tasks.Task.Run(() => EGtools.Core.PdfExtractor.Run(args.ToArray(), Log));
+            int rc = await System.Threading.Tasks.Task.Run(() => EGpdf2excel.Engine.PdfExtractor.Run(args.ToArray(), Log));
             if (rc != 0) { Log($"[错误] {sideTag} 提取失败 (退出码 {rc})"); return null; }
             string xlsx = outBase + ".xlsx";
             return File.Exists(xlsx) ? xlsx : null;
@@ -166,8 +166,8 @@ public sealed partial class PipelinePage : Page
 
             var changes = await Task.Run(() =>
             {
-                var recs = EGtools.Core.ExcelTools.CompareFiles(oldX, newX, null, null, Log);
-                EGtools.Core.ExcelTools.WriteChanges(output, oldX, newX, recs);
+                var recs = EGexcel2df.Engine.ExcelTools.CompareFiles(oldX, newX, null, null, Log);
+                EGexcel2df.Engine.ExcelTools.WriteChanges(output, oldX, newX, recs);
                 return recs;
             });
 

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>EGexcel2df.Engine</RootNamespace>
+    <AssemblyName>EGexcel2df.Engine</AssemblyName>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <Version>4.2.1</Version>
+    <AssemblyVersion>4.2.1.0</AssemblyVersion>
+    <FileVersion>4.2.1.0</FileVersion>
+    <Company>HerryABU</Company>
+    <Product>EGtools</Product>
+    <Copyright>Copyright © 2026 HerryABU</Copyright>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Shared logging seam (ForwardingWriter) lives in EGtools.Core. -->
+    <ProjectReference Include="..\EGtools.Core\EGtools.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using WinRT;
 
 namespace EGtools.Gui;
@@ -24,9 +25,20 @@ public static class Program
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 
+    // Single-instance guard. The installer declares the SAME name in AppMutex +
+    // CloseApplications, so an in-place update can detect & close a running copy.
+    private static Mutex? _appMutex;
+
     [STAThread]
     public static void Main(string[] args)
     {
+        _appMutex = new Mutex(true, "EGtoolsAppMutex", out bool createdNew);
+        if (!createdNew)
+        {
+            MessageBoxW(IntPtr.Zero, "EGtools 已在运行。\nEGtools is already running.", "EGtools", 0x40 /* MB_ICONINFORMATION */);
+            return;
+        }
+
         // Catch anything that escapes our try/catch below (incl. native crashes
         // during window/CLR teardown) so the user gets a readable message.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>

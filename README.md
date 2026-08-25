@@ -13,6 +13,8 @@ EGtools 是一套面向 **CAD 等轴测（isometric）PDF 图纸** 的桌面工�
 | **EGtools (GUI)** | WinUI 3 桌面应用 | 整合上面两个工具，支持**拖拽上传、批量、串联（pipeline）**，界面**中英文双语**。 |
 
 > 引擎一致性：EGpdf2excel 使用 [MuPDFCore](https://www.nuget.org/packages/MuPDFCore)（MuPDF 的 .NET 绑定），与 Python / Node / C++ 参考实现同源，中文与多语言文本均正确解析。
+>
+> 抽取配置外部化：词表 / 列坐标 / 页面区间等全部集中在 `EGpdf2excel.Engine/config.json`（随产物分发、可改而无需重编译），CLI 与 GUI 通过 `--config` 或 exe 同级 `config.json` 加载，缺字段自动合并内置默认值。
 
 ---
 
@@ -20,9 +22,11 @@ EGtools 是一套面向 **CAD 等轴测（isometric）PDF 图纸** 的桌面工�
 
 ```
 EGtools/
-├── EGtools.Core/        # 共享引擎库（PDF 提取、日志、Excel 工具）
-├── EGpdf2excel/         # CLI：PDF 材料表 → CSV/XLSX
-├── EGexcel2df/          # CLI：两份 Excel 图纸对比
+├── EGtools.Core/         # 共享库（仅日志转发 ForwardingWriter）
+├── EGpdf2excel.Engine/   # PDF 材料表 → CSV/XLSX 核心引擎（DLL，MuPDFCore）
+├── EGexcel2df.Engine/    # 两份 Excel 图纸对比核心引擎（DLL）
+├── EGpdf2excel/          # CLI：PDF 材料表 → CSV/XLSX
+├── EGexcel2df/           # CLI：两份 Excel 图纸对比
 ├── EGtools.Gui/         # WinUI 3 图形界面（提取 / 对比 / 串联 / 设置 / 关于）
 ├── docs/                # 完整使用文档（中文 / English）
 │   ├── README_zh.md
@@ -64,7 +68,7 @@ EGtools/
 
 - CLI 自包含产物：`DIST/EGpdf2excel/`、`DIST/EGexcel2df/`
 - GUI 产物：`DIST/EGtools/`
-- 安装包：`installer/EGtools-3.0.0-x64.exe`
+- 安装包：`installer/EGtools-4.2.1-x64.exe`
 
 也可单独构建某个项目：
 

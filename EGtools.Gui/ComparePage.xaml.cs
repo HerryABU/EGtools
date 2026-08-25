@@ -128,8 +128,8 @@ public sealed partial class ComparePage : Page
         {
             var changes = await Task.Run(() =>
             {
-                var recs = EGtools.Core.ExcelTools.CompareFiles(OldBox.Text, NewBox.Text, null, null, Log);
-                EGtools.Core.ExcelTools.WriteChanges(output, OldBox.Text, NewBox.Text, recs);
+                var recs = EGexcel2df.Engine.ExcelTools.CompareFiles(OldBox.Text, NewBox.Text, null, null, Log);
+                EGexcel2df.Engine.ExcelTools.WriteChanges(output, OldBox.Text, NewBox.Text, recs);
                 return recs;
             });
 

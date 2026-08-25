@@ -9,17 +9,17 @@
     <AssemblyName>EGpdf2excel</AssemblyName>
     <RootNamespace>EGpdf2excel</RootNamespace>
     <GenerateProgramFile>false</GenerateProgramFile>
-    <Version>3.0.0</Version>
-    <AssemblyVersion>3.0.0.0</AssemblyVersion>
-    <FileVersion>3.0.0.0</FileVersion>
+    <Version>4.2.1</Version>
+    <AssemblyVersion>4.2.1.0</AssemblyVersion>
+    <FileVersion>4.2.1.0</FileVersion>
     <Company>HerryABU</Company>
     <Product>EGtools</Product>
     <Copyright>Copyright © 2026 HerryABU</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The extraction engine lives in EGtools.Core (MuPDF-backed). -->
-    <ProjectReference Include="..\EGtools.Core\EGtools.Core.csproj" />
+    <!-- The extraction engine lives in EGpdf2excel.Engine (MuPDF-backed). -->
+    <ProjectReference Include="..\EGpdf2excel.Engine\EGpdf2excel.Engine.csproj" />
   </ItemGroup>
 
 </Project>

@@ -10,7 +10,7 @@ public partial class App : Application
     // Exposed so pages can obtain the window handle for file/folder pickers.
     public static Window? MainWindow { get; set; }
 
-    public const string Version = "3.0.0";
+    public const string Version = "4.2.1";
 
     public App()
     {

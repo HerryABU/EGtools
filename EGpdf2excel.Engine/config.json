@@ -1,0 +1,41 @@
+{
+  "version": "4.2.1",
+  "comment": "EGpdf2excel 抽取配置。所有词表、列坐标、页面区间都从这里读，改动后无需重新编译（把本文件放到 exe 同级目录即可覆盖默认值）。管线号通过「结构识别 + 频率统计」智能解析（无正则、无坐标、原样保留后缀），无需配置。",
+
+  "pipeNo": {
+    "comment": "管线号识别。已改为结构状态机 + 全页频率统计，忠实还原图纸原样（如 401.102.P513、401.102.P513_TP）。fallbackFromFileName 为找不到时回退文件名。",
+    "fallbackFromFileName": true
+  },
+
+  "keywords": {
+    "component": [ "PIPE","PIPES","TEE","ELBOW","ELBOWS","FLANGE","FLANGES","REDUCER","REDUCERS","OLET","OLETS","GASKET","GASKETS","BOLT","BOLTS","NUT","NUTS","VALVE","VALVES","SPECTACLE","BLIND","STUD","STUDS","WASHER","WASHERS","SUPPORT","SUPPORTS","WELD","NECK","NIPPLE","CAP","COUPLING","BUSH","UNION","CLAMP","BRANCH","SLEEVE","ADAPTER" ],
+    "section": [ "fittings","flanges","valves","pipes","supports","bolts","nuts","washers","gaskets","olets","components","studs","screws","connectors","spools","materials","fabrication","erection" ],
+    "typeBanner": [ "PIPE", "PIPES" ],
+    "labels": [ "no","dn","qty","weight","total","fabrication","erection","materials","component","description","summary" ],
+    "summarySubstrings": [ "total","fabrication","erection","materials","weight","summary" ],
+    "dnHeaderTokens": [ "mm", "(mm)", "dn", "no", "n", "o" ]
+  },
+
+  "componentCanon": {
+    "WELDOLET": "WELD OLET",
+    "WELDNECKFLANGE": "WELD NECK FLANGE",
+    "BLINDFLANGE": "BLIND FLANGE",
+    "PIPESUPPORT": "PIPE SUPPORT",
+    "SPECTACLEFLANGE": "SPECTACLE FLANGE"
+  },
+
+  "columns": {
+    "comment": "列 x 坐标的兜底值。当无法从表头文字定位时使用；通常无需改。",
+    "headerXLo": 900,
+    "headerXHi": 1800,
+    "fallback": { "NO": 1123, "DN": 1142, "COMPONENT": 1221, "DESCRIPTION": 1276, "QTY": 1548, "WEIGHT": 1606 }
+  },
+
+  "page": {
+    "comment": "页面布局参数。hardBottom=null 表示自动（优先取下一个表头/汇总行，否则取页高*0.85）。wordGapFraction 为断词用的字间距阈值（占字号的比例）：相邻字形墨盒间距超过该值即视为单词分隔（PDF 结构化文本不含空格字符，单词边界靠这个间距判断）。",
+    "headerYMaxFraction": 0.95,
+    "hardBottom": null,
+    "autoBottomFraction": 0.85,
+    "wordGapFraction": 0.18
+  }
+}

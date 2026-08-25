@@ -1,10 +1,10 @@
-; EGtools v3.0.0 — Inno Setup 6 installer script
+; EGtools v4.2.1 — Inno Setup 6 installer script
 ; Author / Signer: HerryABU
 ;
 ; Compile with Inno Setup 6 (ISCC.exe). From this script's folder (code/):
 ;   ISCC.exe build_installer.iss
 ;
-; Output: EGtools-3.0.0-x64.exe  (in the script's Output folder)
+; Output: EGtools-4.2.1-x64.exe  (in the script's Output folder)
 ;
 ; The GUI is published FRAMEWORK-DEPENDENT for the Windows App Runtime 1.6: the
 ; framework is provided by the system's single registered WindowsAppRuntime.1.6
@@ -29,17 +29,23 @@
 ; and the write only happens when that task is selected.
 
 #define MyAppName "EGtools"
-#define MyAppVersion "3.0.0"
+#define MyAppVersion "4.2.1"
 #define MyAppPublisher "HerryABU"
 #define MyAppURL "https://github.com/HerryABU/EGtools"
 #define MyAppExeName "EGtools.exe"
 
 [Setup]
 ; NOTE: AppId must be unique; do not change it after publishing an installer.
+; Keeping it stable is what makes an in-place update overwrite the old install
+; (same identity -> Inno Setup offers "Update", and [Files] carry 'ignoreversion'
+; so every payload file is always replaced with the new one).
 AppId={{8F2C3A1E-7B4D-4E90-A1C2-19F3B6E8D5A0}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
+; Allow a running copy to be detected & closed before overwriting its files.
+CloseApplications=yes
+AppMutex=EGtoolsAppMutex
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
