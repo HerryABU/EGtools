@@ -85,14 +85,26 @@
 </ol>
 <p>内核<b>矢量文本优先</b>；仅当区域没有可用矢量文字时，才用 MuPDF 内置 <b>Tesseract OCR</b>（专业 OCR 库，<u>不是</u> Windows 系统 OCR）兜底，此时内核日志会提示。表格分列由字形几何自动涌现，<b>无任何硬编码列坐标</b>。</p>
 
-<h2>7. 图纸差异（红标注）</h2>
+<h2>8. 图纸差异（红标注）</h2>
 <ol>
   <li>点「图纸差异」，依次选择<b>基准图</b>与<b>目标图</b>。</li>
   <li>应用调用 <code>EGpdf2df</code> 生成带<b>红色差异标注</b>的 <code>diff.pdf</code>，并在画布中预览。</li>
 </ol>
 <p>差异分<b>两步、独立</b>处理：① <b>图形/图元差异</b>——先按文字包围盒涂白排除文字区，避免文字微调被误报为图形变化，再做边缘/像素比对；② <b>文字/注释差异</b>——独立于像素对比，识别增/删/改/移动。参数由内核 <code>config.json</code> 驱动。</p>
 
-<h2>8. 常见问题</h2>
+<h2>7. 框选方案（复用 / 修改 / 存储 / 导出）</h2>
+<p>常用的框选可以<b>存成方案</b>，反复复用。点工具栏「框选方案」或首页「管理框选方案」进入<b>二级页面</b>。</p>
+<table>
+<tr><th>能力</th><th>怎么用</th></tr>
+<tr><td><b>存储</b></td><td>在画布框选后点「存为方案」；或进方案页「从当前框选存入」。方案自动持久化到 <code>Documents\EGtools\schemes.json</code>，重启不丢（写入用原子替换，不会写坏文件）。</td></tr>
+<tr><td><b>修改字段</b></td><td>直接在<b>表格</b>里改「类型 / 页 / X / Y / 宽 / 高」——类型是下拉、其余是可编辑单元格。<b>不需要（也没有）JSON 编辑器</b>。改完自动保存。</td></tr>
+<tr><td><b>重写框选</b></td><td>选中某行 → 点「重写框选」→ 回到画布拖拽重画一次 → 自动写回该行并存盘。</td></tr>
+<tr><td><b>复用</b></td><td>点「复用到画布」，该方案的所有框选立刻载入当前图纸，可直接点「提取 (内核)」。换一张图纸也能用——框选以 PDF 点存储，与分辨率无关。</td></tr>
+<tr><td><b>导出 / 导入</b></td><td>「导出 JSON」写出 <code>RegionRequest</code> 结构（<code>regions[]</code> 与内核契约<b>完全一致</b>，换个 PDF 路径即可直接 <code>--json</code> 交给内核）；「导入 JSON」可吃回同类文件。</td></tr>
+</table>
+<div class="note">坐标单位为 <b>PDF 点</b>、左上原点、y 向下——与内核和渲染图像同一约定，因此方案在不同 DPI/缩放下都成立。</div>
+
+<h2>9. 常见问题</h2>
 <table>
 <tr><th>现象</th><th>处理</th></tr>
 <tr><td>提示找不到内核 / 无法启动</td><td>检查「CLI 目录」是否指向含 <code>EGpdf2excel.exe</code>/<code>EGpdf2df.exe</code> 的目录。</td></tr>
@@ -101,7 +113,7 @@
 <tr><td>翻页/渲染慢</td><td>整页栅格化按需渲染；超大图纸可只处理目标页。</td></tr>
 </table>
 
-<h2>9. 命令行内核（可脱离界面批量使用）</h2>
+<h2>10. 命令行内核（可脱离界面批量使用）</h2>
 <pre># 整页材料表抽取
 EGpdf2excel drawing.pdf -f xlsx
 
@@ -117,7 +129,7 @@ EGexcel2df old.xlsx new.xlsx -o changes.xlsx
 # 两份 PDF 图纸差异
 EGpdf2df baseline.pdf target.pdf -o diff.pdf</pre>
 
-<h2>10. 快捷键与自检</h2>
+<h2>11. 快捷键与自检</h2>
 <ul>
   <li><code>--test-math</code>：坐标映射自检（无副作用，可在命令行验证换算正确）。</li>
   <li><code>--selftest --pdf &lt;文件&gt;</code>：渲染→换算→抽取全链路自检。</li>

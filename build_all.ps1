@@ -122,10 +122,24 @@ if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake
         foreach ($dll in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll')) {
             Copy-Item "$qtRoot\bin\$dll" $out -Force -EA SilentlyContinue
         }
-        foreach ($plug in @('platforms','styles','imageformats')) {
+        foreach ($plug in @('platforms','styles','imageformats','iconengines')) {
             if (Test-Path "$qtRoot\plugins\$plug") {
-                New-Item -ItemType Directory -Path "$out\plugins\$plug" -Force | Out-Null
-                Copy-Item "$qtRoot\plugins\$plug\*.dll" "$out\plugins\$plug\" -Force -EA SilentlyContinue
+                $pd = "$out\plugins\$plug"
+                if (Test-Path $pd) { Remove-Item $pd -Recurse -Force }
+                New-Item -ItemType Directory -Path $pd -Force | Out-Null
+                # Copy RELEASE plugins only. Qt ships debug plugin DLLs with a trailing
+                # 'd' (qwindowsd.dll, qmodernwindowsstyled.dll, ...); they link against
+                # the debug CRT and must not ship. Qt may also PREFER a debug plugin at
+                # runtime, which is what produced the noisy
+                # "qt.text.font.db: OpenType support missing" warnings on a release build.
+                # Precise test: treat X.dll as debug only when the matching release
+                # plugin (same name minus the trailing 'd') also exists — this keeps
+                # legitimately 'd'-suffixed release plugins such as qdirect2d.dll.
+                Get-ChildItem "$qtRoot\plugins\$plug\*.dll" | Where-Object {
+                    $n = $_.BaseName
+                    -not ($n -match 'd$' -and
+                          (Test-Path (Join-Path $_.DirectoryName ($n.Substring(0, $n.Length - 1) + '.dll'))))
+                } | Copy-Item -Destination $pd -Force -EA SilentlyContinue
             }
         }
         Copy-Item "$root\redist\vc143_x64\*.dll" $out -Force -EA SilentlyContinue

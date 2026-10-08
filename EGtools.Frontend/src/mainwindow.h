@@ -3,7 +3,9 @@
 #include <QMainWindow>
 #include <QString>
 #include <QImage>
+#include <QVector>
 #include "pdfview.h"
+#include "schemes.h"
 
 class QComboBox;
 class QLabel;
@@ -14,6 +16,8 @@ class QTabWidget;
 class QLineEdit;
 class QStackedWidget;
 class HomePage;
+class SchemePage;
+class SchemeStore;
 
 // The Qt shell. It owns NO PDF processing logic: it displays pages rendered by
 // the CLI, captures rubber-band selections, exports the region JSON contract for
@@ -41,6 +45,11 @@ public slots:
     void onHome();
     void onWholePageExtract();
     void onExcelCompare();
+    void onSchemes();
+    void onCaptureAsScheme();
+    void onRewriteRegion(const QString& schemeId, int regionIndex);
+    void onReuseScheme(const QString& schemeId);
+    void onSchemeStatus(const QString& msg);
     void onModeChanged(int index);
     void onRegionSelected(int page, const QString& kind, const QRectF& rectPt);
 
@@ -59,6 +68,10 @@ private:
     void showRegionResponse(const QJsonObject& resp);
     void showRenderSummary(const QString& stdoutJson);
 
+    QVector<RegionSpec> canvasRegions() const;
+    void applySchemeToCanvas(const Scheme& s);
+    void loadSchemeIntoStore(const Scheme& s);
+
     QString m_cliDir;
     QString m_pdfPath;
     int     m_pageCount = 0;
@@ -68,6 +81,10 @@ private:
     PdfView*     m_view = nullptr;
     QStackedWidget* m_stack = nullptr;
     HomePage*    m_home = nullptr;
+    SchemePage*  m_schemes = nullptr;
+    SchemeStore* m_schemeStore = nullptr;
+    QString      m_rewriteSchemeId;   // non-empty => a rewrite is in progress
+    int          m_rewriteRow = -1;
     QComboBox*   m_modeCombo = nullptr;
     QLabel*      m_pageLabel = nullptr;
     QTabWidget*  m_tabs = nullptr;

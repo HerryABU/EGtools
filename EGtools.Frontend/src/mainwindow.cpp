@@ -2,6 +2,8 @@
 #include "clirunner.h"
 #include "manualdialog.h"
 #include "homepage.h"
+#include "schemes.h"
+#include "schemepage.h"
 
 #include <QApplication>
 #include <QAction>
@@ -63,6 +65,11 @@ void MainWindow::buildUi()
 
     auto* tb = addToolBar(QStringLiteral("主工具栏"));
     auto* homeA = new QAction(QStringLiteral("首页"), this);
+    auto* schemesA = new QAction(QStringLiteral("框选方案"), this);
+    auto* captureA = new QAction(QStringLiteral("存为方案"), this);
+    tb->addAction(schemesA);
+    tb->addAction(captureA);
+    tb->addSeparator();
     tb->addAction(homeA);
     tb->addSeparator();
     tb->addAction(openA);
@@ -80,6 +87,8 @@ void MainWindow::buildUi()
 
     connect(openA,    &QAction::triggered, this, &MainWindow::onOpen);
     connect(homeA,    &QAction::triggered, this, &MainWindow::onHome);
+    connect(schemesA, &QAction::triggered, this, &MainWindow::onSchemes);
+    connect(captureA, &QAction::triggered, this, &MainWindow::onCaptureAsScheme);
     connect(prevA,    &QAction::triggered, this, &MainWindow::onPrevPage);
     connect(nextA,    &QAction::triggered, this, &MainWindow::onNextPage);
     connect(renderA,  &QAction::triggered, this, &MainWindow::onRenderPage);
@@ -182,12 +191,19 @@ void MainWindow::buildUi()
     split->setStretchFactor(0, 3);
     split->setStretchFactor(1, 2);
 
-    // Page 0 = home (quick start + all features), page 1 = the PDF workspace.
+    // Page 0 = home, page 1 = PDF workspace, page 2 = reusable box schemes.
     m_home = new HomePage();
+    m_schemeStore = new SchemeStore();
+    m_schemes = new SchemePage(m_schemeStore);
     m_stack = new QStackedWidget();
     m_stack->addWidget(m_home);
     m_stack->addWidget(split);
+    m_stack->addWidget(m_schemes);
     setCentralWidget(m_stack);
+
+    connect(m_schemes, &SchemePage::rewriteRequested, this, &MainWindow::onRewriteRegion);
+    connect(m_schemes, &SchemePage::reuseRequested,   this, &MainWindow::onReuseScheme);
+    connect(m_schemes, &SchemePage::statusMessage,    this, &MainWindow::onSchemeStatus);
 
     connect(m_home, &HomePage::startExtract, this, [this]{
         // "开始使用" / 区域框选提取卡片 → 进入工作区并直接打开 PDF 选择框
@@ -198,6 +214,7 @@ void MainWindow::buildUi()
     connect(m_home, &HomePage::wholePageExtract,     this, &MainWindow::onWholePageExtract);
     connect(m_home, &HomePage::diffRequested,        this, &MainWindow::onDiff);
     connect(m_home, &HomePage::excelCompareRequested,this, &MainWindow::onExcelCompare);
+    connect(m_home, &HomePage::schemesRequested,     this, [this]{ onSchemes(); });
     connect(m_home, &HomePage::manualRequested,      this, &MainWindow::onManual);
     connect(m_home, &HomePage::aboutRequested,       this, &MainWindow::onAbout);
 
@@ -423,6 +440,27 @@ void MainWindow::onModeChanged(int)
 
 void MainWindow::onRegionSelected(int page, const QString& kind, const QRectF& rectPt)
 {
+    // If a scheme row is being re-drawn, this box REPLACES that row instead of
+    // adding a new region, then we leave rewrite mode.
+    if (!m_rewriteSchemeId.isEmpty() && m_schemeStore) {
+        Scheme* s = m_schemeStore->findMutable(m_rewriteSchemeId);
+        if (s && m_rewriteRow >= 0 && m_rewriteRow < s->regions.size()) {
+            RegionSpec& g = s->regions[m_rewriteRow];
+            g.page = page;
+            g.kind = kind;
+            g.x = rectPt.x(); g.y = rectPt.y();
+            g.w = rectPt.width(); g.h = rectPt.height();
+            m_schemeStore->update(*s);
+            m_schemeStore->save();
+            log(QStringLiteral("已重写方案「%1」的第 %2 个区域并保存").arg(s->name).arg(m_rewriteRow + 1));
+            m_rewriteSchemeId.clear();
+            m_rewriteRow = -1;
+            if (m_schemes) { m_schemes->reload(); m_schemes->selectScheme(s->id); }
+            showPage(2);
+            return;
+        }
+    }
+
     Region r; r.page = page; r.kind = kind; r.rectPt = rectPt;
     m_view->addRegion(r);
     refreshJsonPreview();
@@ -627,4 +665,107 @@ void MainWindow::onAbout()
                        "前端只做交互与编排，PDF / Excel 处理全部由 CLI 内核完成。</p>"
                        "<p>版本 1.0.0<br>许可证 AGPL-3.0<br>版权 © 2026 HerryABU</p>"
                        "<p>点击菜单「帮助 → 使用说明书」查看完整说明。</p>"));
+}
+
+// ---------------------------------------------------------------- schemes
+
+void MainWindow::onSchemes()
+{
+    if (!m_schemes) return;
+    m_schemes->reload();
+    showPage(2);
+}
+
+void MainWindow::onSchemeStatus(const QString& msg) { log(msg); }
+
+QVector<RegionSpec> MainWindow::canvasRegions() const
+{
+    QVector<RegionSpec> out;
+    if (!m_view) return out;
+    for (const Region& r : m_view->regions()) {
+        RegionSpec g;
+        g.page = r.page;
+        g.kind = r.kind;
+        g.x = r.rectPt.x();
+        g.y = r.rectPt.y();
+        g.w = r.rectPt.width();
+        g.h = r.rectPt.height();
+        out.append(g);
+    }
+    return out;
+}
+
+void MainWindow::onCaptureAsScheme()
+{
+    if (!m_schemes) return;
+    const QVector<RegionSpec> regs = canvasRegions();
+    if (regs.isEmpty()) {
+        log(QStringLiteral("画布上还没有框选，无法存为方案"));
+        return;
+    }
+    m_schemes->captureFromCanvas(regs);
+    showPage(2);
+}
+
+// Switch to the workspace and put the scheme's boxes back on the canvas.
+void MainWindow::onReuseScheme(const QString& schemeId)
+{
+    if (!m_schemeStore) return;
+    Scheme* s = m_schemeStore->findMutable(schemeId);
+    if (!s) return;
+    applySchemeToCanvas(*s);
+    showPage(1);
+    log(QStringLiteral("已把方案「%1」的 %2 个框选复用到画布，可直接点「提取 (内核)」")
+            .arg(s->name).arg(s->regions.size()));
+}
+
+void MainWindow::applySchemeToCanvas(const Scheme& s)
+{
+    if (!m_view) return;
+    m_view->clearRegions();
+    for (const RegionSpec& g : s.regions) {
+        Region r;
+        r.page = g.page;
+        r.kind = g.kind;
+        r.rectPt = QRectF(g.x, g.y, g.w, g.h);
+        m_view->addRegion(r);
+    }
+    // Jump to the first page that carries a box so the user sees them.
+    if (!s.regions.isEmpty()) {
+        m_pageIndex = s.regions.first().page;
+        onRenderPage();
+        m_view->clearRegions();
+        for (const RegionSpec& g : s.regions) {
+            Region r;
+            r.page = g.page;
+            r.kind = g.kind;
+            r.rectPt = QRectF(g.x, g.y, g.w, g.h);
+            m_view->addRegion(r);
+        }
+    }
+    refreshJsonPreview();
+}
+
+// Enter "rewrite" mode: the next box drawn on the canvas replaces the given row.
+void MainWindow::onRewriteRegion(const QString& schemeId, int regionIndex)
+{
+    if (!m_schemeStore) return;
+    Scheme* s = m_schemeStore->findMutable(schemeId);
+    if (!s || regionIndex < 0 || regionIndex >= s->regions.size()) return;
+
+    m_rewriteSchemeId = schemeId;
+    m_rewriteRow = regionIndex;
+    m_pageIndex = s->regions[regionIndex].page;
+    showPage(1);
+    onRenderPage();
+    m_view->clearRegions();
+    Region r;
+    r.page = s->regions[regionIndex].page;
+    r.kind = s->regions[regionIndex].kind;
+    r.rectPt = QRectF(s->regions[regionIndex].x, s->regions[regionIndex].y,
+                      s->regions[regionIndex].w, s->regions[regionIndex].h);
+    m_view->addRegion(r);
+
+    log(QStringLiteral("重写模式：在画布上拖拽以重画该区域（完成后自动保存到方案「%1」）").arg(s->name));
+    statusBar()->showMessage(QStringLiteral("重写模式 — 在画布上拖拽重画区域"));
 }

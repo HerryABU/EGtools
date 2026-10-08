@@ -142,12 +142,12 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
         {1, 1, "\xE0\xA5\x8F", "Excel 图纸对比",
             "两份管道材料表 Excel 以 PIPE NO 为主键对比，输出新增 / 删除 / QTY 变化清单。",
             "选择两份 Excel"},
-        {2, 0, "\xE2\x9C\x93", "使用说明书",
+        {2, 0, "\xE2\x8A\x99", "框选方案（复用 / 修改 / 导出）",
+            "把常用框选存成方案：可复用到其他图纸、在表格里改字段、重写框选，并导出为内核可用的 JSON。",
+            "管理框选方案"},
+        {2, 1, "\xE2\x9C\x93", "使用说明书",
             "内置完整说明书（界面、框选、JSON 契约、坐标系、命令行速查），随程序走。",
             "打开说明书"},
-        {2, 1, "\xE2\x84\xB5", "关于 EGtools",
-            "版本、许可证与架构说明。",
-            "查看"},
     };
 
     for (const Entry& e : entries) {
@@ -158,6 +158,7 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
         if (kind == QStringLiteral("整页材料表抽取"))            connect(btn, &QPushButton::clicked, this, &HomePage::wholePageExtract);
         else if (kind == QStringLiteral("图纸差异对比（PDF）"))   connect(btn, &QPushButton::clicked, this, &HomePage::diffRequested);
         else if (kind == QStringLiteral("Excel 图纸对比"))        connect(btn, &QPushButton::clicked, this, &HomePage::excelCompareRequested);
+        else if (kind.startsWith(QStringLiteral("框选方案")))connect(btn, &QPushButton::clicked, this, &HomePage::schemesRequested);
         else if (kind == QStringLiteral("使用说明书"))            connect(btn, &QPushButton::clicked, this, &HomePage::manualRequested);
         else if (kind == QStringLiteral("关于 EGtools"))          connect(btn, &QPushButton::clicked, this, &HomePage::aboutRequested);
         else                                                      connect(btn, &QPushButton::clicked, this, &HomePage::startExtract);

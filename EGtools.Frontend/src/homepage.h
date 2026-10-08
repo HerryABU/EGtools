@@ -25,6 +25,7 @@ signals:
     void wholePageExtract();    // EGpdf2excel full-page table extraction
     void diffRequested();       // EGpdf2df drawing diff
     void excelCompareRequested(); // EGexcel2df Excel comparison
+    void schemesRequested();      // reusable box-selection schemes
     void manualRequested();
     void aboutRequested();
 

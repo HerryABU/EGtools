@@ -23,6 +23,10 @@ add_executable(EGtoolsFrontend
     src/manualdialog.cpp
     src/homepage.h
     src/homepage.cpp
+    src/schemes.h
+    src/schemes.cpp
+    src/schemepage.h
+    src/schemepage.cpp
     src/types.h
     res/app_icon.rc
 )
