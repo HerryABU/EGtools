@@ -14,8 +14,14 @@
     <Product>EGtools</Product>
     <Copyright>Copyright © 2026 HerryABU</Copyright>
   </PropertyGroup>
-  <!-- EGtools.Core is now a thin SHARED library: only the logging seam
-       (ForwardingWriter) lives here. The two processing engines were split out
-       into EGpdf2excel.Engine (PDF -> Excel) and EGexcel2df.Engine
-       (Excel -> change comparison), which both reference this project. -->
+  <ItemGroup>
+    <!-- Shared PDF text/geometry helpers (TextGeometry) need the same MuPDF
+         engine the processing kernels use, so Core becomes the single home for
+         the "read vector glyphs into words" logic reused by every kernel. -->
+    <PackageReference Include="MuPDFCore" Version="2.0.1" />
+  </ItemGroup>
+
+  <!-- EGtools.Core is the SHARED library: the logging seam (ForwardingWriter)
+       plus TextGeometry (MuPDF word/line-number extraction). The processing
+       engines (EGpdf2excel.Engine, EGpdf2df.Engine) reference this project. -->
 </Project>

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>EGpdf2df</AssemblyName>
+    <RootNamespace>EGpdf2df</RootNamespace>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Company>HerryABU</Company>
+    <Product>EGtools</Product>
+    <Copyright>Copyright © 2026 HerryABU</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The diff engine lives in EGpdf2df.Engine (MuPDF + OpenCV backed). -->
+    <ProjectReference Include="..\EGpdf2df.Engine\EGpdf2df.Engine.csproj" />
+  </ItemGroup>
+
+</Project>
