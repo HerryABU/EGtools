@@ -1,0 +1,4 @@
+// Windows resource script: embeds the application icon into the EXE so that
+// Explorer / the taskbar / the Start menu show it (without this, a Qt build
+// keeps the default console icon).
+IDI_ICON1 ICON "app_icon.ico"

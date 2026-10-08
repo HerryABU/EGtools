@@ -22,17 +22,25 @@ add_executable(EGtoolsFrontend
     src/manualdialog.h
     src/manualdialog.cpp
     src/types.h
+    res/app_icon.rc
 )
 
-# Embed the in-app manual as a Qt resource so it travels inside the binary.
+# Embed the in-app manual + the window/taskbar icon as Qt resources so they
+# travel inside the binary.
 # NOTE: must come AFTER add_executable (the target must already exist).
-qt_add_resources(EGtoolsFrontend "manual"
+qt_add_resources(EGtoolsFrontend "appres"
     PREFIX "/"
     BASE "res"
     FILES res/manual.html
+          res/app_icon.png
 )
 
 target_link_libraries(EGtoolsFrontend PRIVATE Qt6::Widgets)
+
+# Embed the EXE icon (Explorer/taskbar/Start menu) on Windows.
+if(WIN32)
+    enable_language(RC)
+endif()
 
 if(MSVC)
     target_compile_options(EGtoolsFrontend PRIVATE /utf-8)

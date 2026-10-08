@@ -3,6 +3,7 @@
 // (offscreen platform), so the sandbox can verify the full CLI round-trip.
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QIcon>
 #include "mainwindow.h"
 #include "selftest.h"
 
@@ -19,6 +20,9 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("EGtools"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0.0"));
+    // Window / taskbar / Start-menu icon (embedded Qt resource). The EXE file
+    // icon itself is embedded separately via res/app_icon.rc.
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/app_icon.png")));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("EGtools Qt front-end (region extraction + drawing diff)"));

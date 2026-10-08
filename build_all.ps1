@@ -147,8 +147,11 @@ foreach ($d in @("$root\DIST\EGpdf2excel", "$root\DIST\EGexcel2df", "$root\DIST\
 }
 
 # ---- 6. Docs + icon ----
-if (-not (Test-Path "$root\DIST\app.ico")) { Copy-Item "$root\EGtools.Gui\app.ico" "$root\DIST\app.ico" -Force }
-if (-not (Test-Path "$root\DIST\docs"))    { Copy-Item "$root\docs" "$root\DIST\docs" -Recurse -Force }
+# Single source of truth for the app icon: the Qt front-end's icon (also embedded
+# into EGtoolsFrontend.exe via res/app_icon.rc). build_installer.iss uses this as
+# SetupIconFile, so Explorer / Start menu / installer all show the same icon.
+Copy-Item "$root\EGtools.Frontend\res\app_icon.ico" "$root\DIST\app.ico" -Force
+if (-not (Test-Path "$root\DIST\docs")){ Copy-Item "$root\docs" "$root\DIST\docs" -Recurse -Force }
 
 # ---- 7. Verify exes exist ----
 Step 'Verify DIST layout'
