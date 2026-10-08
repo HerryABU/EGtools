@@ -34,8 +34,10 @@ $projects = @(
     'EGtools.Core\EGtools.Core.csproj',
     'EGpdf2excel.Engine\EGpdf2excel.Engine.csproj',
     'EGexcel2df.Engine\EGexcel2df.Engine.csproj',
+    'EGpdf2df.Engine\EGpdf2df.Engine.csproj',
     'EGpdf2excel\EGpdf2excel.csproj',
     'EGexcel2df\EGexcel2df.csproj',
+    'EGpdf2df\EGpdf2df.csproj',
     'EGtools.Gui\EGtools.Gui.csproj'
 )
 
@@ -55,9 +57,9 @@ foreach ($p in $projects) {
     if ($LASTEXITCODE -ne 0) { throw "Restore failed: $p" }
 }
 
-# ---- 2. Build the shared Core + the two split engine DLLs ----
+# ---- 2. Build the shared Core + the split engine DLLs ----
 Step 'Build EGtools.Core + engine DLLs'
-foreach ($p in @('EGtools.Core\EGtools.Core.csproj','EGpdf2excel.Engine\EGpdf2excel.Engine.csproj','EGexcel2df.Engine\EGexcel2df.Engine.csproj')) {
+foreach ($p in @('EGtools.Core\EGtools.Core.csproj','EGpdf2excel.Engine\EGpdf2excel.Engine.csproj','EGexcel2df.Engine\EGexcel2df.Engine.csproj','EGpdf2df.Engine\EGpdf2df.Engine.csproj')) {
     & $dotnet build "$root\$p" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 --no-restore -m:1 -nodeReuse:false
     if ($LASTEXITCODE -ne 0) { throw "Build failed: $p" }
 }
@@ -71,15 +73,43 @@ Step 'Publish EGexcel2df'
 & $dotnet publish "$root\EGexcel2df\EGexcel2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:SelfContained=true /p:PublishTrimmed=false --no-restore -m:1 -nodeReuse:false -o "$root\DIST\EGexcel2df"
 if ($LASTEXITCODE -ne 0) { throw "EGexcel2df publish failed" }
 
+Step 'Publish EGpdf2df'
+& $dotnet publish "$root\EGpdf2df\EGpdf2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:SelfContained=true /p:PublishTrimmed=false --no-restore -m:1 -nodeReuse:false -o "$root\DIST\EGpdf2df"
+if ($LASTEXITCODE -ne 0) { throw "EGpdf2df publish failed" }
+
 # ---- 4. Publish GUI (WinUI 3, self-contained .NET + self-contained WinAppSDK) ----
 Step 'Publish EGtools.Gui (FolderProfile: SelfContained + WindowsAppSDKSelfContained)'
 & $dotnet publish "$root\EGtools.Gui\EGtools.Gui.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:PublishProfile=FolderProfile --no-restore -m:1 -nodeReuse:false
 if ($LASTEXITCODE -ne 0) { throw "GUI publish failed" }
 
+# ---- 4b. Build the Qt 6 front-end (optional; skipped when Qt/MSVC not found) ----
+# EGtools.Frontend is the NEW front-end. It is optional here so the .NET-only
+# build still succeeds on machines without Qt/MSVC. It shells out to the CLI
+# kernels (EGpdf2excel --render / --mode region, EGpdf2df) via QProcess.
+$qtRoot = 'C:\Qt\6.11.2\msvc2022_64'
+$qtCmake = 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake)) {
+    Step 'Build EGtools.Frontend (Qt 6, optional)'
+    Push-Location "$root\EGtools.Frontend"
+    & $qtCmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="$qtRoot" -DCMAKE_BUILD_TYPE=Release 2>&1 | Out-Host
+    if ($LASTEXITCODE -eq 0) { & $qtCmake --build build 2>&1 | Out-Host }
+    if ($LASTEXITCODE -eq 0 -and (Test-Path "$root\EGtools.Frontend\build\EGtoolsFrontend.exe")) {
+        New-Item -ItemType Directory -Path "$root\DIST\EGtoolsFrontend" -Force | Out-Null
+        Copy-Item "$root\EGtools.Frontend\build\EGtoolsFrontend.exe" "$root\DIST\EGtoolsFrontend\" -Force
+        Write-Host 'OK  Qt front-end built -> DIST/EGtoolsFrontend'
+    } else {
+        Write-Warning 'Qt front-end build failed or tools missing — continuing (it is optional).'
+    }
+    Pop-Location
+} else {
+    Step 'Qt front-end SKIPPED (Qt 6 or CMake not found)'
+    Write-Warning "Qt 6 not found at $qtRoot — skipping EGtools.Frontend (optional)."
+}
+
 # ---- 5. Ensure VC++ 2022 runtime DLLs in every app dir ----
 Step 'Copy VC++ 2022 (v14) runtime into each app dir'
 $vc = "$root\redist\vc143_x64"
-foreach ($d in @("$root\DIST\EGtools", "$root\DIST\EGpdf2excel", "$root\DIST\EGexcel2df")) {
+foreach ($d in @("$root\DIST\EGtools", "$root\DIST\EGpdf2excel", "$root\DIST\EGexcel2df", "$root\DIST\EGpdf2df")) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
     Copy-Item -Path "$vc\*" -Destination $d -Force
 }
@@ -90,10 +120,14 @@ if (-not (Test-Path "$root\DIST\docs"))    { Copy-Item "$root\docs" "$root\DIST\
 
 # ---- 7. Verify exes exist ----
 Step 'Verify DIST layout'
-foreach ($d in @('EGtools','EGpdf2excel','EGexcel2df')) {
+foreach ($d in @('EGtools','EGpdf2excel','EGexcel2df','EGpdf2df')) {
     $exe = "$root\DIST\$d\$d.exe"
     if (-not (Test-Path $exe)) { throw "Missing $exe" }
     Write-Host "OK  $exe  ($(Get-Item $exe).Length) bytes"
+}
+# The Qt front-end is optional; report its presence without failing the build.
+if (Test-Path "$root\DIST\EGtoolsFrontend\EGtoolsFrontend.exe") {
+    Write-Host "OK  $root\DIST\EGtoolsFrontend\EGtoolsFrontend.exe (Qt front-end, optional)"
 }
 
 # ---- 8. Recompile installer from fresh DIST ----
