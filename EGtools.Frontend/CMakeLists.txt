@@ -21,6 +21,8 @@ add_executable(EGtoolsFrontend
     src/selftest.cpp
     src/manualdialog.h
     src/manualdialog.cpp
+    src/homepage.h
+    src/homepage.cpp
     src/types.h
     res/app_icon.rc
 )

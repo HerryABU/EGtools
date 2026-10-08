@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "clirunner.h"
 #include "manualdialog.h"
+#include "homepage.h"
 
 #include <QApplication>
 #include <QAction>
@@ -26,7 +27,9 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTextEdit>
@@ -59,6 +62,9 @@ void MainWindow::buildUi()
     auto* diffA = new QAction(QStringLiteral("图纸差异"), this);
 
     auto* tb = addToolBar(QStringLiteral("主工具栏"));
+    auto* homeA = new QAction(QStringLiteral("首页"), this);
+    tb->addAction(homeA);
+    tb->addSeparator();
     tb->addAction(openA);
     tb->addSeparator();
     tb->addAction(prevA);
@@ -73,6 +79,7 @@ void MainWindow::buildUi()
     tb->addAction(diffA);
 
     connect(openA,    &QAction::triggered, this, &MainWindow::onOpen);
+    connect(homeA,    &QAction::triggered, this, &MainWindow::onHome);
     connect(prevA,    &QAction::triggered, this, &MainWindow::onPrevPage);
     connect(nextA,    &QAction::triggered, this, &MainWindow::onNextPage);
     connect(renderA,  &QAction::triggered, this, &MainWindow::onRenderPage);
@@ -174,16 +181,56 @@ void MainWindow::buildUi()
     split->addWidget(rightPane);
     split->setStretchFactor(0, 3);
     split->setStretchFactor(1, 2);
-    setCentralWidget(split);
 
-    statusBar()->showMessage(QStringLiteral("就绪 — 打开一个 PDF 开始"));
+    // Page 0 = home (quick start + all features), page 1 = the PDF workspace.
+    m_home = new HomePage();
+    m_stack = new QStackedWidget();
+    m_stack->addWidget(m_home);
+    m_stack->addWidget(split);
+    setCentralWidget(m_stack);
+
+    connect(m_home, &HomePage::startExtract, this, [this]{
+        // "开始使用" / 区域框选提取卡片 → 进入工作区并直接打开 PDF 选择框
+        showPage(1);
+        onOpen();
+    });
+    connect(m_home, &HomePage::openPdfRequested,     this, [this]{ showPage(1); onOpen(); });
+    connect(m_home, &HomePage::wholePageExtract,     this, &MainWindow::onWholePageExtract);
+    connect(m_home, &HomePage::diffRequested,        this, &MainWindow::onDiff);
+    connect(m_home, &HomePage::excelCompareRequested,this, &MainWindow::onExcelCompare);
+    connect(m_home, &HomePage::manualRequested,      this, &MainWindow::onManual);
+    connect(m_home, &HomePage::aboutRequested,       this, &MainWindow::onAbout);
+
+    statusBar()->showMessage(QStringLiteral("就绪 — 从首页开始，或打开一个 PDF"));
+    refreshKernelStatus();
+}
+
+void MainWindow::showPage(int index)
+{
+    if (m_stack) m_stack->setCurrentIndex(index);
+}
+
+void MainWindow::refreshKernelStatus()
+{
+    if (!m_home) return;
+    QStringList found, missing;
+    for (const QString& n : {QStringLiteral("EGpdf2excel"), QStringLiteral("EGpdf2df"), QStringLiteral("EGexcel2df")})
+        (QFileInfo::exists(cliExe(n)) ? found : missing).append(n);
+    if (missing.isEmpty()) {
+        m_home->setKernelStatus(true,
+            QStringLiteral("内核状态：已就绪（%1）").arg(found.join(QStringLiteral(" / "))));
+    } else {
+        m_home->setKernelStatus(false,
+            QStringLiteral("内核状态：缺少 %1 — 请在下方「CLI 目录」指定内核目录").arg(missing.join(QStringLiteral(" / "))));
+    }
 }
 
 void MainWindow::setCliDir(const QString& d)
 {
     m_cliDir = d;
     if (m_cliEdit) m_cliEdit->setText(d);
-    log(QStringLiteral("CLI 目录 = %1").arg(d.isEmpty() ? QStringLiteral("<空>") : d));
+    refreshKernelStatus();
+    log(QStringLiteral("CLI 目录 = %1").arg(d.isEmpty() ? QStringLiteral("<自动探测>") : d));
 }
 
 void MainWindow::log(const QString& s)
@@ -291,7 +338,67 @@ void MainWindow::onOpen()
 {
     QString p = QFileDialog::getOpenFileName(this, QStringLiteral("选择 PDF"), QString(),
                                              QStringLiteral("PDF (*.pdf)"));
-    if (!p.isEmpty()) openPdf(p);
+    if (!p.isEmpty()) { showPage(1); openPdf(p); }
+}
+
+void MainWindow::onHome()
+{
+    showPage(0);
+    refreshKernelStatus();
+}
+
+// ---- Full-page material table extraction (drives EGpdf2excel directly) ----
+void MainWindow::onWholePageExtract()
+{
+    QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("选择 PDF（可多选）"),
+        QString(), QStringLiteral("PDF (*.pdf)"));
+    if (files.isEmpty()) return;
+    QString outDir = QFileDialog::getExistingDirectory(this, QStringLiteral("选择输出目录"));
+    if (outDir.isEmpty()) return;
+
+    showPage(1);
+    QString out, err;
+    QStringList args{ files.first(), QStringLiteral("-o"), outDir, QStringLiteral("-f"),
+                      QStringLiteral("both") };
+    for (int i = 1; i < files.size(); ++i) args << files[i];
+    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")), args, out, err);
+    log(QStringLiteral("[整页抽取] rc=%1").arg(rc));
+    if (!err.trimmed().isEmpty()) log(err.trimmed());
+    log(rc == 0 ? QStringLiteral("整页材料表抽取完成 → %1").arg(outDir)
+                : QStringLiteral("整页材料表抽取失败，退出码 %1").arg(rc));
+    if (rc == 0) {
+        m_tabs->setCurrentWidget(m_logView);
+        QMessageBox::information(this, QStringLiteral("整页抽取"),
+            QStringLiteral("已在内核中完成整页材料表抽取，输出目录：\n%1\n\n详细日志见「内核日志」页。").arg(outDir));
+    }
+}
+
+// ---- Excel drawing comparison (drives EGexcel2df directly) ----
+void MainWindow::onExcelCompare()
+{
+    QString a = QFileDialog::getOpenFileName(this, QStringLiteral("旧图纸 Excel"), QString(),
+                                             QStringLiteral("Excel (*.xlsx *.xlsm)"));
+    if (a.isEmpty()) return;
+    QString b = QFileDialog::getOpenFileName(this, QStringLiteral("新图纸 Excel"), QString(),
+                                             QStringLiteral("Excel (*.xlsx *.xlsm)"));
+    if (b.isEmpty()) return;
+    QString outXlsx = QFileDialog::getSaveFileName(this, QStringLiteral("输出对比清单"),
+        QStringLiteral("图纸变化清单.xlsx"), QStringLiteral("Excel (*.xlsx)"));
+    if (outXlsx.isEmpty()) return;
+
+    showPage(1);
+    QString out, err;
+    int rc = CliRunner::run(cliExe(QStringLiteral("EGexcel2df")),
+        {a, b, QStringLiteral("-o"), outXlsx}, out, err);
+    log(QStringLiteral("[Excel 对比] rc=%1").arg(rc));
+    if (!err.trimmed().isEmpty()) log(err.trimmed());
+    if (rc == 0) {
+        m_tabs->setCurrentWidget(m_logView);
+        QMessageBox::information(this, QStringLiteral("Excel 对比"),
+            QStringLiteral("对比完成，输出：\n%1").arg(outXlsx));
+    } else {
+        log(QStringLiteral("Excel 对比失败，退出码 %1").arg(rc));
+    }
 }
 
 void MainWindow::onRenderPage()

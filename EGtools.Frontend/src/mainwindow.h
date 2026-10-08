@@ -12,6 +12,8 @@ class QTextEdit;
 class QListWidget;
 class QTabWidget;
 class QLineEdit;
+class QStackedWidget;
+class HomePage;
 
 // The Qt shell. It owns NO PDF processing logic: it displays pages rendered by
 // the CLI, captures rubber-band selections, exports the region JSON contract for
@@ -36,6 +38,9 @@ public slots:
     void onDiff();
     void onManual();
     void onAbout();
+    void onHome();
+    void onWholePageExtract();
+    void onExcelCompare();
     void onModeChanged(int index);
     void onRegionSelected(int page, const QString& kind, const QRectF& rectPt);
 
@@ -44,6 +49,8 @@ private:
     QString cliExe(const QString& name) const;
     void log(const QString& s);
     void setCliDir(const QString& d);
+    void refreshKernelStatus();
+    void showPage(int index);
 
     // Render one page via the CLI; returns the loaded image + geometry.
     bool renderPage(int page, QImage& img, double& scale, double& pwPt, double& phPt);
@@ -59,6 +66,8 @@ private:
     double  m_scale = 1.0, m_pwPt = 0, m_phPt = 0;
 
     PdfView*     m_view = nullptr;
+    QStackedWidget* m_stack = nullptr;
+    HomePage*    m_home = nullptr;
     QComboBox*   m_modeCombo = nullptr;
     QLabel*      m_pageLabel = nullptr;
     QTabWidget*  m_tabs = nullptr;
