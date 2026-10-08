@@ -55,7 +55,6 @@ namespace EGtools.Core
                     {
                         var c = chars[i];
                         string t = c.Character;
-                        bool isSpace = t == " " || t == " " || t == "\t";
                         double x0 = c.Origin.X;
                         double baseline = c.Origin.Y;
                         double sz = Convert.ToDouble(c.Size);
@@ -65,6 +64,7 @@ namespace EGtools.Core
                         double yc = baseline - sz / 2.0;
                         double y0 = baseline - sz;
                         double y1 = baseline;
+                        bool isSpace = t.Length > 0 && char.IsWhiteSpace(t[0]);
                         gs.Add((x0, y0, y1, ulx, urx, sz, yc, isSpace ? "" : t, isSpace));
                     }
                 }

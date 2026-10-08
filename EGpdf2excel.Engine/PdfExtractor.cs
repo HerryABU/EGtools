@@ -1075,6 +1075,7 @@ namespace EGpdf2excel.Engine
     {
         var inputs = new List<string>();
         string outputDir = null, singleOut = null, format = "csv", tag = "V3", refPath = null, configPath = null;
+        bool regionMode = false, readStdin = false; string? mode = null, jsonFile = null;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -1083,6 +1084,10 @@ namespace EGpdf2excel.Engine
             {
                 case "-h": case "--help": PrintHelp(); return 0;
                 case "--version": Console.WriteLine("EGpdf2excel v4.2.1"); return 0;
+                case "--mode": mode = take(""); break;
+                case "--region": regionMode = true; break;
+                case "--json": jsonFile = take(""); break;
+                case "--stdin": readStdin = true; break;
                 case "-v": case "--verbose": Verbose = true; break;
                 case "-o": case "--output": { string v = take(""); if (v.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) || v.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) singleOut = v; else outputDir = v; break; }
                 case "-f": case "--format": format = take("csv").ToLowerInvariant(); break;
@@ -1096,6 +1101,10 @@ namespace EGpdf2excel.Engine
                     inputs.Add(a); break;
             }
         }
+
+        // ---- region-selection extraction mode (decoupled JSON in / JSON out) ----
+        if (regionMode || mode == "region" || readStdin || jsonFile != null)
+            return RegionExtractor.RunFromJson(jsonFile, readStdin || regionMode && jsonFile == null, log: Console.Error.WriteLine);
         if (format != "csv" && format != "xlsx" && format != "both") { Console.Error.WriteLine($"Invalid --format '{format}' (csv|xlsx|both)"); return 2; }
 
         // Load external configuration (regex/vocab/layout) before processing.
