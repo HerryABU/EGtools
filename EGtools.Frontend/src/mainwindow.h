@@ -34,6 +34,8 @@ public slots:
     void onExportJson();
     void onExtract();
     void onDiff();
+    void onManual();
+    void onAbout();
     void onModeChanged(int index);
     void onRegionSelected(int page, const QString& kind, const QRectF& rectPt);
 

@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "clirunner.h"
+#include "manualdialog.h"
 
 #include <QApplication>
 #include <QAction>
@@ -14,9 +15,12 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
@@ -76,6 +80,32 @@ void MainWindow::buildUi()
     connect(exportA,  &QAction::triggered, this, &MainWindow::onExportJson);
     connect(extractA, &QAction::triggered, this, &MainWindow::onExtract);
     connect(diffA,    &QAction::triggered, this, &MainWindow::onDiff);
+
+    // Menu bar: 文件 / 操作 / 帮助 (帮助 holds the in-app manual).
+    auto* mFile = menuBar()->addMenu(QStringLiteral("文件(&F)"));
+    mFile->addAction(openA);
+    mFile->addSeparator();
+    auto* mQuit = mFile->addAction(QStringLiteral("退出(&X)"));
+    connect(mQuit, &QAction::triggered, this, &QWidget::close);
+
+    auto* mOps = menuBar()->addMenu(QStringLiteral("操作(&O)"));
+    mOps->addAction(prevA);
+    mOps->addAction(nextA);
+    mOps->addAction(renderA);
+    mOps->addSeparator();
+    mOps->addAction(exportA);
+    mOps->addAction(extractA);
+    mOps->addAction(clearA);
+    mOps->addSeparator();
+    mOps->addAction(diffA);
+
+    auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
+    auto* manualA = mHelp->addAction(QStringLiteral("使用说明书(&M)"));
+    manualA->setShortcut(QKeySequence::HelpContents); // F1
+    connect(manualA, &QAction::triggered, this, &MainWindow::onManual);
+    mHelp->addSeparator();
+    auto* aboutA = mHelp->addAction(QStringLiteral("关于(&A)"));
+    connect(aboutA, &QAction::triggered, this, &MainWindow::onAbout);
 
     // Center: view (left) + results (right).
     m_view = new PdfView();
@@ -459,4 +489,21 @@ void MainWindow::onDiff()
         }
     }
     log(QStringLiteral("差异 PDF 已生成: %1（未能内嵌预览）").arg(outPdf));
+}
+
+void MainWindow::onManual()
+{
+    ManualDialog dlg(this);
+    dlg.exec();
+}
+
+void MainWindow::onAbout()
+{
+    QMessageBox::about(this, QStringLiteral("关于 EGtools"),
+        QStringLiteral("<h3>EGtools</h3>"
+                       "<p><b>工程图纸材料表提取与对比工具集</b></p>"
+                       "<p>Qt 6 图形前端 + .NET 命令行内核（三层架构）。<br>"
+                       "前端只做交互与编排，PDF / Excel 处理全部由 CLI 内核完成。</p>"
+                       "<p>版本 1.0.0<br>许可证 AGPL-3.0<br>版权 © 2026 HerryABU</p>"
+                       "<p>点击菜单「帮助 → 使用说明书」查看完整说明。</p>"));
 }

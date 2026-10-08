@@ -19,7 +19,17 @@ add_executable(EGtoolsFrontend
     src/clirunner.cpp
     src/selftest.h
     src/selftest.cpp
+    src/manualdialog.h
+    src/manualdialog.cpp
     src/types.h
+)
+
+# Embed the in-app manual as a Qt resource so it travels inside the binary.
+# NOTE: must come AFTER add_executable (the target must already exist).
+qt_add_resources(EGtoolsFrontend "manual"
+    PREFIX "/"
+    BASE "res"
+    FILES res/manual.html
 )
 
 target_link_libraries(EGtoolsFrontend PRIVATE Qt6::Widgets)

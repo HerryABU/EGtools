@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>EGtools 使用说明书</title>
+<style>
+  body { font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; font-size: 10.5pt; color:#222; line-height:1.7; }
+  h1 { font-size: 20pt; color:#0b5cad; border-bottom:2px solid #0b5cad; padding-bottom:6px; }
+  h2 { font-size: 14pt; color:#0b5cad; margin-top:26px; border-left:5px solid #0b5cad; padding-left:10px; }
+  h3 { font-size: 12pt; color:#333; margin-top:18px; }
+  code, pre { font-family: Consolas, "Courier New", monospace; background:#f2f4f7; }
+  code { padding:1px 5px; border-radius:3px; font-size:9.5pt; }
+  pre { padding:10px 12px; border-radius:6px; font-size:9.5pt; white-space:pre-wrap; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:10pt; }
+  th, td { border:1px solid #c8ccd4; padding:6px 9px; text-align:left; vertical-align:top; }
+  th { background:#eef3fa; }
+  .note { background:#fff8e1; border-left:4px solid #f0a500; padding:8px 12px; margin:12px 0; }
+  .arch { background:#eef7ee; border-left:4px solid #2e7d32; padding:8px 12px; margin:12px 0; }
+  ul,ol { margin:8px 0 8px 22px; }
+</style>
+</head>
+<body>
+
+<h1>EGtools 使用说明书</h1>
+<p><b>工程图纸材料表提取与对比工具集</b> · 面向 CAD 等轴测（isometric）PDF 图纸与管道材料表（Excel）。<br>
+版权 © 2026 HerryABU · 许可证 AGPL-3.0</p>
+
+<div class="arch">
+<b>三层架构。</b>本 Qt 应用只是<b>交互壳</b>：负责显示页面、框选、坐标转换与流程编排；<b>所有 PDF / Excel 的实际处理都由独立的 .NET 命令行内核完成</b>，前后端通过 JSON / 文件契约通信。这样内核可独立批量使用，界面也可单独替换。
+</div>
+
+<h2>1. 界面总览</h2>
+<table>
+<tr><th>区域</th><th>说明</th></tr>
+<tr><td>顶部工具栏</td><td>打开 PDF、翻页、重渲染、三种框选模式切换、导出 JSON、提取、图纸差异、清空框选。</td></tr>
+<tr><td>左侧画布</td><td>显示当前页（由内核栅格化）。在画布上按住左键拖拽即可画橡皮筋矩形。</td></tr>
+<tr><td>右侧面板</td><td>四个标签页：<b>表格结果</b>、<b>管线号</b>、<b>区域 JSON</b>、<b>内核日志</b>。</td></tr>
+<tr><td>CLI 目录</td><td>指定存放 <code>EGpdf2excel.exe</code> / <code>EGpdf2df.exe</code> 的目录（下方说明）。</td></tr>
+</table>
+
+<h2>2. 配置 CLI 内核目录</h2>
+<p>界面本身不含 PDF 逻辑，需告诉它内核 exe 在哪：</p>
+<ul>
+  <li>在右侧「CLI 目录」输入框填入目录，或点「…」浏览选择；</li>
+  <li>该目录应同时包含 <code>EGpdf2excel.exe</code> 与 <code>EGpdf2df.exe</code>（一般即 <code>DIST/EGpdf2excel</code> 与 <code>DIST/EGpdf2df</code> 的上级共同位置，或把它们放同一目录）；</li>
+  <li>也可在启动前设置环境变量 <code>EGTOOLS_CLI_DIR</code>，或用命令行 <code>--cli-dir &lt;目录&gt;</code>。</li>
+</ul>
+<div class="note">若目录无效，内核日志会提示「无法启动 / 找不到文件」，请检查路径。</div>
+
+<h2>3. 打开 PDF 与翻页</h2>
+<ol>
+  <li>点「打开 PDF」选择一个等轴测图纸 PDF。</li>
+  <li>应用会调用内核 <code>--render</code> 把第 1 页栅格化为图像显示，并自动探测总页数。</li>
+  <li>用「上一页 / 下一页」翻页；切换页会重新栅格化该页。</li>
+</ol>
+
+<h2>4. 三种框选模式（核心）</h2>
+<p>在顶部「框选模式」下拉里选择语义，然后在画布上拖拽出矩形。矩形会按 <b>PDF 点（左上原点、y 向下）</b> 记录。三种模式：</p>
+<table>
+<tr><th>模式</th><th>内部 kind</th><th>用途</th></tr>
+<tr><td>全域表</td><td><code>global_table</code></td><td>框住整张材料表，抽取全部行×列。</td></tr>
+<tr><td>细表</td><td><code>detail_table</code></td><td>框住某个子表 / 明细块，只抽取该块。</td></tr>
+<tr><td>材料编号区</td><td><code>material_no_region</code></td><td>框住图纸中管道/管线编号所在区域，抽取编号列表。</td></tr>
+</table>
+<p>可在同一页做多个框选；<b>同页同类型</b>的框选在送入内核前会按<b>并集</b>合并成一个区域。</p>
+
+<h2>5. 导出区域 JSON（交给内核的契约）</h2>
+<p>点「导出 JSON」把当前所有框选写成 <code>RegionRequest</code> 并存盘，可直接喂给内核。格式：</p>
+<pre>{
+  "pdf": "C:/docs/drawing.pdf",
+  "pages": [0],
+  "regions": [
+    { "page": 0, "kind": "global_table",       "bbox": {"x":80,"y":60,"width":300,"height":220} },
+    { "page": 0, "kind": "material_no_region", "bbox": {"x":40,"y":40,"width":400,"height":60} }
+  ],
+  "options": { "ocrFallback": true, "mergeOverlapping": true }
+}</pre>
+<div class="note"><b>坐标约定（左上原点、y 向下、单位 PDF 点）。</b>像素→点的换算为 <code>pt = px / renderScale</code>，renderScale 由内核下发，<b>不硬编码任何图纸坐标</b>。因此换一台电脑、换 DPI、换图纸都无需改代码。</div>
+
+<h2>6. 提取（调用内核）</h2>
+<ol>
+  <li>框选完成后点「提取 (内核)」。</li>
+  <li>应用把框选组装成 JSON 交给 <code>EGpdf2excel --mode region</code>，解析返回结果。</li>
+  <li>结果分栏展示：表格结果进「表格结果」页，管线号进「管线号」页；<b>抽取到的字框会回叠到画布</b>（红框），便于核对；完整 JSON 见「区域 JSON」页。</li>
+</ol>
+<p>内核<b>矢量文本优先</b>；仅当区域没有可用矢量文字时，才用 MuPDF 内置 <b>Tesseract OCR</b>（专业 OCR 库，<u>不是</u> Windows 系统 OCR）兜底，此时内核日志会提示。表格分列由字形几何自动涌现，<b>无任何硬编码列坐标</b>。</p>
+
+<h2>7. 图纸差异（红标注）</h2>
+<ol>
+  <li>点「图纸差异」，依次选择<b>基准图</b>与<b>目标图</b>。</li>
+  <li>应用调用 <code>EGpdf2df</code> 生成带<b>红色差异标注</b>的 <code>diff.pdf</code>，并在画布中预览。</li>
+</ol>
+<p>差异分<b>两步、独立</b>处理：① <b>图形/图元差异</b>——先按文字包围盒涂白排除文字区，避免文字微调被误报为图形变化，再做边缘/像素比对；② <b>文字/注释差异</b>——独立于像素对比，识别增/删/改/移动。参数由内核 <code>config.json</code> 驱动。</p>
+
+<h2>8. 常见问题</h2>
+<table>
+<tr><th>现象</th><th>处理</th></tr>
+<tr><td>提示找不到内核 / 无法启动</td><td>检查「CLI 目录」是否指向含 <code>EGpdf2excel.exe</code>/<code>EGpdf2df.exe</code> 的目录。</td></tr>
+<tr><td>表格只抽到一列 / 列并在一起</td><td>真实材料表列间距较大才分得开；请把框选放宽、把整表都框进去。</td></tr>
+<tr><td>某区域内容为空</td><td>该区域可能是扫描图（无矢量文字），会走 OCR 兜底；或框选偏了，请对齐表格区域。</td></tr>
+<tr><td>翻页/渲染慢</td><td>整页栅格化按需渲染；超大图纸可只处理目标页。</td></tr>
+</table>
+
+<h2>9. 命令行内核（可脱离界面批量使用）</h2>
+<pre># 整页材料表抽取
+EGpdf2excel drawing.pdf -f xlsx
+
+# 页面栅格化渲染
+EGpdf2excel --render --page 0 --scale 2 --render-out page0.bmp drawing.pdf
+
+# 区域框选提取
+EGpdf2excel --mode region --json request.json
+
+# 两份 Excel 图纸对比
+EGexcel2df old.xlsx new.xlsx -o changes.xlsx
+
+# 两份 PDF 图纸差异
+EGpdf2df baseline.pdf target.pdf -o diff.pdf</pre>
+
+<h2>10. 快捷键与自检</h2>
+<ul>
+  <li><code>--test-math</code>：坐标映射自检（无副作用，可在命令行验证换算正确）。</li>
+  <li><code>--selftest --pdf &lt;文件&gt;</code>：渲染→换算→抽取全链路自检。</li>
+  <li>命令行 <code>--cli-dir &lt;目录&gt;</code>：指定内核目录。</li>
+</ul>
+
+<p style="margin-top:26px;color:#666;font-size:9.5pt">本说明书随程序内置于 Qt 资源中。可通过菜单「帮助 → 使用说明书」随时打开。</p>
+
+</body>
+</html>
