@@ -1076,6 +1076,7 @@ namespace EGpdf2excel.Engine
         var inputs = new List<string>();
         string outputDir = null, singleOut = null, format = "csv", tag = "V3", refPath = null, configPath = null;
         bool regionMode = false, readStdin = false; string? mode = null, jsonFile = null;
+        bool renderMode = false; int renderPage = 0; double renderScale = 2.0; string renderOut = null;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -1088,6 +1089,10 @@ namespace EGpdf2excel.Engine
                 case "--region": regionMode = true; break;
                 case "--json": jsonFile = take(""); break;
                 case "--stdin": readStdin = true; break;
+                case "--render": renderMode = true; break;
+                case "--page": renderPage = int.Parse(take("0")); break;
+                case "--scale": renderScale = double.Parse(take("2.0"), System.Globalization.CultureInfo.InvariantCulture); break;
+                case "--render-out": renderOut = take(""); break;
                 case "-v": case "--verbose": Verbose = true; break;
                 case "-o": case "--output": { string v = take(""); if (v.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) || v.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) singleOut = v; else outputDir = v; break; }
                 case "-f": case "--format": format = take("csv").ToLowerInvariant(); break;
@@ -1100,6 +1105,15 @@ namespace EGpdf2excel.Engine
                     if (a.StartsWith("-")) { Console.Error.WriteLine($"Unknown option: {a} (use -h for help)"); return 2; }
                     inputs.Add(a); break;
             }
+        }
+
+        // ---- page rendering mode (used by the Qt front-end to display a PDF page) ----
+        if (renderMode)
+        {
+            if (inputs.Count == 0) { Console.Error.WriteLine("--render needs an input PDF path."); return 2; }
+            if (string.IsNullOrEmpty(renderOut)) { Console.Error.WriteLine("--render needs --render-out FILE.bmp"); return 2; }
+            try { Console.WriteLine(PdfRenderer.RenderPage(inputs[0], renderPage, renderScale, renderOut, Console.Error.WriteLine)); return 0; }
+            catch (Exception ex) { Console.Error.WriteLine($"[render] {ex.Message}"); return 1; }
         }
 
         // ---- region-selection extraction mode (decoupled JSON in / JSON out) ----
