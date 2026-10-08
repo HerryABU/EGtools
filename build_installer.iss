@@ -1,49 +1,40 @@
-; EGtools v4.2.1 — Inno Setup 6 installer script
+; EGtools v4.3.0 — Inno Setup 6 installer script (Qt 6 front-end)
 ; Author / Signer: HerryABU
 ;
-; Compile with Inno Setup 6 (ISCC.exe). From this script's folder (code/):
+; Compile with Inno Setup 6 (ISCC.exe). From this script's folder:
 ;   ISCC.exe build_installer.iss
 ;
-; Output: EGtools-4.2.1-x64.exe  (in the script's Output folder)
+; Output: EGtools-4.3.0-x64.exe  (in the script's Output folder)
 ;
-; The GUI is published FRAMEWORK-DEPENDENT for the Windows App Runtime 1.6: the
-; framework is provided by the system's single registered WindowsAppRuntime.1.6
-; package (installed below when absent). This AVOIDS the 0xC000027B native
-; assertion crash of SELF-CONTAINED unpackaged apps on machines that already
-; have a NEWER registered WindowsAppRuntime — there the bootstrap resolves to the
-; system package while the self-contained loose framework DLLs are ALSO loaded,
-; mixing two Microsoft.ui.xaml.dll versions in one process. With framework-
-; dependent there are NO in-folder framework DLLs, so exactly one runtime loads.
-; The .NET 9 runtime stays self-contained (bundled), so no .NET install is needed.
+; WHAT IS SHIPPED
+;   The graphical front-end is EGtools.Frontend (Qt 6.11.2, msvc2022_64). It is
+;   made self-contained by windeployqt at build time (Qt runtime DLLs + the
+;   qwindows platform plugin + the MSVC runtime sit next to the exe), so the app
+;   runs on a clean Windows machine WITHOUT Qt or a VC++ redistributable
+;   installed, and WITHOUT the Windows App Runtime (the legacy WinUI front-end
+;   is gone). The Qt front-end drives the three .NET CLI kernels through QProcess
+;   (EGpdf2excel / EGexcel2df / EGpdf2df); it auto-discovers them as sibling
+;   folders next to the exe, so no configuration is needed after install.
 ;
-; The VC++ 2022 (v14) runtime DLLs are ALSO bundled per-app inside the GUI
-; folder (the self-contained publish copies vcruntime140*.dll / msvcp140*.dll),
-; so the WinUI 3 / MuPDFCore native components load even when the target PC
-; has no VC++ redistributable installed. Nothing extra needs deploying here.
-;
-; The two CLI tools are published self-contained (.NET 9) too.
-;
-; The two CLI directories are appended to the SYSTEM PATH (HKLM) on request,
-; so EGpdf2excel / EGexcel2df are callable from any command prompt. The user is
-; explicitly asked (a checked checkbox on the "Select Additional Tasks" page),
-; and the write only happens when that task is selected.
+;   The three CLI kernels are self-contained (.NET 9) and are ALSO installed as
+;   standalone command-line tools. With the "addtopath" task selected their
+;   directories are appended to the SYSTEM PATH (HKLM) so they are callable from
+;   any prompt.
 
 #define MyAppName "EGtools"
-#define MyAppVersion "4.2.1"
+#define MyAppVersion "4.3.0"
 #define MyAppPublisher "HerryABU"
 #define MyAppURL "https://github.com/HerryABU/EGtools"
-#define MyAppExeName "EGtools.exe"
+#define MyQtExeName "EGtoolsFrontend.exe"
 
 [Setup]
-; NOTE: AppId must be unique; do not change it after publishing an installer.
-; Keeping it stable is what makes an in-place update overwrite the old install
-; (same identity -> Inno Setup offers "Update", and [Files] carry 'ignoreversion'
-; so every payload file is always replaced with the new one).
+; NOTE: AppId must stay stable once published so in-place updates work (same
+; identity -> Inno offers "Update"; [Files] use 'ignoreversion' so every payload
+; file is replaced).
 AppId={{8F2C3A1E-7B4D-4E90-A1C2-19F3B6E8D5A0}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
-; Allow a running copy to be detected & closed before overwriting its files.
 CloseApplications=yes
 AppMutex=EGtoolsAppMutex
 AppPublisher={#MyAppPublisher}
@@ -57,13 +48,10 @@ VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
 VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}
 
-; Self-contained x64 build; require 64-bit Windows and run as admin so the
-; CLI tools can be added to the SYSTEM PATH (HKLM) when the user opts in.
 ArchitecturesInstallIn64BitMode=x64
 ArchitecturesAllowed=x64
 PrivilegesRequired=admin
-; Lowest supported OS: Windows 10 1809 (build 17763) — the floor for both
-; Windows App SDK 1.6 and .NET 9. Covers every Win10 1809+ and all Windows 11.
+; Lowest supported OS: Windows 10 1809 (build 17763) — the floor for .NET 9.
 MinVersion=10.0.17763
 
 DefaultDirName={autopf}\{#MyAppName}
@@ -72,77 +60,64 @@ AllowNoIcons=yes
 OutputDir=installer
 OutputBaseFilename={#MyAppName}-{#MyAppVersion}-x64
 SetupIconFile=DIST\app.ico
-UninstallDisplayIcon={app}\{#MyAppExeName},0
+UninstallDisplayIcon={app}\{#MyQtExeName},0
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-; Refresh the environment so the PATH change takes effect without reboot.
 ChangesEnvironment=yes
 
 [Files]
-; GUI (framework-dependent WinUI 3: .NET 9 self-contained + Windows App Runtime 1.6 from the system).
-Source: "DIST\EGtools\*"; DestDir: "{app}\EGtools"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Windows App Runtime 1.6 installer — installed silently during setup (the GUI
-; needs it on machines that don't already have a 1.6 runtime registered). The
-; user's machine already has it, so this is a no-op there.
-Source: "redist\WindowsAppRuntimeInstall-x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
-; CLI tools (self-contained, independently runnable).
+; Qt 6 front-end (self-contained: exe + Qt runtime DLLs + plugins\platforms\qwindows.dll
+; + MSVC runtime). This is the main GUI.
+Source: "DIST\EGtoolsFrontend\*"; DestDir: "{app}\EGtoolsFrontend"; Flags: ignoreversion recursesubdirs createallsubdirs
+; CLI kernels (self-contained .NET 9). Installed as siblings so the Qt front-end
+; finds them automatically, and usable standalone from any prompt.
 Source: "DIST\EGpdf2excel\*"; DestDir: "{app}\EGpdf2excel"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "DIST\EGexcel2df\*"; DestDir: "{app}\EGexcel2df"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "DIST\EGpdf2df\*"; DestDir: "{app}\EGpdf2df"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Documentation.
 Source: "DIST\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
-; App icon (also used for the Start Menu / desktop shortcuts).
+; App icon (installer / shortcut icon).
 Source: "DIST\app.ico"; DestDir: "{app}"; Flags: ignoreversion
-; NOTE: The Windows App Runtime 1.6 is installed by the system (see the
-; WindowsAppRuntimeInstall-x64.exe source above + its [Run] step), NOT shipped
-; inside the GUI folder — that is what keeps the deployment framework-dependent
-; and avoids the dual-runtime 0xC000027B startup crash.
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\EGtools\{#MyAppExeName}"; WorkingDir: "{app}\EGtools"; IconFilename: "{app}\app.ico"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\EGtoolsFrontend\{#MyQtExeName}"; WorkingDir: "{app}\EGtoolsFrontend"; IconFilename: "{app}\app.ico"
 Name: "{group}\EGpdf2excel (CLI)"; Filename: "{app}\EGpdf2excel\EGpdf2excel.exe"; WorkingDir: "{app}\EGpdf2excel"; IconFilename: "{app}\app.ico"
 Name: "{group}\EGexcel2df (CLI)"; Filename: "{app}\EGexcel2df\EGexcel2df.exe"; WorkingDir: "{app}\EGexcel2df"; IconFilename: "{app}\app.ico"
+Name: "{group}\EGpdf2df (CLI)"; Filename: "{app}\EGpdf2df\EGpdf2df.exe"; WorkingDir: "{app}\EGpdf2df"; IconFilename: "{app}\app.ico"
 Name: "{group}\使用文档 (中文)"; Filename: "{app}\docs\README_zh.md"
 Name: "{group}\Documentation (English)"; Filename: "{app}\docs\README_en.md"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\EGtools\{#MyAppExeName}"; WorkingDir: "{app}\EGtools"; IconFilename: "{app}\app.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\EGtoolsFrontend\{#MyQtExeName}"; WorkingDir: "{app}\EGtoolsFrontend"; IconFilename: "{app}\app.ico"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-; Explicit, visible opt-in to add the CLI tools to the system PATH. Checked by
-; default so the CLIs "just work" after install, but the user clearly sees and
-; can uncheck the choice.
-Name: "addtopath"; Description: "将命令行工具 (EGpdf2excel / EGexcel2df) 添加到 PATH"; GroupDescription: "附加选项"; Flags: checkedonce
+; Explicit, visible opt-in to add the three CLI tools to the system PATH.
+Name: "addtopath"; Description: "将命令行工具 (EGpdf2excel / EGexcel2df / EGpdf2df) 添加到 PATH"; GroupDescription: "附加选项"; Flags: checkedonce
 
 [Run]
-; Install the Windows App Runtime 1.6 (framework-dependent GUI dependency).
-; Best-effort: when already present this is a quick no-op; ignoreerrors keeps a
-; failure here from blocking the rest of the install. No internet needed — the
-; MSIX is bundled inside the installer exe.
-Filename: "{tmp}\WindowsAppRuntimeInstall-x64.exe"; Parameters: "--msix -q"; StatusMsg: "正在安装 Windows App Runtime 1.6…"; Flags: runhidden
-; Launch the GUI on finish (optional).
-Filename: "{app}\EGtools\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+; Launch the Qt front-end on finish (optional).
+Filename: "{app}\EGtoolsFrontend\{#MyQtExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; WorkingDir: "{app}\EGtoolsFrontend"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}\EGtools"
+Type: filesandordirs; Name: "{app}\EGtoolsFrontend"
 Type: filesandordirs; Name: "{app}\EGpdf2excel"
 Type: filesandordirs; Name: "{app}\EGexcel2df"
+Type: filesandordirs; Name: "{app}\EGpdf2df"
 Type: filesandordirs; Name: "{app}\docs"
 
 [Code]
-// Append the two CLI directories to the SYSTEM PATH (HKLM) at install time, and
-// remove them at uninstall — BUT ONLY when the user chose the "addtopath" task.
+// Append the three CLI directories to the SYSTEM PATH (HKLM) at install time and
+// remove them at uninstall — ONLY when the user chose the "addtopath" task.
 //
-// IMPORTANT: This installer runs elevated (PrivilegesRequired=admin) and is a
-// per-machine install into C:\Program Files. Writing to HKCU\Environment\Path
-// while elevated puts the entries into the ADMINISTRATOR's user PATH, so the
-// real (non-admin) user never sees the CLIs on PATH — which is exactly the bug
-// we had. The system PATH is visible to every user and every new process, so we
-// use HKLM instead. ChangesEnvironment=yes broadcasts WM_SETTINGCHANGE so
-// already-open consoles pick it up.
+// The installer runs elevated (PrivilegesRequired=admin) and is a per-machine
+// install under C:\Program Files. Writing to HKCU\Environment\Path while
+// elevated would put the entries into the ADMINISTRATOR's user PATH so the real
+// user never sees them. The system PATH (HKLM) is visible to every user, and
+// ChangesEnvironment=yes broadcasts WM_SETTINGCHANGE so open consoles pick it up.
 //
-// The install dir is recorded in a private registry key so the uninstall step
-// can reconstruct the CLI paths without relying on the {app} constant.
+// The install dir is recorded in a private registry key so uninstall can
+// reconstruct the CLI paths without relying on the {app} constant.
 
 const
   PATH_ROOT = HKLM;
@@ -200,8 +175,8 @@ begin
     Result := path + ';' + dir;
 end;
 
-// Remove 'dir' from a semicolon-delimited path string, collapsing any
-// duplicate/leading/trailing separators so the value stays well-formed.
+// Remove 'dir' from a semicolon-delimited path string, collapsing duplicates /
+// stray separators so the value stays well-formed.
 function RemoveDir(const path, dir: string): string;
 var
   i, n, L: Integer;
@@ -227,16 +202,6 @@ begin
   Result := res;
 end;
 
-procedure AddToPath(const dir: string);
-begin
-  WriteSystemPath(AppendDir(ReadSystemPath(), dir));
-end;
-
-procedure RemoveFromPath(const dir: string);
-begin
-  WriteSystemPath(RemoveDir(ReadSystemPath(), dir));
-end;
-
 function GetInstallDir(): string;
 var
   s: string;
@@ -247,9 +212,22 @@ begin
     Result := ExpandConstant('{app}');
 end;
 
-procedure Dbg(const s: string);
+// Add/remove the three CLI dirs from the system PATH. Defined BEFORE the
+// CurStep* handlers because Pascal Script requires declaration-before-use.
+procedure ModifyPath(const add: boolean; const base: string);
 begin
-  SaveStringToFile('C:\Windows\Temp\egtools_dbg.log', s + #13#10, True);
+  if add then
+  begin
+    WriteSystemPath(AppendDir(ReadSystemPath(), base + '\EGpdf2excel'));
+    WriteSystemPath(AppendDir(ReadSystemPath(), base + '\EGexcel2df'));
+    WriteSystemPath(AppendDir(ReadSystemPath(), base + '\EGpdf2df'));
+  end
+  else
+  begin
+    WriteSystemPath(RemoveDir(ReadSystemPath(), base + '\EGpdf2excel'));
+    WriteSystemPath(RemoveDir(ReadSystemPath(), base + '\EGexcel2df'));
+    WriteSystemPath(RemoveDir(ReadSystemPath(), base + '\EGpdf2df'));
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -261,13 +239,7 @@ begin
     dir := ExpandConstant('{app}');
     RegWriteStringValue(APP_ROOT, APP_KEY, APPDIR_VAL, dir);
     if WizardIsTaskSelected('addtopath') then
-    begin
-      AddToPath(dir + '\EGpdf2excel');
-      AddToPath(dir + '\EGexcel2df');
-      Dbg('ssPostInstall addtopath=yes dir=' + dir);
-    end
-    else
-      Dbg('ssPostInstall addtopath=NO dir=' + dir);
+      ModifyPath(True, dir);
   end;
 end;
 
@@ -278,8 +250,7 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     dir := GetInstallDir();
-    WriteSystemPath(RemoveDir(ReadSystemPath(), dir + '\EGpdf2excel'));
-    WriteSystemPath(RemoveDir(ReadSystemPath(), dir + '\EGexcel2df'));
+    ModifyPath(False, dir);
     RegDeleteKeyIncludingSubkeys(APP_ROOT, APP_KEY);
   end;
 end;

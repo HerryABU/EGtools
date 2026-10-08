@@ -194,11 +194,25 @@ void MainWindow::log(const QString& s)
 
 QString MainWindow::cliExe(const QString& name) const
 {
-#ifdef EGTOOLS_WIN32
-    return QDir(m_cliDir).filePath(name + QStringLiteral(".exe"));
-#else
-    return QDir(m_cliDir).filePath(name);
-#endif
+    const QString exe = name + QStringLiteral(".exe");
+    QStringList candidates;
+    auto add = [&](const QString& dir){ if (!dir.isEmpty()) candidates << QDir(dir).filePath(exe); };
+
+    // 1) Explicit override wins (UI field / --cli-dir / EGTOOLS_CLI_DIR).
+    add(m_cliDir);
+    // 2) Auto-discover relative to the running executable so an installed /
+    //    published layout "just works" without configuring anything.
+    const QString appDir = QCoreApplication::applicationDirPath();
+    add(appDir);                              // kernels flat beside the exe
+    add(QDir(appDir).filePath(name));         // <app>/<name>/<name>.exe  (DIST layout)
+    add(QDir(appDir).filePath(QStringLiteral("cli")));        // {app}/cli/<name>.exe
+    add(QDir(appDir).filePath(QStringLiteral("../cli")));     // dev: ../cli
+    add(QDir(appDir).filePath(QStringLiteral("..")));         // kernels flat in parent
+    add(QDir(appDir).filePath(QStringLiteral("../") + name)); // {app}/<name>/<name>.exe (siblings)
+
+    for (const QString& c : candidates)
+        if (QFileInfo::exists(c)) return c;
+    return candidates.isEmpty() ? exe : candidates.first();
 }
 
 // ---------------------------------------------------------------- open / render
