@@ -22,4 +22,8 @@
     <ProjectReference Include="..\EGpdf2df.Engine\EGpdf2df.Engine.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="itext7" Version="9.8.0" />
+  </ItemGroup>
+
 </Project>

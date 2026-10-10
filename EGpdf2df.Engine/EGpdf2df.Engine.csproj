@@ -23,6 +23,10 @@
          absdiff). MIT-licensed, AGPL3-compatible. -->
     <PackageReference Include="OpenCvSharp4" Version="4.10.0.20241108" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.10.0.20241108" />
+    <!-- iText7: write the diff as a VECTOR PDF (preserve the original drawing's native
+         vector content, then append a vector annotation layer). AGPL-3.0 — same license
+         family as this project, so the combined work stays AGPL-3.0. -->
+    <PackageReference Include="itext7" Version="9.8.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- Externalizable diff config (DPI, thresholds, registration, annotation). -->

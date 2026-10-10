@@ -33,8 +33,8 @@ EGtools/
 │   └── config.json            #   抽取配置（词表/列坐标/页面区间）
 ├── EGexcel2df.Engine/         # Excel 图纸对比引擎（DLL）
 ├── EGpdf2df.Engine/           # PDF 图纸差异引擎（DLL，MuPDFCore + OpenCvSharp4）
-│   ├── DiffEngine.cs          #   两步差异：图形（排除文字）→ 文字
-│   ├── PdfFromImages.cs       #   最小 PDF 写出（红框标注）
+│   ├── DiffEngine.cs          #   两步差异：图形(排除文字,描实际形状)→ 文字；按图纸号配对
+│   ├── PdfVectorDiff.cs       #   矢量差异 PDF 写出（iText7：保留原图矢量+矢量标注层）
 │   └── config.json            #   差异检测配置（DPI/阈值/配准/标注）
 ├── EGpdf2excel/               # CLI：PDF 材料表抽取 / 区域提取 / 页面渲染
 ├── EGexcel2df/                # CLI：两份 Excel 图纸对比
