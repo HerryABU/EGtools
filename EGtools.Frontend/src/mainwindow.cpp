@@ -413,19 +413,19 @@ bool MainWindow::openPdf(const QString& path)
         return false;
     }
 
-    // Discover page count by probing (render page N until failure). Cheap for
-    // typical drawings; avoids adding a separate "page count" kernel mode.
+    // Discover page count with a single cheap kernel call (--page-count) instead
+    // of probing each page. Robust and fast even for hundreds-of-page documents.
+    QString pcOut, pcErr;
+    int rcPc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
+        {QStringLiteral("--page-count"), m_pdfPath}, pcOut, pcErr);
     m_pageCount = 1;
-    for (int probe = 1; probe < 2000; ++probe) {
-        QString out, err;
-        QTemporaryDir tmp;
-        QString bmp = QDir(tmp.path()).filePath(QStringLiteral("p.bmp"));
-        int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
-            {QStringLiteral("--render"), QStringLiteral("--page"), QString::number(probe),
-             QStringLiteral("--scale"), QStringLiteral("0.05"),
-             QStringLiteral("--render-out"), bmp, m_pdfPath}, out, err);
-        if (rc != 0) break;
-        m_pageCount = probe + 1;
+    if (rcPc == 0) {
+        QJsonParseError pe{};
+        QJsonDocument doc = QJsonDocument::fromJson(pcOut.toUtf8(), &pe);
+        if (pe.error == QJsonParseError::NoError && doc.isObject())
+            m_pageCount = qMax(1, doc.object().value(QStringLiteral("pageCount")).toInt());
+    } else {
+        log(QStringLiteral("页码探测失败，默认按 1 页处理: %1").arg(pcErr.trimmed()));
     }
 
     m_view->setPage(img, scale, 0);
