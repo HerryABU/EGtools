@@ -1061,6 +1061,7 @@ namespace EGpdf2excel.Engine
         Console.WriteLine("  --tag NAME              文件名标签 (默认 V3) -> <pdf>_<tag>.csv/.xlsx");
         Console.WriteLine("  --locate FILE.json     定位模式：find 按字符串找坐标 / extract 按坐标框提文字（--json 可给路径或名称）");
         Console.WriteLine("  --reset-config         恢复默认字符段存储：写回内置默认 config.json 并退出");
+        Console.WriteLine("  --page-count FILE.pdf  仅输出该 PDF 的页码总数（JSON: {\"pageCount\":N}），供前端一次性探测页数");
         Console.WriteLine("                           Filename tag (default V3) -> <pdf>_<tag>.csv/.xlsx.");
         Console.WriteLine("  --version               显示版本号并退出 / Show version and exit.");
         Console.WriteLine("  -v, --verbose           详细进度(每页/警告)输出到 stderr");
@@ -1108,6 +1109,7 @@ namespace EGpdf2excel.Engine
         bool regionMode = false, readStdin = false; string? mode = null, jsonFile = null;
         bool renderMode = false; int renderPage = 0; double renderScale = 2.0; string renderOut = null;
         bool resetConfig = false, locateMode = false, wordsMode = false, compExplicit = false, compVal = false;
+        bool pageCountMode = false;
         int wordsPage = 0;
         void L(string s) => Console.Error.WriteLine(s);
         for (int i = 0; i < args.Length; i++)
@@ -1126,6 +1128,7 @@ namespace EGpdf2excel.Engine
                 case "--words": wordsMode = true; wordsPage = int.Parse(take("0")); break;
                 case "--stdin": readStdin = true; break;
                 case "--render": renderMode = true; break;
+                case "--page-count": pageCountMode = true; break;
                 case "--page": renderPage = int.Parse(take("0")); break;
                 case "--scale": renderScale = double.Parse(take("2.0"), System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--render-out": renderOut = take(""); break;
@@ -1166,6 +1169,29 @@ namespace EGpdf2excel.Engine
             if (string.IsNullOrEmpty(renderOut)) { Console.Error.WriteLine("--render needs --render-out FILE.bmp"); return 2; }
             try { Console.WriteLine(PdfRenderer.RenderPage(inputs[0], renderPage, renderScale, renderOut, Console.Error.WriteLine)); return 0; }
             catch (Exception ex) { Console.Error.WriteLine($"[render] {ex.Message}"); return 1; }
+        }
+
+        // ---- page-count mode: report the PDF's page count in one cheap call ----
+        // (used by the Qt front-end to discover page count without probing).
+        if (pageCountMode)
+        {
+            if (inputs.Count == 0) { Console.Error.WriteLine("--page-count needs an input PDF path."); return 2; }
+            try
+            {
+                using var ctx = new MuPDFContext(512u * 1024 * 1024);
+                string open = inputs[0];
+                string? tmp = null;
+                if (open.Any(c => c > 127)) { tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".pdf"); File.Copy(open, tmp, true); open = tmp; }
+                try
+                {
+                    using var doc = new MuPDFDocument(ctx, open);
+                    Console.WriteLine(JsonSerializer.Serialize(new { pageCount = doc.Pages.Count },
+                        new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+                    return 0;
+                }
+                finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[page-count] {ex.Message}"); return 1; }
         }
 
         // ---- region-selection extraction mode (decoupled JSON in / JSON out) ----
