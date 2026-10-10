@@ -166,6 +166,51 @@ namespace EGtools.Core
             return numericSegs >= 2 && letterDigitSegs == 1;
         }
 
+        // ------------------------------------------------------------------
+        //  DRAWING NUMBER (图纸号) recognition — e.g. "407-101-007",
+        //  "408-101-051". Used to pair pages across the old/new PDFs 1:1.
+        // ------------------------------------------------------------------
+        /// <summary>
+        /// Recognise the DRAWING NUMBER on a page — a dash-separated numeric
+        /// identifier such as "407-101-007". Returns the most frequent matching
+        /// token verbatim, or a filename-derived one as a fallback.
+        /// </summary>
+        public static string? ExtractDrawingNo(List<Word> words, string? pdfPath)
+        {
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var w in words)
+            {
+                string t = w.text.Trim();
+                if (t.Length >= 5 && LooksLikeDrawingNo(t)) { counts.TryGetValue(t, out int c); counts[t] = c + 1; }
+            }
+            if (counts.Count > 0)
+                return counts.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key.Length).First().Key.ToUpperInvariant();
+
+            if (!string.IsNullOrEmpty(pdfPath))
+            {
+                var fn = Path.GetFileNameWithoutExtension(pdfPath) ?? "";
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(fn, @"\d{2,4}(?:-\d{2,4}){1,2}"))
+                    if (LooksLikeDrawingNo(m.Value)) return m.Value.ToUpperInvariant();
+            }
+            return null;
+        }
+
+        /// <summary>Structural classifier for a drawing number: 2-3 dash-separated numeric groups, each 2-4 digits (an optional trailing letter on the last group is tolerated).</summary>
+        public static bool LooksLikeDrawingNo(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            string[] segs = s.Split('-');
+            if (segs.Length < 2 || segs.Length > 3) return false;
+            foreach (var raw in segs)
+            {
+                string seg = raw;
+                if (seg.Length > 0 && char.IsLetter(seg[^1])) seg = seg.Substring(0, seg.Length - 1);
+                if (seg.Length == 0 || seg.Length > 4) return false;
+                if (!IsAllDigits(seg)) return false;
+            }
+            return true;
+        }
+
         public static bool IsAllDigits(string s)
         {
             foreach (char c in s) if (!char.IsDigit(c)) return false;

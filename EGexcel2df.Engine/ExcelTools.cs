@@ -6,6 +6,8 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Xml.Linq;
 using EGtools.Core;
 
@@ -433,6 +435,11 @@ namespace EGexcel2df.Engine
             {
                 var opts = ParseArgs(args, out var positional, out bool showHelp, out bool showVersion);
                 if (showVersion) { Console.WriteLine($"{APP} {VERSION}"); return 0; }
+
+                // ---- locate mode: find a value across an Excel sheet ----
+                if (opts.TryGetValue("locate", out var _locate) && opts.TryGetValue("json", out var _jf))
+                    return RunLocate(ResolveJsonArgument(_jf), msg => Console.Error.WriteLine($"[{APP}] {msg}"));
+
                 if (showHelp || positional.Count < 2)
                 {
                     PrintHelp();
@@ -497,6 +504,8 @@ namespace EGexcel2df.Engine
                 else if (a == "--sheet2") { opts["sheet2"] = args[++i]; }
                 else if (a.StartsWith("--output=")) opts["output"] = a.Substring("--output=".Length);
                 else if (!a.StartsWith("-")) positional.Add(a);
+                else if (a == "--json") { if (i + 1 < args.Length) opts["json"] = args[++i]; }
+                else if (a == "--locate") opts["locate"] = "1";
                 else { Console.Error.WriteLine($"[{APP}] 未知选项: {a}"); }
             }
             return opts;
@@ -516,7 +525,9 @@ namespace EGexcel2df.Engine
             sb.AppendLine();
             sb.AppendLine("【选项 / Options】");
             sb.AppendLine("  -h, --help                 显示本帮助 / Show this help");
-            sb.AppendLine("  -v, --version              显示版本号 (4.2.1) / Show version (4.2.1)");
+            sb.AppendLine("  -v, --version              显示版本号 / Show version");
+            sb.AppendLine("  --json <文件>              定位模式读取的 JSON（可给路径或名称，名称在软件目录查找 <name>.json）");
+            sb.AppendLine("  --locate                   定位模式：在 Excel 指定工作表查找值，输出命中单元格地址");
             sb.AppendLine("  -o, --output <文件>        指定输出 Excel 路径 (默认: 图纸变化清单_<时间戳>.xlsx)");
             sb.AppendLine("                             Specify output Excel path (default: 图纸变化清单_<时间戳>.xlsx)");
             sb.AppendLine("      --sheet1 <名称|序号>   旧图纸读取的工作表 (默认第 1 个)");
@@ -670,9 +681,60 @@ namespace EGexcel2df.Engine
         return Comparator.Compare(oldData.Rows, newData.Rows);
     }
 
-    public static void WriteChanges(string output, string oldFile, string newFile, List<ChangeRec> changes)
-    {
-        WriteReport(output, oldFile, newFile, changes);
+        public static void WriteChanges(string output, string oldFile, string newFile, List<ChangeRec> changes)
+        {
+            WriteReport(output, oldFile, newFile, changes);
+        }
+
+        /// <summary>
+        /// 定位模式：在 Excel 指定工作表查找值，返回所有命中的单元格地址。
+        /// 请求 JSON：{ "file":"x.xlsx", "sheet?":null, "text":"X", "wholeCell?":false, "caseSensitive?":false }
+        /// </summary>
+        static int RunLocate(string jsonFile, Action<string> log)
+        {
+            if (string.IsNullOrEmpty(jsonFile) || !File.Exists(jsonFile)) { log($"locate needs a valid --json ({jsonFile})"); return 2; }
+            string json = File.ReadAllText(jsonFile);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            string file = root.TryGetProperty("file", out var f) ? (f.GetString() ?? "") : "";
+            string text = root.TryGetProperty("text", out var tv) ? (tv.GetString() ?? "") : "";
+            string? sheet = root.TryGetProperty("sheet", out var sv) && sv.ValueKind == JsonValueKind.String ? sv.GetString() : null;
+            bool whole = root.TryGetProperty("wholeCell", out var wv) && wv.GetBoolean();
+            bool cs = root.TryGetProperty("caseSensitive", out var csv) && csv.GetBoolean();
+            if (string.IsNullOrEmpty(file) || !File.Exists(file)) { log($"locate needs a valid \"file\" ({file})"); return 2; }
+
+            var data = XlsxReader.Read(file, sheet);
+            var matches = new JsonArray();
+            for (int r = 0; r < data.Rows.Count; r++)
+            {
+                foreach (var kv in data.Rows[r])
+                {
+                    string val = kv.Value ?? "";
+                    string cmp = cs ? val : val.ToLowerInvariant();
+                    string key = cs ? text : text.ToLowerInvariant();
+                    bool hit = whole ? cmp.Trim() == key : cmp.Contains(key);
+                    if (hit) matches.Add(new JsonObject { ["row"] = r + 2, ["column"] = kv.Key, ["value"] = val });
+                }
+            }
+            var result = new JsonObject { ["file"] = file, ["text"] = text, ["matchCount"] = matches.Count, ["matches"] = matches };
+            Console.WriteLine(result.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        /// <summary>--json 既可给路径也可给名称（在软件目录 / 子目录 / 当前目录查找 &lt;name&gt;.json）。</summary>
+        static string ResolveJsonArgument(string? arg)
+        {
+            if (string.IsNullOrWhiteSpace(arg)) return null;
+            if (arg!.IndexOfAny(new[] { '/', '\\', ':' }) >= 0 || File.Exists(arg)) return arg;
+            var dir = AppContext.BaseDirectory ?? ".";
+            foreach (var cand in new[]
+            {
+                Path.Combine(dir, arg + ".json"),
+                Path.Combine(dir, "json", arg + ".json"),
+                Path.Combine(Directory.GetCurrentDirectory(), arg + ".json"),
+            })
+                if (File.Exists(cand)) return cand;
+            return arg;
+        }
     }
-}
 }

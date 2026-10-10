@@ -2,6 +2,9 @@
   "version": "4.2.1",
   "comment": "EGpdf2excel 抽取配置。所有词表、列坐标、页面区间都从这里读，改动后无需重新编译（把本文件放到 exe 同级目录即可覆盖默认值）。管线号通过「结构识别 + 频率统计」智能解析（无正则、无坐标、原样保留后缀），无需配置。",
 
+  "headers": [ "pipe no", "TABLE", "NO", "type", "DN(mm)", "项目/DESCRIPTION", "QTY", "WEIGHT(kg)", "PAGE" ],
+  "headersComment": "字符段（输出列集）。顺序即导出列顺序；可增删 / 改名 / 重排，引擎按列名语义映射。含独立 type 构件类型列；找不到的表头名留空。",
+
   "pipeNo": {
     "comment": "管线号识别。已改为结构状态机 + 全页频率统计，忠实还原图纸原样（如 401.102.P513、401.102.P513_TP）。fallbackFromFileName 为找不到时回退文件名。",
     "fallbackFromFileName": true
