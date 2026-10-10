@@ -513,7 +513,11 @@ namespace EGpdf2df.Engine
             using var opened = new Mat();
             Cv2.MorphologyEx(bin, opened, MorphTypes.Open, kernel);
 
-            Cv2.FindContours(opened, out Point[][] contours, out _, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+            // ApproxNone: capture EVERY vertex of the changed-region boundary so the
+            // outline is a pixel-accurate TRUE TRACE of the actual shape — never a
+            // simulated box/circle. ApproxPolyDP below acts purely as a point-count
+            // decimator (tiny epsilon), not a shape-rounding step.
+            Cv2.FindContours(opened, out Point[][] contours, out _, RetrievalModes.External, ContourApproximationModes.ApproxNone);
             var items = new List<GraphicContour>();
             foreach (var c in contours)
             {
