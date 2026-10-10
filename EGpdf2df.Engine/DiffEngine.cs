@@ -69,7 +69,7 @@ namespace EGpdf2df.Engine
                     }
 
                     var resp = new DiffResponse { Output = outPath };
-                    var pageImages = new List<(byte[] data, int w, int h)>();
+                    var pageAnnos = new List<PageAnno>();
                     // Accumulate every target-page pipe/line number (with its y-centre and
                     // page height) so we can run the figure↔material-table 1:1 cross-check
                     // once all pages are processed.
@@ -164,8 +164,14 @@ namespace EGpdf2df.Engine
             }
 
             var diffs = new List<DiffItem>();
+            var pageAnno = new PageAnno
+            {
+                Page = tgtPno,
+                Wpt = (float)(tBounds.X1 - tBounds.X0),
+                Hpt = (float)(tBounds.Y1 - tBounds.Y0),
+            };
 
-                        // ----- STEP 1: GRAPHIC diff (text excluded) -----
+                        // ----- STEP 1: GRAPHIC diff (text excluded) — trace the ACTUAL changed SHAPE -----
                         if (cfg.GraphicDiff.Enabled)
                         {
                             using var maskedBase = baseGrayAligned.Clone();
@@ -182,37 +188,35 @@ namespace EGpdf2df.Engine
                                 maskedBase.SetTo(Scalar.All(255), outside);
                                 maskedTgt.SetTo(Scalar.All(255), outside);
                             }
-                            var rects = GraphicDiff(maskedBase, maskedTgt, cfg.GraphicDiff);
-                            // Defensive post-filter: drop any graphic rect that is fully
-                            // contained within a (margin-expanded) TEXT word box. This is a
-                            // second guarantee — on top of the text mask — that changed or
-                            // anti-aliased glyphs are never reported as figure changes.
+                            var contours = GraphicDiff(maskedBase, maskedTgt, cfg.GraphicDiff);
+                            // Defensive guard: a contour fully contained within a (margin-expanded)
+                            // TEXT word box is a glyph artifact, never a figure change.
                             var textPx = TextWordRectsPx(tgtWords, scale, tBounds.X0, tBounds.Y0, 6)
                                 .Concat(TextWordRectsPx(baseWordsAligned, scale, tBounds.X0, tBounds.Y0, 6))
                                 .ToList();
-                            foreach (var r in rects)
+                            foreach (var gc in contours)
                             {
-                                int rx = Math.Max(0, r.X); int ry = Math.Max(0, r.Y);
-                                int rw = Math.Min(r.Width, tw - rx); int rh = Math.Min(r.Height, th - ry);
+                                int rx = Math.Max(0, gc.Rect.X); int ry = Math.Max(0, gc.Rect.Y);
+                                int rw = Math.Min(gc.Rect.Width, tw - rx); int rh = Math.Min(gc.Rect.Height, th - ry);
                                 if (rw <= 0 || rh <= 0) continue;
-                                // Whole-page (or near-whole-page) contours are a misalignment
-                                // / half-resolution-warp artifact, NOT a real drawing change.
-                                // Drop them so the diff never paints one giant box over the sheet.
+                                // Whole-page (or near-whole-page) contours are a misalignment /
+                                // half-resolution-warp artifact, NOT a real drawing change.
                                 if ((double)rw / tw > 0.6 && (double)rh / th > 0.6) continue;
                                 double x = rx / scale + tBounds.X0;
                                 double y = ry / scale + tBounds.Y0;
                                 if (regionMask != null && !InsideAnyRegion(x, y, rw / scale, rh / scale, pageRegions, tBounds.X0, tBounds.Y0))
                                     continue;
+                                var rectPx = new Rect(rx, ry, rw, rh);
                                 if (textPx.Any(tr => tr.X <= rx && tr.Y <= ry && tr.Right >= rx + rw && tr.Bottom >= ry + rh))
                                     continue;
                                 // Direction: compare ink presence in baseline (aligned) vs target,
                                 // so we know whether the change is new-only or old-only.
-                                double inkBase = MeanDark(baseGrayAligned, new Rect(rx, ry, rw, rh));
-                                double inkTgt = MeanDark(tgtGray, new Rect(rx, ry, rw, rh));
-                                string dir;
-                                if (inkTgt > inkBase + 0.04) dir = "added";        // new has lines, old doesn't → RED solid
-                                else if (inkBase > inkTgt + 0.04) dir = "removed"; // old had lines, new doesn't → BLUE dashed
-                                else dir = "modified";                             // both carry ink but differ → RED solid
+                                string dir = gc.Dir;
+                                // Store the ACTUAL changed-shape contour as a VECTOR polygon
+                                // (target pixel frame, y-down). removed → BLUE DASHED; added /
+                                // modified → RED SOLID.
+                                if (dir == "removed") pageAnno.RemovedContours.Add(gc.Pts);
+                                else pageAnno.AddedContours.Add(gc.Pts);
                                 diffs.Add(new DiffItem
                                 {
                                     Page = tgtPno,
@@ -229,16 +233,14 @@ namespace EGpdf2df.Engine
                         {
                             var textItems = TextDiff(baseWordsAligned, tgtWords, cfg.TextDiff, tgtPno, pageRegions, tBounds, scale);
                             diffs.AddRange(textItems);
+                            pageAnno.TextItems.AddRange(textItems);
                         }
 
                         baseGrayAligned.Dispose();
                         resp.Summary.GraphicDiffs += diffs.Count(d => d.Type == "graphic");
                         resp.Summary.TextDiffs += diffs.Count(d => d.Type == "text");
                         resp.Diffs.AddRange(diffs);
-
-                        // ----- annotate target with RED markers -----
-                        Annotate(tgtB, diffs, scale, tBounds.X0, tBounds.Y0, cfg.Annotation);
-                        pageImages.Add((EncodeJpeg(tgtB, 92), tw, th));
+                        pageAnnos.Add(pageAnno);
                         resp.Summary.TotalPages++;
                     }
 
@@ -257,7 +259,9 @@ namespace EGpdf2df.Engine
                             req.Options?.MaterialTableYFraction ?? cfg.PipeMatch.MaterialTableYFraction, L);
                     }
 
-                    PdfFromImages.Write(outPath, pageImages);
+                    // ---- emit a VECTOR diff PDF: original target vector content + vector overlays ----
+                    baseDoc?.Dispose(); tgtDoc?.Dispose();
+                    PdfVectorDiff.Write(outPath, tgtCtxPath ?? req.Target, pageAnnos, scale, cfg.Annotation);
                     var json = JsonSerializer.Serialize(resp, new JsonSerializerOptions { WriteIndented = true });
                     Console.WriteLine(json);
                     L($"Done. output={outPath} graphic={resp.Summary.GraphicDiffs} text={resp.Summary.TextDiffs}");
@@ -484,7 +488,16 @@ namespace EGpdf2df.Engine
             return outw;
         }
 
-        static List<Rect> GraphicDiff(Mat a, Mat b, Pdf2dfConfig.GraphicCfg g)
+        // A connected changed region: its simplified polygon (the actual changed SHAPE,
+        // in target pixel frame y-down) plus the direction (added / removed / modified).
+        public class GraphicContour
+        {
+            public List<double> Pts = new();   // flat [x,y,x,y,...] in target pixel frame (y-down)
+            public string Dir = "added";
+            public Rect Rect;
+        }
+
+        static List<GraphicContour> GraphicDiff(Mat a, Mat b, Pdf2dfConfig.GraphicCfg g)
         {
             using var diff = g.Method switch
             {
@@ -501,13 +514,37 @@ namespace EGpdf2df.Engine
             Cv2.MorphologyEx(bin, opened, MorphTypes.Open, kernel);
 
             Cv2.FindContours(opened, out Point[][] contours, out _, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
-            var rects = new List<Rect>();
+            var items = new List<GraphicContour>();
             foreach (var c in contours)
             {
                 var r = Cv2.BoundingRect(c);
-                if (r.Width * r.Height >= g.MinComponentArea) rects.Add(r);
+                if (r.Width * r.Height < g.MinComponentArea) continue;
+                // Direction: compare ink presence in baseline (aligned) vs target so we know
+                // whether the change is new-only or old-only.
+                double inkBase = MeanDark(a, r);
+                double inkTgt = MeanDark(b, r);
+                string dir;
+                if (inkTgt > inkBase + 0.04) dir = "added";        // new has lines, old doesn't → RED solid
+                else if (inkBase > inkTgt + 0.04) dir = "removed"; // old had lines, new doesn't → BLUE dashed
+                else dir = "modified";                             // both carry ink but differ → RED solid
+                // Simplify the contour to keep the real shape while cutting point count:
+                // a long free-form edge is reduced to its salient vertices.
+                Point[] approx = c;
+                if (c.Length > 200)
+                {
+                    double perim = 0;
+                    for (int i = 0; i < c.Length; i++)
+                    {
+                        var p0 = c[i]; var p1 = c[(i + 1) % c.Length];
+                        perim += Math.Sqrt((p1.X - p0.X) * (p1.X - p0.X) + (p1.Y - p0.Y) * (p1.Y - p0.Y));
+                    }
+                    approx = Cv2.ApproxPolyDP(c, Math.Max(1.0, perim * 0.002), true);
+                }
+                var pts = new List<double>(approx.Length * 2);
+                foreach (var p in approx) { pts.Add(p.X); pts.Add(p.Y); }
+                items.Add(new GraphicContour { Pts = pts, Dir = dir, Rect = r });
             }
-            return rects;
+            return items;
         }
 
         // Edge-based difference — the most robust method for CAD / isometric line
@@ -678,112 +715,6 @@ namespace EGpdf2df.Engine
             };
         }
 
-        // Annotate the target page with DIRECTIONAL markers:
-        //   • graphic diffs  → rectangle outline (RED SOLID = new/changed, BLUE DASHED = old-only)
-        //   • text/number    → CIRCLE (ellipse): RED SOLID = new-only/added; BLUE DASHED =
-        //     removed / modified / moved. For any blue (old-side) item we ALSO render the
-        //     disappeared text in LIGHT-BLUE ITALIC at its original position so the change
-        //     is readable directly inside the emitted PDF.
-        static void Annotate(Mat bgr, List<DiffItem> items, double scale, double x0, double y0, Pdf2dfConfig.AnnotationCfg ann)
-        {
-            foreach (var it in items)
-            {
-                int x = (int)Math.Round((it.Bbox.X - x0) * scale);
-                int y = (int)Math.Round((it.Bbox.Y - y0) * scale);
-                int w = (int)Math.Round(it.Bbox.Width * scale);
-                int h = (int)Math.Round(it.Bbox.Height * scale);
-                if (w <= 0 || h <= 0) continue;
-
-                // old-only / changed-text → blue DASHED; new-only → RED SOLID
-                bool oldSide = it.ChangeType == "removed" || it.ChangeType == "modified" || it.ChangeType == "moved";
-                var (b, g, r) = ParseColor(oldSide ? ann.ColorOld : ann.ColorNew);
-                var color = new Scalar(b, g, r);
-
-                if (it.Type == "graphic")
-                {
-                    var rect = new Rect(x, y, Math.Max(2, w), Math.Max(2, h));
-                    if (oldSide) DrawDashedRect(bgr, rect, color, ann.LineWidth);
-                    else Cv2.Rectangle(bgr, rect, color, ann.LineWidth);
-                }
-                else // text / number → circle
-                {
-                    int cx = x + w / 2, cy = y + h / 2;
-                    int ax = Math.Max(2, w / 2 + 5), ay = Math.Max(2, h / 2 + 5);
-                    if (ann.CircleText)
-                    {
-                        if (oldSide) DrawDashedEllipse(bgr, cx, cy, ax, ay, color, ann.LineWidth);
-                        else Cv2.Ellipse(bgr, new Point(cx, cy), new Size(ax, ay), 0, 0, 360, color, ann.LineWidth, LineTypes.AntiAlias);
-                    }
-                    else
-                    {
-                        var rect = new Rect(x, y, Math.Max(2, w), Math.Max(2, h));
-                        if (oldSide) DrawDashedRect(bgr, rect, color, ann.LineWidth);
-                        else Cv2.Rectangle(bgr, rect, color, ann.LineWidth);
-                    }
-                }
-
-                // 把消失 / 被改掉的旧文字以浅蓝斜体显现在原位置（在生成的 PDF 中可直接看到）。
-                // OpenCvSharp 的 PutText 仅支持 ASCII/Latin-1；遇到土耳其语变音或中文等字符会触发
-                // "Cannot marshal" 异常，故此处做安全过滤 + 异常兜底，确保单个文字失败不会中断整页比对。
-                if (oldSide && !string.IsNullOrWhiteSpace(it.OldText) && IsAsciiRenderable(it.OldText!))
-                {
-                    var (tb, tg, tr) = ParseColor(ann.ColorOldText);
-                    var tcolor = new Scalar(tb, tg, tr);
-                    double fs = Math.Max(0.55, h / 28.0);
-                    int tx = x;
-                    int ty = Math.Max((int)(12 * fs), y - (int)(5 * fs));
-                    try
-                    {
-                        Cv2.PutText(bgr, it.OldText!, new Point(tx, ty),
-                            HersheyFonts.HersheySimplex | HersheyFonts.Italic, fs, tcolor,
-                            Math.Max(1, ann.LineWidth - 1), LineTypes.AntiAlias);
-                    }
-                    catch { /* 非 ASCII 字符无法用 Hershey 字体渲染，跳过（蓝虚线圈仍标记位置） */ }
-                }
-            }
-        }
-
-        static void DrawDashedRect(Mat bgr, Rect rect, Scalar color, int thickness)
-        {
-            int dash = 12, gap = 7;
-            DrawDashedLine(bgr, rect.Left, rect.Top, rect.Right, rect.Top, color, thickness, dash, gap);
-            DrawDashedLine(bgr, rect.Left, rect.Bottom, rect.Right, rect.Bottom, color, thickness, dash, gap);
-            DrawDashedLine(bgr, rect.Left, rect.Top, rect.Left, rect.Bottom, color, thickness, dash, gap);
-            DrawDashedLine(bgr, rect.Right, rect.Top, rect.Right, rect.Bottom, color, thickness, dash, gap);
-        }
-
-        static void DrawDashedLine(Mat bgr, int x0, int y0, int x1, int y1, Scalar color, int thickness, int dash, int gap)
-        {
-            double len = Math.Sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
-            if (len == 0) return;
-            int count = (int)(len / (dash + gap)) + 1;
-            double dx = (x1 - x0) / len, dy = (y1 - y0) / len;
-            for (int i = 0; i < count; i++)
-            {
-                double s0 = i * (dash + gap);
-                double s1 = Math.Min(s0 + dash, len);
-                int sx0 = (int)Math.Round(x0 + dx * s0), sy0 = (int)Math.Round(y0 + dy * s0);
-                int sx1 = (int)Math.Round(x0 + dx * s1), sy1 = (int)Math.Round(y0 + dy * s1);
-                Cv2.Line(bgr, new Point(sx0, sy0), new Point(sx1, sy1), color, thickness, LineTypes.AntiAlias);
-            }
-        }
-
-        // Dashed ellipse used to CIRCLE old-side text/number diffs.
-        static void DrawDashedEllipse(Mat bgr, int cx, int cy, int ax, int ay, Scalar color, int thickness)
-        {
-            int dash = 16, gap = 9;
-            // Ramanujan perimeter approximation — good enough for even dash spacing.
-            double perim = Math.PI * (3 * (ax + ay) - Math.Sqrt((3 * ax + ay) * (ax + 3 * ay)));
-            double total = Math.Max(perim, 1);
-            int n = (int)(total / (dash + gap)) + 1;
-            for (int i = 0; i < n; i++)
-            {
-                double a0 = i * (dash + gap) / total * 360.0;
-                double a1 = Math.Min(i * (dash + gap) + dash, total) / total * 360.0;
-                Cv2.Ellipse(bgr, new Point(cx, cy), new Size(ax, ay), 0, a0, a1, color, thickness, LineTypes.AntiAlias);
-            }
-        }
-
         // Fraction of DARK pixels (ink / lines) inside a pixel-space rectangle. Used to
         // decide the DIRECTION of a graphic change: which side actually carries ink.
         static double MeanDark(Mat gray, Rect r)
@@ -793,22 +724,6 @@ namespace EGpdf2df.Engine
             using var bin = new Mat();
             Cv2.Threshold(roi, bin, 128, 1, ThresholdTypes.BinaryInv);  // dark → 1
             return Cv2.Mean(bin).Val0;                                  // average = dark fraction
-        }
-
-        static byte[] EncodeJpeg(Mat bgr, int quality)
-        {
-            Cv2.ImEncode(".jpg", bgr, out byte[] buf, new ImageEncodingParam(ImwriteFlags.JpegQuality, quality));
-            return buf;
-        }
-
-        static (byte b, byte g, byte r) ParseColor(string hex)
-        {
-            hex = (hex ?? "#FF0000").TrimStart('#');
-            if (hex.Length == 6)
-                return (byte.Parse(hex.Substring(4, 2), System.Globalization.NumberStyles.HexNumber),
-                        byte.Parse(hex.Substring(2, 2), System.Globalization.NumberStyles.HexNumber),
-                        byte.Parse(hex.Substring(0, 2), System.Globalization.NumberStyles.HexNumber));
-            return (0, 0, 255);
         }
 
         // ------------------------------------------------------------------
