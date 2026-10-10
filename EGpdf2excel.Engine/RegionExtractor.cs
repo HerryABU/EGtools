@@ -109,14 +109,41 @@ namespace EGpdf2excel.Engine
         static RegionResult ExtractRegion(MuPDFDocument doc, int pno, List<TextGeometry.Word> vecWords, Bbox box, string kind, RegionOptions opts, Action<string>? log)
         {
             double x0 = box.X, y0 = box.Y, x1 = box.X + box.Width, y1 = box.Y + box.Height;
-            var words = vecWords.Where(w => TextGeometry.Intersects(w, x0, y0, x1, y1)).ToList();
+            // Vector words that fall inside the region — these are the PRIMARY,
+            // highest-fidelity source ("vector").
+            var vecIn = vecWords.Where(w => TextGeometry.Intersects(w, x0, y0, x1, y1)).ToList();
 
+            // Combined list tagged with provenance. We keep vector with priority and
+            // only append OCR where a vector glyph did NOT already cover that spot
+            // (image-only text). When OcrAlways is off we behave exactly as before:
+            // OCR is a pure fallback used only when the region yields no vector text.
+            var combined = vecIn.Select(w => (w, src: "vector")).ToList();
             bool ocrUsed = false;
-            if (words.Count == 0 && opts.OcrFallback)
+
+            bool needOcr = opts.OcrAlways || (vecIn.Count == 0 && opts.OcrFallback);
+            if (needOcr)
             {
                 var ocr = OcrRegion(doc, pno, box, opts, log);
-                if (ocr.Count > 0) { words = ocr; ocrUsed = true; }
+                if (ocr.Count > 0)
+                {
+                    ocrUsed = true;
+                    if (opts.OcrAlways)
+                    {
+                        // Append OCR words that are NOT already covered by a vector
+                        // glyph — these are the image-only gaps OCR re-located.
+                        foreach (var ow in ocr)
+                            if (!IsCoveredByAny(ow, vecIn))
+                                combined.Add((ow, src: "ocr"));
+                    }
+                    else
+                    {
+                        // Plain fallback: region had no vector text at all.
+                        combined = ocr.Select(w => (w, src: "ocr")).ToList();
+                    }
+                }
             }
+
+            var words = combined.Select(t => t.w).ToList();
 
             var result = new RegionResult
             {
@@ -145,12 +172,28 @@ namespace EGpdf2excel.Engine
                 result.Table = BuildTable(words, opts);
             }
 
-            result.Words = words.Select(w => new WordJson
+            result.Words = combined.Select(t => new WordJson
             {
-                X0 = Round(w.x0), Y0 = Round(w.y0), X1 = Round(w.x1), Y1 = Round(w.y1),
-                Xc = Round(w.xc), Yc = Round(w.yc), Text = w.text
+                X0 = Round(t.w.x0), Y0 = Round(t.w.y0), X1 = Round(t.w.x1), Y1 = Round(t.w.y1),
+                Xc = Round(t.w.xc), Yc = Round(t.w.yc), Text = t.w.text,
+                Source = t.src
             }).ToList();
+            if (ocrUsed && opts.OcrAlways)
+                log?.Invoke($"[ocr] region(page {pno + 1}, {kind}) 补充 {combined.Count(c => c.src == "ocr")} 个 OCR 字（矢量优先，图像区用 OCR 补位）");
             return result;
+        }
+
+        /// <summary>
+        /// True when an OCR word's centre already sits inside some vector glyph's
+        /// ink box — i.e. it is a duplicate of text we already recovered as vector,
+        /// so OCR should NOT add it again.
+        /// </summary>
+        static bool IsCoveredByAny(TextGeometry.Word ow, List<TextGeometry.Word> vec)
+        {
+            double cx = ow.xc, cy = ow.yc;
+            foreach (var v in vec)
+                if (cx >= v.x0 && cx <= v.x1 && cy >= v.y0 && cy <= v.y1) return true;
+            return false;
         }
 
         /// <summary>

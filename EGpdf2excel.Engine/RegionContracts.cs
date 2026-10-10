@@ -51,6 +51,15 @@ namespace EGpdf2excel.Engine
         public List<string>? Languages { get; set; }
         /// <summary>Merge overlapping boxes of the same page+kind into one union region.</summary>
         public bool MergeOverlapping { get; set; } = true;
+        /// <summary>
+        /// ALWAYS run OCR in addition to the vector layer (not just as a fallback).
+        /// Every word is tagged with its source ("vector" or "ocr"): vector text is
+        /// kept with priority, and OCR is used to FILL gaps where no vector glyph
+        /// exists (e.g. text that was rasterised into the PDF as an image). This is
+        /// the "圈画 → 材料表 → OCR 再识别" enhancement: vector for what is truly
+        /// vector, OCR re-location for image-only regions.
+        /// </summary>
+        public bool OcrAlways { get; set; } = false;
         /// <summary>Word-splitting sensitivity (ink-box gap as a fraction of font size).</summary>
         public double WordGapFraction { get; set; } = 0.18;
         /// <summary>Row clustering tolerance in points.</summary>
@@ -90,5 +99,12 @@ namespace EGpdf2excel.Engine
         public double Xc { get; set; }
         public double Yc { get; set; }
         public string? Text { get; set; }
+        /// <summary>
+        /// Provenance of this word: "vector" (from the PDF's own embedded text) or
+        /// "ocr" (recovered by OCR because no vector glyph covered this location).
+        /// Populated whenever OcrAlways is requested; absent for the plain
+        /// vector-only / fallback paths to stay backward-compatible.
+        /// </summary>
+        public string? Source { get; set; }
     }
 }
