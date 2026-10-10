@@ -27,12 +27,16 @@ namespace EGpdf2df.Engine
 
     /// <summary>
     /// Emits the diff as a VECTOR PDF: the ORIGINAL target drawing is opened and kept
-    /// untouched (its native vector content is preserved — no rasterisation), and a vector
-    /// annotation layer is appended on top with the red/blue markers. This is what makes
-    /// the output a true vector drawing (infinite zoom, crisp lines) rather than an image.
-    /// Graphic differences are traced as the ACTUAL CHANGED SHAPE (polygon contour);
-    /// text/number differences are circled; disappeared text is rendered in light-blue
-    /// italic directly on the page.
+    /// untouched (its native vector content is preserved — no rasterisation). Vector
+    /// annotation STROKES (red/blue 1:1 shape traces + text-marker rings) are inserted
+    /// BEFORE the original content stream (page.NewContentStreamBefore) so they sit
+    /// BEHIND the drawing and never cover the original characters (requirement:
+    /// 红线/黑线放在字下面). The disappeared-text labels (light-blue italic) are drawn on
+    /// a SEPARATE top layer (new PdfCanvas(page)) so they stay readable. This is what
+    /// makes the output a true vector drawing (infinite zoom, crisp lines) rather than an
+    /// image. Graphic differences are traced as the ACTUAL CHANGED SHAPE (1:1 polygon
+    /// contour — never a circle or simulated line); disappeared text is rendered in
+    /// light-blue italic directly on the page.
     ///
     /// ⚠️ /Rotate compensation: MuPDF renders a page with its /Rotate applied (DISPLAY
     /// frame), so DiffEngine's pixel coordinates live in the rotated, display-oriented
@@ -82,16 +86,18 @@ namespace EGpdf2df.Engine
                 // reads upright in the display frame.
                 TextRotation(rot, out float tA, out float tB, out float tC, out float tD);
 
-                var canvas = new PdfCanvas(page);
                 float lw = Math.Max(1.2f, (float)ann.LineWidth);
 
-                // ---- graphic + ellipse overlays, drawn in the DISPLAY frame ----
-                canvas.SaveState();
-                canvas.ConcatMatrix(mA, mB, mC, mD, mE, mF);
+                // ---- UNDER layer: red/blue shape traces + text-marker rings ----
+                // Inserted BEFORE the original content stream so the original characters /
+                // linework paint on top and are never obscured by the diff strokes.
+                var underCanvas = new PdfCanvas(page.NewContentStreamBefore(), page.GetResources(), pdf);
+                underCanvas.SaveState();
+                underCanvas.ConcatMatrix(mA, mB, mC, mD, mE, mF);
                 foreach (var c in a.AddedContours)
-                    DrawContour(canvas, c, scale, red, lw, solid: true);
+                    DrawContour(underCanvas, c, scale, red, lw, solid: true);
                 foreach (var c in a.RemovedContours)
-                    DrawContour(canvas, c, scale, blue, lw, solid: false);
+                    DrawContour(underCanvas, c, scale, blue, lw, solid: false);
                 foreach (var it in a.TextItems)
                 {
                     bool oldSide = IsOldSide(it.ChangeType);
@@ -99,11 +105,14 @@ namespace EGpdf2df.Engine
                     float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
                     float w = (float)it.Bbox.Width, h = (float)it.Bbox.Height;
                     float rx = Math.Max(2f, w / 2 + 4f), ry = Math.Max(2f, h / 2 + 4f);
-                    DrawEllipse(canvas, x + w / 2, yTop + h / 2, rx, ry, col, lw, solid: !oldSide);
+                    DrawEllipse(underCanvas, x + w / 2, yTop + h / 2, rx, ry, col, lw, solid: !oldSide);
                 }
-                canvas.RestoreState();
+                underCanvas.RestoreState();
 
-                // ---- disappeared / changed-away text: light-blue italic, readable on screen ----
+                // ---- OVER layer: disappeared / changed-away text (light-blue italic) ----
+                // Drawn on a separate top layer so the old text stays readable where the
+                // new revision removed it (no original character sits there to be covered).
+                var overCanvas = new PdfCanvas(page);
                 foreach (var it in a.TextItems)
                 {
                     if (!IsOldSide(it.ChangeType) || string.IsNullOrWhiteSpace(it.OldText)) continue;
@@ -113,14 +122,14 @@ namespace EGpdf2df.Engine
                     float fs = Math.Max(6f, h / 2 + 4f);
                     double bx = x, by = Math.Max(1f, yTop + 1f);      // baseline in DISPLAY y-down
                     ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
-                    canvas.SaveState();
-                    canvas.SetFillColor(lightBlue);
-                    canvas.BeginText();
-                    canvas.SetFontAndSize(italFont, fs);
-                    canvas.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
-                    canvas.ShowText(Escape(it.OldText!));
-                    canvas.EndText();
-                    canvas.RestoreState();
+                    overCanvas.SaveState();
+                    overCanvas.SetFillColor(lightBlue);
+                    overCanvas.BeginText();
+                    overCanvas.SetFontAndSize(italFont, fs);
+                    overCanvas.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
+                    overCanvas.ShowText(Escape(it.OldText!));
+                    overCanvas.EndText();
+                    overCanvas.RestoreState();
                 }
             }
             Console.Error.WriteLine($"  [font] 实际绘制消失文字 {textRenders} 处（浅蓝斜体，已嵌入 Unicode 字体）");
