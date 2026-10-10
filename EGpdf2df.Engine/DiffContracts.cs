@@ -38,6 +38,8 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("pipeMatch")] public bool? PipeMatch { get; set; }
         // 材料表区域判定：页高比例阈值（默认 0.62）。可覆盖配置文件。
         [JsonPropertyName("materialTableYFraction")] public double? MaterialTableYFraction { get; set; }
+        // 精细度预设：fine | medium | coarse（覆盖配置文件精度，映射阈值/最小面积/容差）。
+        [JsonPropertyName("precision")] public string? Precision { get; set; }
     }
 
     public sealed class Bbox

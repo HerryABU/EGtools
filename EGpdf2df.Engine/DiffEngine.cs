@@ -38,6 +38,11 @@ namespace EGpdf2df.Engine
             int renderDpi = req.Options?.RenderDpi ?? cfg.RenderDpi;
             double scale = renderDpi / 72.0;
 
+            // 精细度预设（fine/medium/coarse）：把单旋钮映射到底层阈值/最小面积/模糊/容差；
+            // 随后由容差(毫米)换算成像素，供差异图侵蚀，从而"忽略偏离几毫米的误差"。
+            cfg.ApplyPrecision(req.Options?.Precision);
+            cfg.GraphicDiff.TolerancePx = (int)Math.Max(0, Math.Round(cfg.Registration.ToleranceMm * 2.834645669 * scale));
+
             string outPath = req.Output
                 ?? Path.Combine(Path.GetDirectoryName(req.Target) ?? ".",
                                 Path.GetFileNameWithoutExtension(req.Target) + "_diff.pdf");
@@ -402,6 +407,13 @@ namespace EGpdf2df.Engine
         // shifts is the translation. This is far more robust than pixel correlation for
         // re-inked/revised drawings where line content has actually changed.
         // Returns a 3x3 homography (base px → target px) = [sx 0 dx; 0 sy dy; 0 0 1].
+        // Registration: align the BASELINE into the TARGET frame BEFORE diffing. The two
+        // revisions are the SAME sheet, so we recover a UNIFORM scale from the page bounds
+        // and the residual TRANSLATION from the IMAGE CONTENT (FFT phase correlation aligns
+        // the bulk of the drawing — exactly "图像大部分基本上对齐"), with a word-median
+        // fallback when phase correlation is unreliable. A few-mm residual offset is then
+        // tolerated by the diff-stage erosion (Registration.ToleranceMm). Always produces a
+        // single affine (uniform scale + translation) and warps the baseline — so "先对齐再比较".
         static Mat ComputeAlign(Mat baseGray, Mat tgtGray, int bw, int bh, int tw, int th,
             Pdf2dfConfig.RegistrationCfg reg,
             List<TextGeometry.Word> baseWords, List<TextGeometry.Word> tgtWords,
@@ -410,41 +422,73 @@ namespace EGpdf2df.Engine
             double sx = (double)tw / bw;
             double sy = (double)th / bh;
             double dx = 0, dy = 0;
-            if (reg.Method != "none" && baseWords.Count > 0 && tgtWords.Count > 0)
+            string src = "none";
+
+            // Warp baseline to TARGET size (uniform page-bounds scale) so only the residual
+            // translation remains — this image is what we register against the target.
+            using var baseScaled = new Mat();
+            var Hs = Mat.Eye(3, 3, MatType.CV_64FC1).ToMat();
+            Hs.Set<double>(0, 0, sx); Hs.Set<double>(1, 1, sy);
+            Cv2.WarpPerspective(baseGray, baseScaled, Hs, new Size(tw, th));
+            Hs.Dispose();
+
+            if (reg.Method != "none")
             {
-                // Project both word sets into the TARGET pixel frame:
-                //   target word px = (tc - tX0) * scale
-                //   base word px   = (bc - bX0) * scale, then scaled by (sx, sy)
-                var tPts = tgtWords.Select(w => new Point2d((w.xc - tX0) * scale, (w.yc - tY0) * scale)).ToList();
-                var bScaled = baseWords.Select(w => new Point2d((w.xc - bX0) * scale * sx, (w.yc - bY0) * scale * sy)).ToList();
-                var dxx = new List<double>();
-                var dyy = new List<double>();
-                double maxShift2 = (tw * 0.5) * (tw * 0.5);   // sanity cap on a single match
-                foreach (var bp in bScaled)
+                // PRIMARY: FFT phase correlation on the grayscale images. Aligns the BULK of
+                // the drawing content (robust to local line/figure changes between revisions).
+                if (reg.Method == "phase" || reg.Method == "similarity")
                 {
-                    double best = double.MaxValue, bx = 0, by = 0;
-                    foreach (var tp in tPts)
+                    try
                     {
-                        double ex = tp.X - bp.X, ey = tp.Y - bp.Y;
-                        double d2 = ex * ex + ey * ey;
-                        if (d2 < best) { best = d2; bx = ex; by = ey; }
+                        using var bF = new Mat(); using var tF = new Mat();
+                        baseScaled.ConvertTo(bF, MatType.CV_32F);
+                        tgtGray.ConvertTo(tF, MatType.CV_32F);
+                        Point2d shift = Cv2.PhaseCorrelate(bF, tF, null, out double response);
+                        if (response > 0.08 && !double.IsNaN(shift.X) && !double.IsNaN(shift.Y)
+                            && Math.Abs(shift.X) < tw * 0.4 && Math.Abs(shift.Y) < th * 0.4)
+                        {
+                            dx = shift.X; dy = shift.Y; src = "phase";
+                            Console.Error.WriteLine($"  align(phase): response={response:F3} dx(px)={dx:F1} dy(px)={dy:F1}");
+                        }
                     }
-                    if (best < maxShift2) { dxx.Add(bx); dyy.Add(by); }
+                    catch (Exception ex) { Console.Error.WriteLine($"  align(phase) failed: {ex.Message}"); }
                 }
-                if (dxx.Count >= 5)
+
+                // FALLBACK: word-median translation (used when phase is off, or method=="words").
+                if (src == "none" && baseWords.Count > 0 && tgtWords.Count > 0)
                 {
-                    dxx.Sort(); dyy.Sort();
-                    dx = Median(dxx); dy = Median(dyy);
-                    if (double.IsNaN(dx) || double.IsNaN(dy)
-                        || Math.Abs(dx) > tw * 0.4 || Math.Abs(dy) > th * 0.4)
-                    { dx = 0; dy = 0; }
+                    var tPts = tgtWords.Select(w => new Point2d((w.xc - tX0) * scale, (w.yc - tY0) * scale)).ToList();
+                    var bScaled = baseWords.Select(w => new Point2d((w.xc - bX0) * scale * sx, (w.yc - bY0) * scale * sy)).ToList();
+                    var dxx = new List<double>();
+                    var dyy = new List<double>();
+                    double maxShift2 = (tw * 0.5) * (tw * 0.5);
+                    foreach (var bp in bScaled)
+                    {
+                        double best = double.MaxValue, bx = 0, by = 0;
+                        foreach (var tp in tPts)
+                        {
+                            double ex = tp.X - bp.X, ey = tp.Y - bp.Y;
+                            double d2 = ex * ex + ey * ey;
+                            if (d2 < best) { best = d2; bx = ex; by = ey; }
+                        }
+                        if (best < maxShift2) { dxx.Add(bx); dyy.Add(by); }
+                    }
+                    if (dxx.Count >= 5)
+                    {
+                        dxx.Sort(); dyy.Sort();
+                        dx = Median(dxx); dy = Median(dyy);
+                        if (double.IsNaN(dx) || double.IsNaN(dy) || Math.Abs(dx) > tw * 0.4 || Math.Abs(dy) > th * 0.4)
+                            { dx = 0; dy = 0; }
+                        src = "words";
+                        Console.Error.WriteLine($"  align(words): candidates={dxx.Count} dx(px)={dx:F1} dy(px)={dy:F1}");
+                    }
                 }
-                Console.Error.WriteLine($"  align(words): candidates={dxx.Count} dx(px)={dx:F1} dy(px)={dy:F1}");
             }
+
             var H = Mat.Eye(3, 3, MatType.CV_64FC1).ToMat();
             H.Set<double>(0, 0, sx); H.Set<double>(1, 1, sy);
             H.Set<double>(0, 2, dx); H.Set<double>(1, 2, dy);
-            Console.Error.WriteLine($"  align: sx={sx:F4} sy={sy:F4} dx(px)={dx:F1} dy(px)={dy:F1}");
+            Console.Error.WriteLine($"  align: sx={sx:F4} sy={sy:F4} dx(px)={dx:F1} dy(px)={dy:F1} src={src}");
             return H;
         }
 
@@ -517,7 +561,20 @@ namespace EGpdf2df.Engine
             // outline is a pixel-accurate TRUE TRACE of the actual shape — never a
             // simulated box/circle. ApproxPolyDP below acts purely as a point-count
             // decimator (tiny epsilon), not a shape-rounding step.
-            Cv2.FindContours(opened, out Point[][] contours, out _, RetrievalModes.External, ContourApproximationModes.ApproxNone);
+            // 容差侵蚀：忽略"偏离几毫米"的误差/显示偏移造成的光晕伪影（消除"红线填满"观感）。
+            // 在形态学开运算之后再腐蚀一圈，宽度 = TolerancePx（由 Registration.ToleranceMm 换算）。
+            Mat contourSrc = opened;
+            Mat? eroded = null;
+            if (g.TolerancePx > 0)
+            {
+                using var ek = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(g.TolerancePx, g.TolerancePx));
+                eroded = new Mat();
+                Cv2.Erode(opened, eroded, ek);
+                contourSrc = eroded;
+            }
+
+            Cv2.FindContours(contourSrc, out Point[][] contours, out _, RetrievalModes.External, ContourApproximationModes.ApproxNone);
+            eroded?.Dispose();
             var items = new List<GraphicContour>();
             foreach (var c in contours)
             {
