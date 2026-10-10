@@ -19,6 +19,8 @@ void PdfView::setPage(const QImage& img, double renderScale, int pageIndex)
     m_scale = (renderScale > 0.0) ? renderScale : 1.0;
     m_page  = pageIndex;
     m_dragging = false;
+    m_pageWords.clear();     // a new page => words are reloaded by the caller
+    m_previewWords.clear();
     // Display the rendered image 1:1 (scroll area handles overflow). Because the
     // widget is exactly the image size, widget px == image px, and pt = px/scale.
     setFixedSize(img.width(), img.height());
@@ -69,6 +71,17 @@ void PdfView::paintEvent(QPaintEvent*)
         g.drawRect(px);
     }
 
+    // Live-in-canvas recognition: words inside the current rubber band are
+    // highlighted so the user sees exactly what will be recognised.
+    if (!m_previewWords.isEmpty()) {
+        g.setPen(QPen(QColor(255, 170, 0), 2));
+        g.setBrush(QColor(255, 200, 0, 60));
+        for (const WordBox& w : m_previewWords) {
+            QRectF px = ptToPx(w.rectPt);
+            g.drawRect(px);
+        }
+    }
+
     // Live rubber band.
     if (m_dragging) {
         QRect r = QRect(m_pressPt, m_curPt).normalized();
@@ -91,6 +104,18 @@ void PdfView::mouseMoveEvent(QMouseEvent* e)
 {
     if (!m_dragging) { QWidget::mouseMoveEvent(e); return; }
     m_curPt = e->position().toPoint();
+    // Live text recognition: gather vector words whose centre lies inside the
+    // current rubber band, then announce the joined text to the front-end.
+    QRectF bandPt = pxToPt(QRectF(QRect(m_pressPt, m_curPt).normalized()));
+    m_previewWords.clear();
+    QStringList txt;
+    for (const WordBox& w : m_pageWords) {
+        if (bandPt.contains(w.rectPt.center()) && !w.text.isEmpty()) {
+            m_previewWords.append(w);
+            txt.append(w.text);
+        }
+    }
+    emit textPreview(m_page, txt.join(QStringLiteral(" ")));
     update();
 }
 
@@ -101,6 +126,9 @@ void PdfView::mouseReleaseEvent(QMouseEvent* e)
     m_curPt = e->position().toPoint();
     QRect r = QRect(m_pressPt, m_curPt).normalized();
     update();
+    // Clear the live preview highlight / announcement now that the band is gone.
+    m_previewWords.clear();
+    emit textPreview(m_page, QString());
     // Ignore accidental clicks / tiny drags.
     if (r.width() >= 3 && r.height() >= 3) {
         QRectF rectPt = pxToPt(QRectF(r));

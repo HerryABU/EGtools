@@ -30,6 +30,11 @@ public:
     void setWordBoxes(const QVector<WordBox>& w) { m_words = w; update(); }
     void clearWordBoxes() { m_words.clear(); update(); }
 
+    // All vector-text words of the current page (from the kernel --words mode),
+    // used for live in-canvas text recognition during rubber-band selection.
+    void setPageWords(const QVector<WordBox>& w) { m_pageWords = w; update(); }
+    QVector<WordBox> pageWords() const { return m_pageWords; }
+
     // renderScale == image pixels per PDF point (as reported by the kernel).
     double renderScale() const { return m_scale; }
 
@@ -39,6 +44,9 @@ public:
 
 signals:
     void regionSelected(int page, const QString& kind, const QRectF& rectPt);
+    // Emitted on every rubber-band move: the text of the vector words currently
+    // inside the selection box (live OCR / text detection, no raster scan).
+    void textPreview(int page, const QString& text);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -54,7 +62,9 @@ private:
     int     m_page  = 0;
     QString m_kind  = QStringLiteral("detail_table");
     QVector<Region> m_regions;
-    QVector<WordBox> m_words;
+    QVector<WordBox> m_words;       // extraction overlay (post-extract)
+    QVector<WordBox> m_pageWords;   // all vector words of the page (for live recog)
+    QVector<WordBox> m_previewWords;// words inside the current rubber band
 
     bool    m_dragging = false;
     QPoint  m_pressPt;
