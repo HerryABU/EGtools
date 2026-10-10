@@ -20,4 +20,8 @@ struct WordBox
 {
     QRectF rectPt;
     QString text;
+    // Provenance from the kernel: "vector" (embedded PDF text) or "ocr"
+    // (recovered by OCR for image-only regions). Empty if the kernel did not
+    // report it (older responses / vector-only paths).
+    QString source;
 };

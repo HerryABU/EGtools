@@ -12,8 +12,11 @@ class QLabel;
 class QTableWidget;
 class QTextEdit;
 class QListWidget;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QTabWidget;
 class QLineEdit;
+class QCheckBox;
 class QStackedWidget;
 class HomePage;
 class SchemePage;
@@ -54,6 +57,8 @@ public slots:
     void onModeChanged(int index);
     void onRegionSelected(int page, const QString& kind, const QRectF& rectPt);
     void onTextPreview(int page, const QString& text);
+    void onNavItemClicked(QTreeWidgetItem* item, int col);
+    void onOcrAlwaysToggled(bool on);
 
 private:
     void buildUi();
@@ -73,6 +78,8 @@ private:
     QVector<RegionSpec> canvasRegions() const;
     void applySchemeToCanvas(const Scheme& s);
     void loadSchemeIntoStore(const Scheme& s);
+    // The 9 material-table headers (config-driven); columns 7 & 8 are QTY / WEIGHT.
+    static QStringList materialHeaders();
 
     // Stacked page indices (the left sidebar switches between these).
     enum PageIdx { PageHome = 0, PagePdf = 1, PageDiff = 2, PageExcel = 3, PageScheme = 4 };
@@ -95,7 +102,8 @@ private:
     DiffPage*    m_diffPage = nullptr;
     ExcelComparePage* m_excelPage = nullptr;
     CharSegmentPanel* m_charPanel = nullptr;
-    QListWidget* m_nav = nullptr;
+    QTreeWidget* m_nav = nullptr;
+    QCheckBox*   m_ocrAlwaysCb = nullptr;
     QString      m_rewriteSchemeId;   // non-empty => a rewrite is in progress
     int          m_rewriteRow = -1;
     QComboBox*   m_modeCombo = nullptr;

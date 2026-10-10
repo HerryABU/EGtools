@@ -68,6 +68,7 @@ Generated Files/
 # -------- Qt / CMake (EGtools.Frontend) build output --------
 EGtools.Frontend/build/
 EGtools.Frontend/build-*/
+EGtools.Frontend/build_*/
 EGtools.Frontend/build_check/
 CMakeCache.txt
 CMakeFiles/

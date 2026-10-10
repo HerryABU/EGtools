@@ -33,6 +33,8 @@
 #include <QSet>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QTreeWidget>
+#include <QCheckBox>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTableWidget>
@@ -167,6 +169,20 @@ void MainWindow::buildUi()
     m_recogLabel->setWordWrap(true);
     m_recogLabel->setStyleSheet(QStringLiteral("QLabel{background:#fff7e0;border:1px solid #e0c060;padding:3px 6px;border-radius:4px;color:#5a4500;}"));
     leftLay->addWidget(m_recogLabel);
+
+    // OCR enhancement toggle: when on, the kernel runs OCR alongside the vector
+    // layer and tags each word's provenance (green = vector, orange = OCR fill).
+    m_ocrAlwaysCb = new QCheckBox(QStringLiteral("OCR 增强：始终用 OCR 补位图像区（矢量优先）"));
+    m_ocrAlwaysCb->setToolTip(QStringLiteral("勾选后，内核在矢量文本之外额外运行 OCR，自动补回被栅格化为图像的文字（橙色标注）；矢量文字（绿色）始终优先。"));
+    connect(m_ocrAlwaysCb, &QCheckBox::toggled, this, &MainWindow::onOcrAlwaysToggled);
+    auto* ocrLegend = new QLabel(QStringLiteral("图例：<span style='color:#149650;'>■ 矢量文字</span>　<span style='color:#e67800;'>■ OCR 补位</span>"));
+    ocrLegend->setStyleSheet(QStringLiteral("QLabel{font-size:11px;color:#555;}"));
+    auto* ocrBox = new QGroupBox(QStringLiteral("OCR 增强"));
+    auto* ocrLay = new QVBoxLayout(ocrBox);
+    ocrLay->addWidget(m_ocrAlwaysCb);
+    ocrLay->addWidget(ocrLegend);
+    leftLay->addWidget(ocrBox);
+
     leftLay->addWidget(scroll, 1);
     leftLay->addWidget(charBox);
 
@@ -208,17 +224,32 @@ void MainWindow::buildUi()
     split->setStretchFactor(0, 3);
     split->setStretchFactor(1, 2);
 
-    // ---- Sidebar navigation: every function gets its own page ----
-    m_nav = new QListWidget();
-    m_nav->setFixedWidth(150);
-    m_nav->setStyleSheet(QStringLiteral("QListWidget{font-size:13px;} QListWidget::item{padding:8px 6px;} QListWidget::item:selected{background:#2d7d46;color:#fff;}"));
-    m_nav->addItem(QStringLiteral("首页"));
-    m_nav->addItem(QStringLiteral("PDF → Excel"));
-    m_nav->addItem(QStringLiteral("PDF 比对"));
-    m_nav->addItem(QStringLiteral("Excel 比对"));
-    m_nav->addItem(QStringLiteral("框选方案"));
-    m_nav->setCurrentRow(PageHome);
-    connect(m_nav, &QListWidget::currentRowChanged, this, &MainWindow::navTo);
+    // ---- Multi-level sidebar navigation: every sub-function is its own entry ----
+    m_nav = new QTreeWidget();
+    m_nav->setFixedWidth(172);
+    m_nav->setHeaderHidden(true);
+    m_nav->setStyleSheet(QStringLiteral("QTreeWidget{font-size:13px;} QTreeWidget::item{padding:7px 6px;} QTreeWidget::item:selected{background:#2d7d46;color:#fff;} QTreeWidget::item:has-children{font-weight:bold;}"));
+    auto mkNav = [&](const QString& label, int page, int ocrMode = 0) {
+        auto* it = new QTreeWidgetItem(QStringList(label));
+        it->setData(0, Qt::UserRole, page);
+        it->setData(0, Qt::UserRole + 1, ocrMode);
+        return it;
+    };
+    auto* itHome = mkNav(QStringLiteral("首页"), PageHome);
+    auto* itPdf  = mkNav(QStringLiteral("PDF 工具"), PagePdf);
+    itPdf->addChild(mkNav(QStringLiteral("渲染与框选提取"), PagePdf, 0));
+    itPdf->addChild(mkNav(QStringLiteral("材料表 OCR 增强"), PagePdf, 1));
+    auto* itDiff = mkNav(QStringLiteral("图纸比对"), PageDiff);
+    auto* itExcel = mkNav(QStringLiteral("Excel 比对"), PageExcel);
+    auto* itSchemes = mkNav(QStringLiteral("框选方案"), PageScheme);
+    m_nav->addTopLevelItem(itHome);
+    m_nav->addTopLevelItem(itPdf);
+    m_nav->addTopLevelItem(itDiff);
+    m_nav->addTopLevelItem(itExcel);
+    m_nav->addTopLevelItem(itSchemes);
+    itPdf->setExpanded(true);
+    m_nav->setCurrentItem(itHome);
+    connect(m_nav, &QTreeWidget::itemClicked, this, &MainWindow::onNavItemClicked);
 
     // Pages: 0 home, 1 PDF→Excel workspace, 2 PDF diff, 3 Excel compare, 4 schemes.
     m_home = new HomePage();
@@ -271,8 +302,43 @@ void MainWindow::navTo(int index)
 
 void MainWindow::showPage(int index)
 {
-    if (m_nav) m_nav->setCurrentRow(index);
-    else if (m_stack) m_stack->setCurrentIndex(index);
+    if (m_nav) {
+        // Pick the navigation entry whose page matches (prefer the plain PDF
+        // entry over the OCR variant for PagePdf).
+        QTreeWidgetItem* pick = nullptr;
+        for (int i = 0; i < m_nav->topLevelItemCount() && !pick; ++i) {
+            QTreeWidgetItem* top = m_nav->topLevelItem(i);
+            if (top->data(0, Qt::UserRole).toInt() == index && top->childCount() == 0) { pick = top; }
+            for (int j = 0; j < top->childCount(); ++j)
+                if (top->child(j)->data(0, Qt::UserRole).toInt() == index) { pick = top->child(j); break; }
+            if (pick) break;
+        }
+        if (pick) m_nav->setCurrentItem(pick);
+    }
+    if (m_stack) m_stack->setCurrentIndex(index);
+}
+
+void MainWindow::onNavItemClicked(QTreeWidgetItem* item, int /*col*/)
+{
+    if (!item) return;
+    int page = item->data(0, Qt::UserRole).toInt();
+    int ocrMode = item->data(0, Qt::UserRole + 1).toInt();
+    navTo(page);
+    if (m_ocrAlwaysCb) m_ocrAlwaysCb->setChecked(ocrMode == 1);
+}
+
+void MainWindow::onOcrAlwaysToggled(bool on)
+{
+    log(on ? QStringLiteral("OCR 增强已开启：内核将矢量优先，并对图像区用 OCR 补位")
+           : QStringLiteral("OCR 增强已关闭：仅使用矢量文本"));
+    refreshJsonPreview();
+}
+
+QStringList MainWindow::materialHeaders()
+{
+    return { QStringLiteral("pipe no"), QStringLiteral("TABLE"), QStringLiteral("NO"), QStringLiteral("type"),
+             QStringLiteral("DN(mm)"), QStringLiteral("项目/DESCRIPTION"), QStringLiteral("QTY"),
+             QStringLiteral("WEIGHT(kg)"), QStringLiteral("PAGE") };
 }
 
 void MainWindow::refreshKernelStatus()
@@ -481,7 +547,7 @@ void MainWindow::onRegionSelected(int page, const QString& kind, const QRectF& r
             m_rewriteSchemeId.clear();
             m_rewriteRow = -1;
             if (m_schemes) { m_schemes->reload(); m_schemes->selectScheme(s->id); }
-            showPage(2);
+            showPage(PageScheme);
             return;
         }
     }
@@ -580,6 +646,8 @@ QJsonObject MainWindow::buildRequest() const
     QJsonObject opts;
     opts.insert(QStringLiteral("ocrFallback"), true);
     opts.insert(QStringLiteral("mergeOverlapping"), true);
+    if (m_ocrAlwaysCb && m_ocrAlwaysCb->isChecked())
+        opts.insert(QStringLiteral("ocrAlways"), true);
     req.insert(QStringLiteral("options"), opts);
     return req;
 }
@@ -661,6 +729,7 @@ void MainWindow::showRegionResponse(const QJsonObject& resp)
                                w.value(QStringLiteral("x1")).toDouble() - w.value(QStringLiteral("x0")).toDouble(),
                                w.value(QStringLiteral("y1")).toDouble() - w.value(QStringLiteral("y0")).toDouble());
             wb.text = w.value(QStringLiteral("text")).toString();
+            wb.source = w.value(QStringLiteral("source")).toString();
             overlay.push_back(wb);
         }
 
@@ -679,7 +748,16 @@ void MainWindow::showRegionResponse(const QJsonObject& resp)
                 for (int j = 0; j < row.size(); ++j)
                     m_table->setItem(i, j, new QTableWidgetItem(row[j].toString()));
             }
+            // Label the columns with the material-table headers (config-driven);
+            // the 7th (QTY) and 8th (WEIGHT(kg)) columns are preserved here as a
+            // hint, and the full 9-column table is produced by the whole-page path.
+            QStringList hdr = materialHeaders();
+            for (int c = 0; c < cols && c < hdr.size(); ++c)
+                m_table->setHorizontalHeaderItem(c, new QTableWidgetItem(hdr[c]));
             m_table->resizeColumnsToContents();
+            QString present = (cols >= 7 ? QStringLiteral("；第7列 QTY / 第8列 WEIGHT(kg) 已含")
+                                         : QStringLiteral("；如需完整 9 列(含 QTY/WEIGHT)请用「整页材料表抽取」"));
+            log(QStringLiteral("材料表列：前 %1 列对应 %2%3").arg(cols).arg(hdr.mid(0, cols).join(QStringLiteral(" / "))).arg(present));
         }
     }
     m_view->setWordBoxes(overlay);
@@ -740,7 +818,7 @@ void MainWindow::onCaptureAsScheme()
         return;
     }
     m_schemes->captureFromCanvas(regs);
-    showPage(2);
+    showPage(PageScheme);
 }
 
 // Switch to the workspace and put the scheme's boxes back on the canvas.

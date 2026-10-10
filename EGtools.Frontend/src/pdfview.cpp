@@ -64,10 +64,15 @@ void PdfView::paintEvent(QPaintEvent*)
         g.drawRect(px);
     }
 
-    // Word segments returned by the kernel.
-    g.setPen(QPen(QColor(200, 0, 0), 1));
+    // Word segments returned by the kernel. Colour by provenance so the user can
+    // see at a glance which glyphs came from the PDF's vector text (green) and
+    // which were recovered by OCR for image-only areas (orange).
     for (const WordBox& w : m_words) {
         QRectF px = ptToPx(w.rectPt);
+        if (w.source == QLatin1String("ocr"))
+            g.setPen(QPen(QColor(230, 120, 0), 1));
+        else
+            g.setPen(QPen(QColor(20, 150, 80), 1));
         g.drawRect(px);
     }
 
