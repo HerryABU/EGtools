@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using iText.Kernel.Colors;
 using iText.Kernel.Pdf;
 using iText.Kernel.Pdf.Canvas;
 using iText.Kernel.Font;
+using iText.IO.Font;
 using iText.IO.Font.Constants;
 
 namespace EGpdf2df.Engine
@@ -45,7 +47,12 @@ namespace EGpdf2df.Engine
             var red = ColorConstants.RED;
             var blue = ColorConstants.BLUE;
             var lightBlue = new DeviceRgb(150, 200, 255);
-            var italic = PdfFontFactory.CreateFont(StandardFonts.HELVETICA_OBLIQUE);
+            // 嵌入 Unicode 字体（默认 Arial，含土耳其语等字形），让"消失文字"的浅蓝斜体
+            // 真正渲染；字体缺失时回退内置 Helvetica（仅 ASCII）。
+            var unicodeFont = LoadUnicodeFont(ann.FontPathItalic) ?? LoadUnicodeFont(ann.FontPathRegular);
+            var italFont = unicodeFont ?? PdfFontFactory.CreateFont(StandardFonts.HELVETICA_OBLIQUE);
+            Console.Error.WriteLine($"  [font] 消失文字字体: {(unicodeFont != null ? "EMBEDDED Unicode(Arial)" : "FALLBACK Helvetica(仅ASCII)")}");
+            int textRenders = 0;
             var byPage = new Dictionary<int, PageAnno>();
             foreach (var p in pages) byPage[p.Page] = p;
 
@@ -83,15 +90,16 @@ namespace EGpdf2df.Engine
 
                     // Render the disappeared / changed-away text in LIGHT-BLUE ITALIC at its
                     // original position so the change is readable directly inside the PDF.
-                    if (oldSide && !string.IsNullOrWhiteSpace(it.OldText) && IsAscii(it.OldText!))
+                    if (oldSide && !string.IsNullOrWhiteSpace(it.OldText))
                     {
+                        textRenders++;
                         float fs = Math.Max(6f, ry);
                         float baseY = cyTopPdf - 1f;             // sit just above the circle top
                         if (baseY > Hpt - 1) baseY = Hpt - 1;
                         canvas.SaveState();
                         canvas.SetFillColor(lightBlue);
                         canvas.BeginText();
-                        canvas.SetFontAndSize(italic, fs);
+                        canvas.SetFontAndSize(italFont, fs);
                         canvas.MoveText(x, baseY);
                         canvas.ShowText(Escape(it.OldText!));
                         canvas.EndText();
@@ -99,6 +107,7 @@ namespace EGpdf2df.Engine
                     }
                 }
             }
+            Console.Error.WriteLine($"  [font] 实际绘制消失文字 {textRenders} 处（浅蓝斜体，已嵌入 Unicode 字体）");
             pdf.Close();
         }
 
@@ -135,10 +144,20 @@ namespace EGpdf2df.Engine
 
         static string Escape(string s) => s.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
 
-        static bool IsAscii(string s)
+        // 嵌入 Unicode 字体（Identity-H），使土耳其语等非 ASCII 文字也能渲染；失败返回 null。
+        static PdfFont LoadUnicodeFont(string? path)
         {
-            foreach (char ch in s) if (ch < 0x20 || ch > 0x7E) return false;
-            return true;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                    return PdfFontFactory.CreateFont(path, PdfEncodings.IDENTITY_H,
+                        PdfFontFactory.EmbeddingStrategy.PREFER_EMBEDDED);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"  [font] LoadUnicodeFont failed for '{path}': {ex.Message}");
+            }
+            return null!;
         }
     }
 }
