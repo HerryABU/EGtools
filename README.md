@@ -39,13 +39,12 @@ EGtools/
 ├── EGpdf2excel/               # CLI：PDF 材料表抽取 / 区域提取 / 页面渲染
 ├── EGexcel2df/                # CLI：两份 Excel 图纸对比
 ├── EGpdf2df/                  # CLI：两份 PDF 图纸差异
-├── EGtools.Frontend/          # Qt 6 图形前端（新建，替代旧 WinUI）
+├── EGtools.Frontend/          # Qt 6 图形前端（唯一 GUI）
 │   ├── src/pdfview.*          #   页面显示 + 三模式橡皮筋框选 + 坐标映射
 │   ├── src/mainwindow.*       #   工具栏 / 结果面板 / 内核编排
 │   ├── src/clirunner.*        #   QProcess 调用 CLI 内核
 │   ├── src/selftest.*         #   无头自检（--selftest / --test-math）
 │   └── build_qt.bat           #   Qt+MSVC+Ninja 构建脚本（真机 cmd）
-├── EGtools.Gui/               # 旧 WinUI 3 前端（待 Qt 验证通过后移除）
 ├── docs/                      # 详细使用文档（中文 / English / CSDN 文章）
 ├── redist/                    # 第三方运行库（gitignore，见 redist/README.md）
 ├── build_all.ps1              # 一键构建 + 打包（.NET 内核 + 可选 Qt 前端）
@@ -64,7 +63,6 @@ EGtools/
 - **Qt 6.11.2 msvc2022_64**（仅构建图形前端需要）
 - **Visual Studio 2022 / 2026**（含「使用 C++ 的桌面开发」工作负载；Qt 前端需要）
 - **Ninja + CMake**（Qt 前端构建；VS 自带 CMake 亦可）
-- **Windows App Runtime 1.6**（仅旧 WinUI 前端运行需要；安装包自动补装）
 - **Inno Setup 6**（仅打包安装程序时需要）
 - 第三方运行库见 [`redist/README.md`](redist/README.md)
 
@@ -76,17 +74,16 @@ EGtools/
 
 ```powershell
 # 1) 准备 redist/（首次构建前，按 redist/README.md 放入 VC++ 运行库等）
-# 2) 构建全部内核 + GUI + 安装包
+# 2) 构建全部内核 + 安装包
 .\build_all.ps1
 ```
 
 `build_all.ps1` 会：
-1. 清理并还原全部项目（Core + 三个 Engine + 三个 CLI + GUI）；
+1. 清理并还原全部项目（Core + 三个 Engine + 三个 CLI）；
 2. 发布三个 **自包含** CLI 到 `DIST/EGpdf2excel`、`DIST/EGexcel2df`、`DIST/EGpdf2df`；
-3. 发布旧 WinUI GUI 到 `DIST/EGtools`；
-4. **若检测到 Qt 6**，额外构建 `EGtools.Frontend` 到 `DIST/EGtoolsFrontend`（未装 Qt 则跳过，不报错）；
-5. 复制 VC++ 运行库、文档、图标；
-6. 校验产物并用 Inno Setup 生成安装包。
+3. **若检测到 Qt 6**，构建 `EGtools.Frontend` 到 `DIST/EGtoolsFrontend`（未装 Qt 则跳过，不报错）；
+4. 复制 VC++ 运行库、文档、图标；
+5. 校验产物并用 Inno Setup 生成安装包。
 
 > Qt 前端是**可选步骤**：没有 Qt / MSVC 时 .NET 内核仍可独立构建成功。
 
