@@ -23,6 +23,12 @@ namespace EGpdf2excel.Engine
         public ColumnsCfg Columns { get; set; } = new();
         public PageCfg Page { get; set; } = new();
 
+        /// <summary>
+        /// 字符段（输出列集）。用户可增删 / 改名 / 重排；引擎按列名语义映射取值，
+        /// 默认含一个独立的「type」构件类型列。空或缺失时回退到内置默认。
+        /// </summary>
+        public List<string> Headers { get; set; } = new();
+
         // ---- compiled helpers (built after load) ----
         [System.Text.Json.Serialization.JsonIgnore]
         public HashSet<string> ComponentKeywords { get; private set; } = new();
@@ -97,9 +103,16 @@ namespace EGpdf2excel.Engine
         //  Default configuration (kept in sync with config.json). Used when
         //  no external config.json is present.
         // ------------------------------------------------------------------
+        // 内置默认「字符段」（输出列集）。顺序即导出列顺序，用户可在 config.json
+        // 中增删 / 改名 / 重排；引擎按列名语义映射，未知列名留空。
+        public static readonly string[] DefaultHeaders = {
+            "pipe no", "TABLE", "NO", "type", "DN(mm)", "项目/DESCRIPTION", "QTY", "WEIGHT(kg)", "PAGE"
+        };
+
         const string DEFAULT_JSON = @"
 {
   ""version"": ""4.2.1"",
+  ""headers"": [ ""pipe no"", ""TABLE"", ""NO"", ""type"", ""DN(mm)"", ""项目/DESCRIPTION"", ""QTY"", ""WEIGHT(kg)"", ""PAGE"" ],
   ""pipeNo"": {
     ""fallbackFromFileName"": true
   },
@@ -130,6 +143,9 @@ namespace EGpdf2excel.Engine
     ""wordGapFraction"": 0.18
   }
 }";
+
+        /// <summary>Expose the built-in default JSON (used by --reset-config to write config.json back).</summary>
+        public static string DefaultJson => DEFAULT_JSON;
 
         static readonly JsonSerializerOptions Opts = new JsonSerializerOptions
         {
@@ -201,6 +217,7 @@ namespace EGpdf2excel.Engine
             if (over.Columns == null) over.Columns = def.Columns;
             else if (over.Columns.Fallback == null || over.Columns.Fallback.Count == 0) over.Columns.Fallback = def.Columns.Fallback;
             if (over.Page == null) over.Page = def.Page;
+            if (over.Headers == null || over.Headers.Count == 0) over.Headers = def.Headers;
         }
     }
 }

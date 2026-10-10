@@ -6,6 +6,8 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Xml.Linq;
 using MuPDFCore;
 using MuPDFCore.StructuredText;
@@ -51,10 +53,11 @@ namespace EGpdf2excel.Engine
     // nothing here is hard-coded for a specific drawing convention.
     static ExtractConfig Config = null!;
 
-    // Output column headers. When ComponentSeparate is set, a COMPONENT column is
-    // inserted between DN(mm) and 项目/DESCRIPTION (9 cols); otherwise COMPONENT is
-    // merged into the DESCRIPTION cell (8 cols, the default).
-    static string[] HEADERS = { "pipe no", "TABLE", "NO", "DN(mm)", "项目/DESCRIPTION", "QTY", "WEIGHT(kg)", "PAGE" };
+    // 输出列头。现由 ExtractConfig.Headers（字符段）配置；此静态仅作 Config 未加载时的兜底。
+    static string[] OutHeaders()
+        => (Config != null && Config.Headers != null && Config.Headers.Count > 0)
+            ? Config.Headers.ToArray()
+            : ExtractConfig.DefaultHeaders;
     // Component-column layout: "merged" (default) keeps COMPONENT inside the
     // DESCRIPTION cell; "separate" emits it as its own column (the 3rd layout mode).
     static bool ComponentSeparate = false;
@@ -623,10 +626,34 @@ namespace EGpdf2excel.Engine
     }
 
     class RowOut { public string pipeNo, table, no, dn, comp, desc, qty, wt; public int page; }
+    // 列名是否命中任一关键字（忽略大小写、子串匹配）。用于把可配置表头映射到语义列。
+    static bool IsRole(string header, params string[] keys)
+        => keys.Any(k => header.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0);
+
+    // 按「表头名字」把一行映射到可配置输出列。用户可重排 / 增删 / 改名「字符段」列，
+    // 已知语义角色：pipe no, TABLE, NO, type/component(构件), DN(mm), 项目/DESCRIPTION,
+    // QTY, WEIGHT(kg), PAGE；未知列名输出空单元格。
     static string[] RowFields(RowOut r)
-        => ComponentSeparate
-            ? new[] { r.pipeNo, r.table, r.no, r.dn, r.comp, r.desc, r.qty, r.wt, r.page.ToString() }
-            : new[] { r.pipeNo, r.table, r.no, r.dn, r.desc, r.qty, r.wt, r.page.ToString() };
+    {
+        var hs = OutHeaders();
+        var outp = new string[hs.Length];
+        for (int i = 0; i < hs.Length; i++)
+        {
+            string h = hs[i];
+            if      (IsRole(h, "pipe"))                          outp[i] = r.pipeNo;
+            else if (IsRole(h, "table"))                         outp[i] = r.table;
+            else if (h.Equals("NO", StringComparison.OrdinalIgnoreCase)
+                     || (IsRole(h, " no") && !IsRole(h, "pipe"))) outp[i] = r.no;
+            else if (IsRole(h, "dn"))                            outp[i] = r.dn;
+            else if (IsRole(h, "type", "component", "构件"))     outp[i] = r.comp;
+            else if (IsRole(h, "description", "项目", "desc"))    outp[i] = r.desc;
+            else if (IsRole(h, "qty"))                           outp[i] = r.qty;
+            else if (IsRole(h, "weight", "重量"))                outp[i] = r.wt;
+            else if (IsRole(h, "page", "页"))                    outp[i] = r.page.ToString();
+            else                                                 outp[i] = "";
+        }
+        return outp;
+    }
 
     static List<RowOut> BuildTableRows(List<Word> dataWords, string pipeNo, Dictionary<string, double> cols, string tableType, RefDict dict)
     {
@@ -915,14 +942,14 @@ namespace EGpdf2excel.Engine
     static void WriteCsv(string path, List<RowOut> rows)
     {
         var sb = new StringBuilder(); sb.Append('\uFEFF');
-        sb.AppendLine(string.Join(",", HEADERS));
+        sb.AppendLine(string.Join(",", OutHeaders()));
         foreach (var r in rows) sb.AppendLine(string.Join(",", RowFields(r).Select(Csv)));
         File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
         Console.Error.WriteLine($"Saved CSV  {path} ({rows.Count} rows)");
     }
     static string ColLetter(int idx) { string s = ""; idx++; while (idx > 0) { int m = (idx - 1) % 26; s = (char)('A' + m) + s; idx = (idx - 1) / 26; } return s; }
     static string XEsc(string v) => v.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
-    static bool IsNumCol(string name) => name == "DN(mm)" || name == "QTY" || name == "WEIGHT(kg)" || name == "PAGE";
+    static bool IsNumCol(string name) => IsRole(name, "dn", "qty", "weight", "重量", "page", "页");
     const string CT =
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n" +
         "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
@@ -957,8 +984,9 @@ namespace EGpdf2excel.Engine
         sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n");
         sb.Append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\r\n<sheetData>\r\n");
         sb.Append("<row r=\"1\">");
-        for (int c = 0; c < HEADERS.Length; c++)
-            sb.Append($"<c r=\"{ColLetter(c)}1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{XEsc(HEADERS[c])}</t></is></c>");
+        var headers = OutHeaders();
+        for (int c = 0; c < headers.Length; c++)
+            sb.Append($"<c r=\"{ColLetter(c)}1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{XEsc(headers[c])}</t></is></c>");
         sb.Append("</row>\r\n");
         for (int r = 0; r < rows.Count; r++)
         {
@@ -969,7 +997,7 @@ namespace EGpdf2excel.Engine
             {
                 string cl = ColLetter(c) + rn;
                 string val = f[c] ?? "";
-                if (IsNumCol(HEADERS[c]) && double.TryParse(val, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                if (IsNumCol(headers[c]) && double.TryParse(val, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
                     sb.Append($"<c r=\"{cl}\"><v>{num.ToString(CultureInfo.InvariantCulture)}</v></c>");
                 else
                     sb.Append($"<c r=\"{cl}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{XEsc(val)}</t></is></c>");
@@ -1031,6 +1059,8 @@ namespace EGpdf2excel.Engine
         Console.WriteLine("                           'separate' emits it as its own column between DN(mm)");
         Console.WriteLine("                           and DESCRIPTION (9 cols).");
         Console.WriteLine("  --tag NAME              文件名标签 (默认 V3) -> <pdf>_<tag>.csv/.xlsx");
+        Console.WriteLine("  --locate FILE.json     定位模式：find 按字符串找坐标 / extract 按坐标框提文字（--json 可给路径或名称）");
+        Console.WriteLine("  --reset-config         恢复默认字符段存储：写回内置默认 config.json 并退出");
         Console.WriteLine("                           Filename tag (default V3) -> <pdf>_<tag>.csv/.xlsx.");
         Console.WriteLine("  --version               显示版本号并退出 / Show version and exit.");
         Console.WriteLine("  -v, --verbose           详细进度(每页/警告)输出到 stderr");
@@ -1077,6 +1107,9 @@ namespace EGpdf2excel.Engine
         string outputDir = null, singleOut = null, format = "csv", tag = "V3", refPath = null, configPath = null;
         bool regionMode = false, readStdin = false; string? mode = null, jsonFile = null;
         bool renderMode = false; int renderPage = 0; double renderScale = 2.0; string renderOut = null;
+        bool resetConfig = false, locateMode = false, wordsMode = false, compExplicit = false, compVal = false;
+        int wordsPage = 0;
+        void L(string s) => Console.Error.WriteLine(s);
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -1088,6 +1121,9 @@ namespace EGpdf2excel.Engine
                 case "--mode": mode = take(""); break;
                 case "--region": regionMode = true; break;
                 case "--json": jsonFile = take(""); break;
+                case "--locate": locateMode = true; break;
+                case "--reset-config": resetConfig = true; break;
+                case "--words": wordsMode = true; wordsPage = int.Parse(take("0")); break;
                 case "--stdin": readStdin = true; break;
                 case "--render": renderMode = true; break;
                 case "--page": renderPage = int.Parse(take("0")); break;
@@ -1099,13 +1135,29 @@ namespace EGpdf2excel.Engine
                 case "-r": case "--ref": refPath = take(""); break;
                 case "--config": configPath = take(""); break;
                 case "-G": case "--group-header": { string v = take("embed").ToLowerInvariant(); if (v != "embed" && v != "omit") { Console.Error.WriteLine($"Invalid --group-header '{v}' (embed|omit)"); return 2; } GroupHeaderMode = v; break; }
-                case "-C": case "--component": { string v = take("merged").ToLowerInvariant(); if (v != "merged" && v != "separate") { Console.Error.WriteLine($"Invalid --component '{v}' (merged|separate)"); return 2; } ComponentSeparate = (v == "separate"); break; }
+                case "-C": case "--component": { string v = take("merged").ToLowerInvariant(); if (v != "merged" && v != "separate") { Console.Error.WriteLine($"Invalid --component '{v}' (merged|separate)"); return 2; } compExplicit = true; compVal = (v == "separate"); break; }
                 case "--tag": tag = take("V3"); break;
                 default:
                     if (a.StartsWith("-")) { Console.Error.WriteLine($"Unknown option: {a} (use -h for help)"); return 2; }
                     inputs.Add(a); break;
             }
         }
+
+        // --json 既可给路径，也可给「名称」：名称按 <软件目录>/<name>.json、
+        // <软件目录>/json/<name>.json、<当前目录>/<name>.json 顺序查找。
+        jsonFile = ResolveJsonArgument(jsonFile);
+
+        // ---- restore default 字符段 storage (writes built-in default config.json) ----
+        if (resetConfig)
+            return ResetConfig(configPath, L);
+
+        // ---- locate mode: JSON-driven coordinate / text recognition ----
+        if (locateMode)
+            return RunLocate(jsonFile, readStdin, L);
+
+        // ---- words mode: dump all vector text of a page (live in-canvas recognition) ----
+        if (wordsMode)
+            return RunWords(inputs.Count > 0 ? inputs[0] : null, wordsPage, L);
 
         // ---- page rendering mode (used by the Qt front-end to display a PDF page) ----
         if (renderMode)
@@ -1124,8 +1176,8 @@ namespace EGpdf2excel.Engine
         // Load external configuration (regex/vocab/layout) before processing.
         Config = ExtractConfig.Load(configPath);
 
-        if (ComponentSeparate)
-            HEADERS = new[] { "pipe no", "TABLE", "NO", "DN(mm)", "COMPONENT", "项目/DESCRIPTION", "QTY", "WEIGHT(kg)", "PAGE" };
+        // 字符段：表头含独立 type/component(构件) 列时自动拆出构件类型列；否则合并进 DESCRIPTION。
+        ComponentSeparate = compExplicit ? compVal : HeadersHaveType();
 
         if (inputs.Count == 0) inputs.Add("*.pdf");
         var files = ExpandInputs(inputs);
@@ -1159,6 +1211,205 @@ namespace EGpdf2excel.Engine
         }
         Console.Error.WriteLine($"Done. {files.Count} file(s), {total} total rows.");
         return 0;
+    }
+
+    // 表头是否含独立「构件类型」列（type / component / 构件）。
+    static bool HeadersHaveType()
+        => Config != null && Config.Headers != null && Config.Headers.Any(h => IsRole(h, "type", "component", "构件"));
+
+    /// <summary>
+    /// 把 --json 参数解析为实际文件路径：已是路径（含分隔符或文件存在）则原样返回；
+    /// 否则按名称在 <软件目录>/&lt;name&gt;.json、<软件目录>/json/&lt;name&gt;.json、
+    /// <当前目录>/&lt;name&gt;.json 顺序查找。
+    /// </summary>
+    static double Round(double v) => Math.Round(v, 2);
+
+    static string ResolveJsonArgument(string? arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg)) return null;
+        if (arg!.IndexOfAny(new[] { '/', '\\', ':' }) >= 0 || File.Exists(arg)) return arg;
+        var dir = AppContext.BaseDirectory ?? ".";
+        foreach (var cand in new[]
+        {
+            Path.Combine(dir, arg + ".json"),
+            Path.Combine(dir, "json", arg + ".json"),
+            Path.Combine(Directory.GetCurrentDirectory(), arg + ".json"),
+        })
+            if (File.Exists(cand)) return cand;
+        return arg; // 找不到就原样返回，由后续逻辑报错
+    }
+
+    /// <summary>恢复默认字符段存储：把内置默认配置写回 config.json（默认在软件目录）。</summary>
+    static int ResetConfig(string? configPath, Action<string>? log)
+    {
+        string target = !string.IsNullOrEmpty(configPath) && !configPath!.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+            ? Path.Combine(configPath, "config.json")
+            : (configPath ?? Path.Combine(AppContext.BaseDirectory ?? ".", "config.json"));
+        try
+        {
+            var dir = Path.GetDirectoryName(target);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir!);
+            // 直接写回内置默认（与 ExtractConfig.DEFAULT_JSON 一致，已具可读性）。
+            File.WriteAllText(target, ExtractConfig.DefaultJson);
+            log?.Invoke($"[config] 已恢复默认字符段存储 -> {target}");
+            Console.WriteLine($"OK restored default config -> {target}");
+            return 0;
+        }
+        catch (Exception ex) { log?.Invoke($"[config] 恢复默认失败: {ex.Message}"); Console.Error.WriteLine($"[error] reset-config failed: {ex.Message}"); return 1; }
+    }
+
+    /// <summary>
+    /// 定位模式（find 按字符串找坐标 / extract 按坐标矩形框提文字，混合 targets）。
+    /// 请求 JSON：{ "pdf": "...", "page": 0, "targets": [ {type:"find",text:"X",page?,caseSensitive?,wholeWord?},
+    ///   {type:"extract",page?,x,y,width,height} ] }。
+    /// </summary>
+    public static int RunLocate(string? jsonFile, bool readStdin, Action<string>? log = null)
+    {
+        void L(string s) => (log ?? Console.Error.WriteLine)(s);
+        string json;
+        try
+        {
+            if (readStdin) { using var r = new StreamReader(Console.OpenStandardInput()); json = r.ReadToEnd(); }
+            else if (!string.IsNullOrEmpty(jsonFile)) json = File.ReadAllText(jsonFile);
+            else { L("[error] locate needs --json FILE or --stdin"); return 2; }
+        }
+        catch (Exception ex) { L($"[error] reading request: {ex.Message}"); return 2; }
+
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (Exception ex) { L($"[error] invalid JSON: {ex.Message}"); return 2; }
+        var root = doc.RootElement;
+        string pdf = root.TryGetProperty("pdf", out var p) ? (p.GetString() ?? "") : "";
+        if (string.IsNullOrEmpty(pdf) || !File.Exists(pdf)) { L($"[error] locate needs a valid \"pdf\" ({pdf})"); return 2; }
+        int defPage = root.TryGetProperty("page", out var dp) && dp.TryGetInt32(out var dpi) ? dpi : 0;
+
+        if (!root.TryGetProperty("targets", out var tArr) || tArr.ValueKind != JsonValueKind.Array || tArr.GetArrayLength() == 0)
+        { L("[error] locate needs a non-empty \"targets\" array"); return 2; }
+
+        var outArr = new JsonArray();
+        try
+        {
+            using var ctx = new MuPDFContext(512u * 1024 * 1024);
+            var (tmp, docPdf) = OpenLocateDoc(ctx, pdf);
+            int nPages = docPdf.Pages.Count;
+            var wordCache = new Dictionary<int, List<TextGeometry.Word>>();
+            foreach (var t in tArr.EnumerateArray())
+            {
+                string ttype = t.TryGetProperty("type", out var tt) ? (tt.GetString() ?? "find") : "find";
+                int tpage = (t.TryGetProperty("page", out var tp) && tp.TryGetInt32(out var tpi)) ? tpi : defPage;
+                if (tpage < 0 || tpage >= nPages) { L($"[warn] target page {tpage} out of range (0..{nPages - 1})"); continue; }
+                if (!wordCache.TryGetValue(tpage, out var words))
+                {
+                    using var st = docPdf.GetStructuredTextPage(tpage, false, StructuredTextFlags.None);
+                    double H = docPdf.Pages[tpage].Bounds.Y1 - docPdf.Pages[tpage].Bounds.Y0;
+                    words = TextGeometry.GetWords(st, H, Config?.Page?.WordGapFraction ?? 0.18);
+                    wordCache[tpage] = words;
+                }
+                if (ttype == "extract")
+                {
+                    double x = t.TryGetProperty("x", out var xv) ? xv.GetDouble() : 0;
+                    double y = t.TryGetProperty("y", out var yv) ? yv.GetDouble() : 0;
+                    double w = t.TryGetProperty("width", out var wv) ? wv.GetDouble() : 0;
+                    double h = t.TryGetProperty("height", out var hv) ? hv.GetDouble() : 0;
+                    var inside = words.Where(word => TextGeometry.Intersects(word, x, y, x + w, y + h)).OrderBy(word => word.yc).ThenBy(word => word.x0).ToList();
+                    var node = new JsonObject
+                    {
+                        ["type"] = "extract", ["page"] = tpage,
+                        ["bbox"] = new JsonObject { ["x"] = x, ["y"] = y, ["width"] = w, ["height"] = h },
+                        ["text"] = string.Join(" ", inside.Select(w => w.text)),
+                        ["words"] = new JsonArray(inside.Select(word => (JsonNode)new JsonObject {
+                            ["x0"] = Round(word.x0), ["y0"] = Round(word.y0), ["x1"] = Round(word.x1), ["y1"] = Round(word.y1), ["text"] = word.text }).ToArray())
+                    };
+                    outArr.Add(node);
+                }
+                else // find
+                {
+                    string needle = t.TryGetProperty("text", out var nv) ? (nv.GetString() ?? "") : "";
+                    bool cs = t.TryGetProperty("caseSensitive", out var csv) && csv.GetBoolean();
+                    bool whole = t.TryGetProperty("wholeWord", out var wwv) && wwv.GetBoolean();
+                    bool ignore = t.TryGetProperty("ignoreCase", out var icv) && icv.GetBoolean();
+                    bool ci = (!cs) || ignore;
+                    var matches = new JsonArray();
+                    foreach (var w in words)
+                    {
+                        string src = ci ? (w.text ?? "").ToLowerInvariant() : (w.text ?? "");
+                        string key = ci ? needle.ToLowerInvariant() : needle;
+                        bool hit = whole ? src.Trim() == key : src.Contains(key);
+                        if (hit) matches.Add(new JsonObject {
+                            ["x0"] = Round(w.x0), ["y0"] = Round(w.y0), ["x1"] = Round(w.x1), ["y1"] = Round(w.y1), ["text"] = w.text });
+                    }
+                    outArr.Add(new JsonObject { ["type"] = "find", ["page"] = tpage, ["text"] = needle, ["matchCount"] = matches.Count, ["matches"] = matches });
+                }
+            }
+            docPdf?.Dispose();
+            if (tmp != null) { try { File.Delete(tmp); } catch { } }
+        }
+        catch (Exception ex) { L($"[error] locate failed: {ex.Message}"); return 1; }
+
+        var result = new JsonObject { ["pdf"] = pdf, ["results"] = outArr };
+        Console.WriteLine(result.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        return 0;
+    }
+
+    /// <summary>
+    /// Words mode: dump every vector-text word of a page as JSON, for the
+    /// front-end's live rubber-band text recognition. Coordinates are in PDF
+    /// pt, top-left origin, y-down (matching the render coordinate system).
+    /// Output: { "page", "pageWidthPt", "pageHeightPt", "wordCount",
+    ///           "words":[ {x0,y0,x1,y1,text} ] }.
+    /// </summary>
+    public static int RunWords(string? pdfPath, int page, Action<string>? log = null)
+    {
+        void L(string s) => (log ?? Console.Error.WriteLine)(s);
+        if (string.IsNullOrEmpty(pdfPath) || !File.Exists(pdfPath))
+        {
+            L("[error] --words needs a valid PDF input path");
+            return 2;
+        }
+        try
+        {
+            using var ctx = new MuPDFContext(512u * 1024 * 1024);
+            var (tmp, docPdf) = OpenLocateDoc(ctx, pdfPath);
+            int nPages = docPdf.Pages.Count;
+            if (page < 0 || page >= nPages)
+            {
+                L($"[error] page {page} out of range (0..{nPages - 1})");
+                docPdf?.Dispose();
+                if (tmp != null) { try { File.Delete(tmp); } catch { } }
+                return 2;
+            }
+            using var st = docPdf.GetStructuredTextPage(page, false, StructuredTextFlags.None);
+            double H = docPdf.Pages[page].Bounds.Y1 - docPdf.Pages[page].Bounds.Y0;
+            double W = docPdf.Pages[page].Bounds.X1 - docPdf.Pages[page].Bounds.X0;
+            var words = TextGeometry.GetWords(st, H, Config?.Page?.WordGapFraction ?? 0.18);
+            var arr = new JsonArray();
+            foreach (var w in words)
+                arr.Add((JsonNode)new JsonObject {
+                    ["x0"] = Round(w.x0), ["y0"] = Round(w.y0),
+                    ["x1"] = Round(w.x1), ["y1"] = Round(w.y1),
+                    ["text"] = w.text });
+            var result = new JsonObject {
+                ["page"] = page,
+                ["pageWidthPt"] = Round(W), ["pageHeightPt"] = Round(H),
+                ["wordCount"] = words.Count,
+                ["words"] = arr };
+            Console.WriteLine(result.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            docPdf?.Dispose();
+            if (tmp != null) { try { File.Delete(tmp); } catch { } }
+            return 0;
+        }
+        catch (Exception ex) { L($"[error] words failed: {ex.Message}"); return 1; }
+    }
+
+    static (string? tmp, MuPDFDocument doc) OpenLocateDoc(MuPDFContext ctx, string path)
+    {
+        if (path.Any(c => c > 127))
+        {
+            var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".pdf");
+            File.Copy(path, tmp, true);
+            return (tmp, new MuPDFDocument(ctx, tmp));
+        }
+        return (null, new MuPDFDocument(ctx, path));
     }
 
     /// <summary>

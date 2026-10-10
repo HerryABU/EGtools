@@ -59,12 +59,7 @@ namespace EGpdf2excel.Engine
                 // length (MuPDF rounds each axis independently) to avoid mismatches.
                 byte[] bytes = doc.Render(page, scale, PixelFormats.RGBA, false);
                 int totalPx = bytes.Length / 4;
-                int wEst = Math.Max(1, (int)Math.Round(pwPt * scale));
-                int hEst = Math.Max(1, (int)Math.Round(phPt * scale));
-                int w, h;
-                if (totalPx % wEst == 0) { w = wEst; h = totalPx / wEst; }
-                else if (totalPx % hEst == 0) { h = hEst; w = totalPx / hEst; }
-                else { w = wEst; h = hEst; }
+                (int w, int h) = PixelDims(totalPx, pwPt, phPt, scale);
 
                 WriteBmp24(bytes, w, h, outPath);
 
@@ -130,6 +125,32 @@ namespace EGpdf2excel.Engine
                 }
                 wtr.Write(row);
             }
+        }
+
+        /// <summary>
+        /// Derive the true (w,h) of a whole-page RGBA render from its byte length.
+        /// MuPDF rounds each axis independently, so we search widths within ±2px of the
+        /// Math.Round estimate for one that divides totalPx; the matching h is then exact
+        /// (w*h == totalPx). This keeps the BMP writer's row stride consistent with the
+        /// actual pixel buffer.
+        /// </summary>
+        static (int w, int h) PixelDims(int totalPx, double wPt, double hPt, double scale)
+        {
+            int wEst = Math.Max(1, (int)Math.Round(wPt * scale));
+            int bestW = wEst, bestErr = int.MaxValue;
+            for (int dw = -2; dw <= 2; dw++)
+            {
+                int w = wEst + dw;
+                if (w <= 0) continue;
+                if (totalPx % w == 0)
+                {
+                    int err = Math.Abs(w - wEst);
+                    if (err < bestErr) { bestErr = err; bestW = w; }
+                }
+            }
+            if (bestErr == int.MaxValue) bestW = wEst;
+            int h = Math.Max(1, totalPx / bestW);
+            return (bestW, h);
         }
     }
 }
