@@ -33,6 +33,15 @@ namespace EGpdf2df.Engine
     /// Graphic differences are traced as the ACTUAL CHANGED SHAPE (polygon contour);
     /// text/number differences are circled; disappeared text is rendered in light-blue
     /// italic directly on the page.
+    ///
+    /// ⚠️ /Rotate compensation: MuPDF renders a page with its /Rotate applied (DISPLAY
+    /// frame), so DiffEngine's pixel coordinates live in the rotated, display-oriented
+    /// frame. The PDF content stream, however, is authored in the UNROTATED user space.
+    /// Writing display coordinates verbatim into the content stream therefore misplaces
+    /// every annotation on a /Rotate≠0 page (observed: only ~1% of red ink landed on the
+    /// linework vs ~66% on /Rotate=0 pages). We therefore map the display frame back into
+    /// content space with <see cref="DisplayToContent"/> and rotate the annotation text
+    /// with <see cref="TextRotation"/> so it still reads upright on screen.
     /// </summary>
     public static class PdfVectorDiff
     {
@@ -62,70 +71,122 @@ namespace EGpdf2df.Engine
                 if (!byPage.TryGetValue(i - 1, out var a)) continue;
                 var page = pdf.GetPage(i);
                 var mb = page.GetMediaBox();
-                // Use the SAME page height the pixel frame was rendered against (tBounds),
-                // not the PDF media box, so the pixel→point mapping is exactly invertible.
-                float Hpt = a.Hpt > 0 ? a.Hpt : mb.GetHeight();
-                float Wpt = a.Wpt > 0 ? a.Wpt : mb.GetWidth();
+                float Wc = mb.GetWidth(), Hc = mb.GetHeight();
+                float ox = mb.GetX(), oy = mb.GetY();
+                int rot = ((page.GetRotation() % 360) + 360) % 360;
+
+                // Display frame (y-down, top-left origin, MuPDF's render) → content user space.
+                DisplayToContent(rot, Wc, Hc, ox, oy,
+                    out float mA, out float mB, out float mC, out float mD, out float mE, out float mF);
+                // Pure rotation (det = +1, never mirrored) applied to annotation text so it
+                // reads upright in the display frame.
+                TextRotation(rot, out float tA, out float tB, out float tC, out float tD);
+
                 var canvas = new PdfCanvas(page);
                 float lw = Math.Max(1.2f, (float)ann.LineWidth);
 
-                // ---- graphic differences: trace the actual changed shape ----
+                // ---- graphic + ellipse overlays, drawn in the DISPLAY frame ----
+                canvas.SaveState();
+                canvas.ConcatMatrix(mA, mB, mC, mD, mE, mF);
                 foreach (var c in a.AddedContours)
-                    DrawContour(canvas, c, scale, Hpt, red, lw, solid: true);
+                    DrawContour(canvas, c, scale, red, lw, solid: true);
                 foreach (var c in a.RemovedContours)
-                    DrawContour(canvas, c, scale, Hpt, blue, lw, solid: false);
-
-                // ---- text / number differences: circle + (for removed) italic echo ----
+                    DrawContour(canvas, c, scale, blue, lw, solid: false);
                 foreach (var it in a.TextItems)
                 {
-                    bool oldSide = it.ChangeType == "removed" || it.ChangeType == "modified" || it.ChangeType == "moved";
+                    bool oldSide = IsOldSide(it.ChangeType);
                     var col = oldSide ? blue : red;
                     float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
                     float w = (float)it.Bbox.Width, h = (float)it.Bbox.Height;
-                    float cyTopPdf = Hpt - yTop;                 // top edge, PDF y-up
-                    float cyBotPdf = Hpt - (yTop + h);           // bottom edge
-                    float cyCtr = (cyTopPdf + cyBotPdf) / 2;
                     float rx = Math.Max(2f, w / 2 + 4f), ry = Math.Max(2f, h / 2 + 4f);
-                    DrawEllipse(canvas, x + w / 2, cyCtr, rx, ry, col, lw, solid: !oldSide);
+                    DrawEllipse(canvas, x + w / 2, yTop + h / 2, rx, ry, col, lw, solid: !oldSide);
+                }
+                canvas.RestoreState();
 
-                    // Render the disappeared / changed-away text in LIGHT-BLUE ITALIC at its
-                    // original position so the change is readable directly inside the PDF.
-                    if (oldSide && !string.IsNullOrWhiteSpace(it.OldText))
-                    {
-                        textRenders++;
-                        float fs = Math.Max(6f, ry);
-                        float baseY = cyTopPdf - 1f;             // sit just above the circle top
-                        if (baseY > Hpt - 1) baseY = Hpt - 1;
-                        canvas.SaveState();
-                        canvas.SetFillColor(lightBlue);
-                        canvas.BeginText();
-                        canvas.SetFontAndSize(italFont, fs);
-                        canvas.MoveText(x, baseY);
-                        canvas.ShowText(Escape(it.OldText!));
-                        canvas.EndText();
-                        canvas.RestoreState();
-                    }
+                // ---- disappeared / changed-away text: light-blue italic, readable on screen ----
+                foreach (var it in a.TextItems)
+                {
+                    if (!IsOldSide(it.ChangeType) || string.IsNullOrWhiteSpace(it.OldText)) continue;
+                    textRenders++;
+                    float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
+                    float h = (float)it.Bbox.Height;
+                    float fs = Math.Max(6f, h / 2 + 4f);
+                    double bx = x, by = Math.Max(1f, yTop + 1f);      // baseline in DISPLAY y-down
+                    ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
+                    canvas.SaveState();
+                    canvas.SetFillColor(lightBlue);
+                    canvas.BeginText();
+                    canvas.SetFontAndSize(italFont, fs);
+                    canvas.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
+                    canvas.ShowText(Escape(it.OldText!));
+                    canvas.EndText();
+                    canvas.RestoreState();
                 }
             }
             Console.Error.WriteLine($"  [font] 实际绘制消失文字 {textRenders} 处（浅蓝斜体，已嵌入 Unicode 字体）");
             pdf.Close();
         }
 
-        // Polygon contour in the target pixel frame → vector path in PDF user space.
-        static void DrawContour(PdfCanvas c, List<double> pts, double scale, float Hpt, Color col, float lw, bool solid)
+        static bool IsOldSide(string changeType)
+            => changeType == "removed" || changeType == "modified" || changeType == "moved";
+
+        // Display frame (origin top-left, y-DOWN, units pt, as rendered by MuPDF with
+        // /Rotate applied) → content user space (origin bottom-left, y-UP).
+        // PDF matrix [a b c d e f] maps (x,y) → (a*x + c*y + e, b*x + d*y + f).
+        //   rot=0  : xc = xd,        yc = Hc - yd
+        //   rot=90 : xc = yd,        yc = xd
+        //   rot=180: xc = Wc - xd,   yc = yd
+        //   rot=270: xc = Wc - yd,   yc = Hc - xd
+        // (Verified to round-trip against PyMuPDF's page rotation_matrix for all four
+        // rotations — every case keeps det = -1, i.e. the mandatory y-down→y-up flip.)
+        static void DisplayToContent(int rot, float Wc, float Hc, float ox, float oy,
+            out float a, out float b, out float c, out float d, out float e, out float f)
+        {
+            switch (rot)
+            {
+                case 90:  a = 0;  b = 1;  c = 1;  d = 0;  e = ox;      f = oy;      break;
+                case 180: a = -1; b = 0;  c = 0;  d = 1;  e = ox + Wc; f = oy;      break;
+                case 270: a = 0;  b = -1; c = -1; d = 0;  e = ox + Wc; f = oy + Hc; break;
+                default:  a = 1;  b = 0;  c = 0;  d = -1; e = ox;      f = oy + Hc; break; // rot = 0
+            }
+        }
+
+        // Rotation part of the display→content map WITHOUT the vertical flip — used as the
+        // text matrix so glyphs stay upright and unmirrored (det = +1 for every case).
+        static void TextRotation(int rot, out float a, out float b, out float c, out float d)
+        {
+            switch (rot)
+            {
+                case 90:  a = 0;  b = 1;  c = -1; d = 0;  break;
+                case 180: a = -1; b = 0;  c = 0;  d = -1; break;
+                case 270: a = 0;  b = -1; c = 1;  d = 0;  break;
+                default:  a = 1;  b = 0;  c = 0;  d = 1;  break; // rot = 0
+            }
+        }
+
+        static void ApplyMatrix(float a, float b, float c, float d, float e, float f,
+            double x, double y, out double ox, out double oy)
+        {
+            ox = a * x + c * y + e;
+            oy = b * x + d * y + f;
+        }
+
+        // Polygon contour in the target pixel frame (DISPLAY frame, y-down) → vector path.
+        static void DrawContour(PdfCanvas c, List<double> pts, double scale, Color col, float lw, bool solid)
         {
             if (pts == null || pts.Count < 6) return;
             c.SaveState();
             c.SetStrokeColor(col).SetLineWidth(lw);
             if (!solid) c.SetLineDash(new float[] { 5f, 3f }, 0);
-            c.MoveTo((float)(pts[0] / scale), Hpt - (float)(pts[1] / scale));
+            c.MoveTo((float)(pts[0] / scale), (float)(pts[1] / scale));
             for (int i = 2; i < pts.Count; i += 2)
-                c.LineTo((float)(pts[i] / scale), Hpt - (float)(pts[i + 1] / scale));
+                c.LineTo((float)(pts[i] / scale), (float)(pts[i + 1] / scale));
             c.ClosePath().Stroke();
             c.RestoreState();
         }
 
         // Ellipse outline via four cubic Bézier arcs (iText has no native ellipse stroke).
+        // Coordinates are in the DISPLAY frame (y-down) — the caller sets the CTM.
         static void DrawEllipse(PdfCanvas c, float cx, float cy, float rx, float ry, Color col, float lw, bool solid)
         {
             c.SaveState();
