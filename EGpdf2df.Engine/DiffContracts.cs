@@ -53,6 +53,9 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("graphicDiffs")] public int GraphicDiffs { get; set; }
         [JsonPropertyName("textDiffs")] public int TextDiffs { get; set; }
         [JsonPropertyName("totalPages")] public int TotalPages { get; set; }
+        [JsonPropertyName("matchedPages")] public List<string> MatchedPages { get; set; } = new();
+        [JsonPropertyName("addedPages")] public List<string> AddedPages { get; set; } = new();    // target-only (new drawings/sheets)
+        [JsonPropertyName("removedPages")] public List<string> RemovedPages { get; set; } = new(); // baseline-only (dropped drawings/sheets)
     }
 
     public sealed class DiffItem
@@ -61,7 +64,12 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("type")] public string Type { get; set; } = "";   // "graphic" | "text"
         [JsonPropertyName("bbox")] public Bbox Bbox { get; set; } = new();
         [JsonPropertyName("confidence")] public double Confidence { get; set; }
-        [JsonPropertyName("changeType")] public string? ChangeType { get; set; } // text only
+        // Direction of the change:
+        //   "added"    → new-only / changed on the new side → RED SOLID
+        //   "removed"  → old-only (present in baseline, gone in target) → BLUE DASHED
+        //   "modified" → both sides carry ink but differ → RED SOLID
+        //   "moved"    → text shifted position → RED SOLID
+        [JsonPropertyName("changeType")] public string? ChangeType { get; set; }
         [JsonPropertyName("oldText")] public string? OldText { get; set; }
         [JsonPropertyName("newText")] public string? NewText { get; set; }
     }

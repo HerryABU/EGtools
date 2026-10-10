@@ -42,7 +42,7 @@ namespace EGpdf2df.Engine
 
         public sealed class RegistrationCfg
         {
-            public string Method { get; set; } = "orb";      // "orb" | "none"
+            public string Method { get; set; } = "similarity";   // "similarity" | "none"
             public int MaxFeatures { get; set; } = 5000;
             public double MatchRatio { get; set; } = 0.15;  // Lowe ratio
             public double RansacThreshold { get; set; } = 5.0; // px
@@ -50,10 +50,11 @@ namespace EGpdf2df.Engine
 
         public sealed class AnnotationCfg
         {
-            public string Color { get; set; } = "#FF0000";
-            public int LineWidth { get; set; } = 2;
-            public bool Fill { get; set; } = false;          // text diffs: translucent fill
-            public int FillAlpha { get; set; } = 60;         // 0..255
+            public string ColorNew { get; set; } = "#FF0000";   // new-only / changed → RED SOLID
+            public string ColorOld { get; set; } = "#1E66E0";   // old-only → BLUE DASHED
+            public int LineWidth { get; set; } = 3;
+            public bool Fill { get; set; } = false;             // text diffs (new-side): translucent fill
+            public int FillAlpha { get; set; } = 60;            // 0..255
         }
 
         // ----------------------------------------------------------------
@@ -64,8 +65,8 @@ namespace EGpdf2df.Engine
   ""renderDpi"": 200,
   ""graphicDiff"": { ""enabled"": true, ""method"": ""ssim"", ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
-  ""registration"": { ""method"": ""orb"", ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""color"": ""#FF0000"", ""lineWidth"": 2, ""fill"": false, ""fillAlpha"": 60 }
+  ""registration"": { ""method"": ""similarity"", ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
+  ""annotation"": { ""colorNew"": ""#FF0000"", ""colorOld"": ""#1E66E0"", ""lineWidth"": 3, ""fill"": false, ""fillAlpha"": 60 }
 }";
 
         static readonly JsonSerializerOptions Opts = new()
