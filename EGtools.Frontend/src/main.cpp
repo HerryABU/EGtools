@@ -6,14 +6,32 @@
 #include <QIcon>
 #include "mainwindow.h"
 #include "selftest.h"
+#ifdef EGTOOLS_WIN32
+#include <windows.h>
+#endif
 
 int main(int argc, char** argv)
 {
     // Pre-scan argv: the headless self-test must force the offscreen platform
     // BEFORE QApplication is constructed (the platform plugin loads in the ctor).
-    bool wantSelfTest = false;
-    for (int i = 1; i < argc; ++i)
-        if (qstrcmp(argv[i], "--selftest") == 0) { wantSelfTest = true; break; }
+    bool wantSelfTest = false, wantMathTest = false;
+    for (int i = 1; i < argc; ++i) {
+        if (qstrcmp(argv[i], "--selftest") == 0) wantSelfTest = true;
+        else if (qstrcmp(argv[i], "--test-math") == 0) wantMathTest = true;
+    }
+    // The front-end is built as a console subsystem so --selftest / --test-math can
+    // print PASS/FAIL to stdout. For the normal GUI we DETACH that console
+    // entirely (FreeConsole) so there is no black window to close — a hidden
+    // console (ShowWindow SW_HIDE) can still be closed from the taskbar and that
+    // terminates the whole process group, taking the GUI down with it. After
+    // FreeConsole there is simply no console, so nothing to close. The child CLI
+    // kernels are spawned with CREATE_NO_WINDOW (see CliRunner), so they never
+    // show a console of their own either.
+#ifdef EGTOOLS_WIN32
+    if (!wantSelfTest && !wantMathTest) {
+        if (GetConsoleWindow()) FreeConsole();
+    }
+#endif
     if (wantSelfTest && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
         qputenv("QT_QPA_PLATFORM", "offscreen");
 
