@@ -19,6 +19,7 @@ namespace EGpdf2df.Engine
         public TextCfg TextDiff { get; set; } = new();
         public RegistrationCfg Registration { get; set; } = new();
         public AnnotationCfg Annotation { get; set; } = new();
+        public PipeMatchCfg PipeMatch { get; set; } = new();
 
         public sealed class GraphicCfg
         {
@@ -52,9 +53,20 @@ namespace EGpdf2df.Engine
         {
             public string ColorNew { get; set; } = "#FF0000";   // new-only / changed → RED SOLID
             public string ColorOld { get; set; } = "#1E66E0";   // old-only → BLUE DASHED
+            public string ColorOldText { get; set; } = "#66B2FF"; // 消失文字（浅蓝斜体）— disappeared text
             public int LineWidth { get; set; } = 3;
             public bool Fill { get; set; } = false;             // text diffs (new-side): translucent fill
             public int FillAlpha { get; set; } = 60;            // 0..255
+            // 文字/序号差异用"圈画"（椭圆）而非方框；图像差异仍用矩形描红。
+            public bool CircleText { get; set; } = true;
+        }
+
+        public sealed class PipeMatchCfg
+        {
+            public bool Enabled { get; set; } = true;
+            // 材料表（BOM）通常位于图纸底部；页高的比例阈值以上视为"图中管线号"、
+            // 以下视为"材料表管线号"。若提供人工修正的材料表（CSV/TSV），则以该表为准。
+            public double MaterialTableYFraction { get; set; } = 0.62;
         }
 
         // ----------------------------------------------------------------
@@ -66,7 +78,8 @@ namespace EGpdf2df.Engine
   ""graphicDiff"": { ""enabled"": true, ""method"": ""ssim"", ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""similarity"", ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""colorNew"": ""#FF0000"", ""colorOld"": ""#1E66E0"", ""lineWidth"": 3, ""fill"": false, ""fillAlpha"": 60 }
+  ""annotation"": { ""colorNew"": ""#FF0000"", ""colorOld"": ""#1E66E0"", ""colorOldText"": ""#66B2FF"", ""lineWidth"": 3, ""fill"": false, ""fillAlpha"": 60, ""circleText"": true },
+  ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 
         static readonly JsonSerializerOptions Opts = new()

@@ -70,6 +70,10 @@ namespace EGpdf2df.Engine
 
                     var resp = new DiffResponse { Output = outPath };
                     var pageImages = new List<(byte[] data, int w, int h)>();
+                    // Accumulate every target-page pipe/line number (with its y-centre and
+                    // page height) so we can run the figure↔material-table 1:1 cross-check
+                    // once all pages are processed.
+                    var allTgtPipes = new List<(string no, double yc, double h)>();
 
                     foreach (var (basePno, tgtPno, no) in pagePairs)
                     {
@@ -85,6 +89,12 @@ namespace EGpdf2df.Engine
             // ----- text words (used by both the text mask and the text-diff stage) -----
             var baseWords = TextGeometry.GetWords(baseST, bBounds.Y1 - bBounds.Y0, 0.18);
             var tgtWords = TextGeometry.GetWords(targetST, tBounds.Y1 - tBounds.Y0, 0.18);
+
+            // Collect target pipe/line numbers for the figure↔material-table check.
+            double tH = tBounds.Y1 - tBounds.Y0;
+            foreach (var w in tgtWords)
+                if (TextGeometry.LooksLikeLineNo(w.text))
+                    allTgtPipes.Add((w.text.ToUpperInvariant(), w.yc, tH));
 
             // ----- per-page text masks, built in EACH page's own pixel frame -----
             // A base-frame mask must never be applied to a target-frame image (or
@@ -112,19 +122,29 @@ namespace EGpdf2df.Engine
             // alignment is far more robust than pixel correlation when drawing lines have
             // actually been re-inked between revisions. The single transform is applied to
             // BOTH the pixels AND the text coordinates so both diff stages share one frame.
-            bool sameFrame = bw == tw && bh == th;
-            using var H = sameFrame
-                ? Mat.Eye(3, 3, MatType.CV_64FC1).ToMat()
-                : ComputeAlign(baseGray, tgtGray, bw, bh, tw, th, cfg.Registration,
-                    baseWords, tgtWords, scale, bBounds.X0, bBounds.Y0, tBounds.X0, tBounds.Y0);
-            L($"  对齐: sameFrame={sameFrame} base={bw}x{bh} target={tw}x{th}");
+            // Always recover a single affine (uniform scale + translation) and WARP the
+            // baseline into the target frame. This is what makes "try to align first, then
+            // compare" true even for drawings that are the SAME paper size but shifted
+            // up/down/left/right — the old `sameFrame` early-return skipped translation
+            // estimation in exactly that case and let shifted sheets mis-align.
+            using var H = ComputeAlign(baseGray, tgtGray, bw, bh, tw, th, cfg.Registration,
+                baseWords, tgtWords, scale, bBounds.X0, bBounds.Y0, tBounds.X0, tBounds.Y0);
+            double alignScale = (double)tw / bw, alignDxPx = H.Get<double>(0, 2), alignDyPx = H.Get<double>(1, 2);
+            L($"  对齐: base={bw}x{bh} target={tw}x{th} scale={alignScale:F4} dx(px)={alignDxPx:F1} dy(px)={alignDyPx:F1}");
+            resp.Alignments.Add(new AlignInfo
+            {
+                Page = tgtPno,
+                Scale = Math.Round(alignScale, 4),
+                DxPt = Math.Round(alignDxPx / scale, 1),
+                DyPt = Math.Round(alignDyPx / scale, 1),
+            });
 
             Mat baseGrayAligned = new Mat();
             Cv2.WarpPerspective(baseGray, baseGrayAligned, H, new Size(tw, th));
 
-            // Baseline text words, transformed into the TARGET point frame.
-            var baseWordsAligned = sameFrame ? baseWords
-                : TransformWordsToTarget(baseWords, H, bBounds.X0, bBounds.Y0, tBounds.X0, tBounds.Y0, scale);
+            // Baseline text words, transformed into the TARGET point frame (correct even
+            // when H is the identity — no float drift thanks to the rounding in Mk()).
+            var baseWordsAligned = TransformWordsToTarget(baseWords, H, bBounds.X0, bBounds.Y0, tBounds.X0, tBounds.Y0, scale);
 
             // Unified text mask in the TARGET pixel frame (union, base mask warped in).
             Mat? textMask = null;
@@ -229,6 +249,13 @@ namespace EGpdf2df.Engine
                         resp.Summary.AddedPages.Add($"目标页 {pg + 1} (#{dno})");
                     foreach (var (pg, dno) in removedPages)
                         resp.Summary.RemovedPages.Add($"基准页 {pg + 1} (#{dno})");
+
+                    // ---- figure ↔ material-table 1:1 cross-check ----
+                    if (cfg.PipeMatch.Enabled && (req.Options?.PipeMatch ?? true))
+                    {
+                        resp.PipeMatch = CrossCheckPipes(allTgtPipes, req.CorrectedMaterialTable,
+                            req.Options?.MaterialTableYFraction ?? cfg.PipeMatch.MaterialTableYFraction, L);
+                    }
 
                     PdfFromImages.Write(outPath, pageImages);
                     var json = JsonSerializer.Serialize(resp, new JsonSerializerOptions { WriteIndented = true });
@@ -652,8 +679,11 @@ namespace EGpdf2df.Engine
         }
 
         // Annotate the target page with DIRECTIONAL markers:
-        //   new-only / changed (added, modified, moved) → RED SOLID rectangle
-        //   old-only (removed)                           → BLUE DASHED rectangle
+        //   • graphic diffs  → rectangle outline (RED SOLID = new/changed, BLUE DASHED = old-only)
+        //   • text/number    → CIRCLE (ellipse): RED SOLID = new-only/added; BLUE DASHED =
+        //     removed / modified / moved. For any blue (old-side) item we ALSO render the
+        //     disappeared text in LIGHT-BLUE ITALIC at its original position so the change
+        //     is readable directly inside the emitted PDF.
         static void Annotate(Mat bgr, List<DiffItem> items, double scale, double x0, double y0, Pdf2dfConfig.AnnotationCfg ann)
         {
             foreach (var it in items)
@@ -662,18 +692,54 @@ namespace EGpdf2df.Engine
                 int y = (int)Math.Round((it.Bbox.Y - y0) * scale);
                 int w = (int)Math.Round(it.Bbox.Width * scale);
                 int h = (int)Math.Round(it.Bbox.Height * scale);
-                var rect = new Rect(x, y, Math.Max(2, w), Math.Max(2, h));
-                bool oldSide = it.ChangeType == "removed";   // old-only → blue DASHED
+                if (w <= 0 || h <= 0) continue;
+
+                // old-only / changed-text → blue DASHED; new-only → RED SOLID
+                bool oldSide = it.ChangeType == "removed" || it.ChangeType == "modified" || it.ChangeType == "moved";
                 var (b, g, r) = ParseColor(oldSide ? ann.ColorOld : ann.ColorNew);
                 var color = new Scalar(b, g, r);
-                if (it.Type == "text" && ann.Fill && !oldSide)
+
+                if (it.Type == "graphic")
                 {
-                    using var overlay = bgr.Clone();
-                    Cv2.Rectangle(overlay, rect, color, -1);
-                    Cv2.AddWeighted(overlay, ann.FillAlpha / 255.0, bgr, 1 - ann.FillAlpha / 255.0, 0, bgr);
+                    var rect = new Rect(x, y, Math.Max(2, w), Math.Max(2, h));
+                    if (oldSide) DrawDashedRect(bgr, rect, color, ann.LineWidth);
+                    else Cv2.Rectangle(bgr, rect, color, ann.LineWidth);
                 }
-                if (oldSide) DrawDashedRect(bgr, rect, color, ann.LineWidth);
-                else Cv2.Rectangle(bgr, rect, color, ann.LineWidth);
+                else // text / number → circle
+                {
+                    int cx = x + w / 2, cy = y + h / 2;
+                    int ax = Math.Max(2, w / 2 + 5), ay = Math.Max(2, h / 2 + 5);
+                    if (ann.CircleText)
+                    {
+                        if (oldSide) DrawDashedEllipse(bgr, cx, cy, ax, ay, color, ann.LineWidth);
+                        else Cv2.Ellipse(bgr, new Point(cx, cy), new Size(ax, ay), 0, 0, 360, color, ann.LineWidth, LineTypes.AntiAlias);
+                    }
+                    else
+                    {
+                        var rect = new Rect(x, y, Math.Max(2, w), Math.Max(2, h));
+                        if (oldSide) DrawDashedRect(bgr, rect, color, ann.LineWidth);
+                        else Cv2.Rectangle(bgr, rect, color, ann.LineWidth);
+                    }
+                }
+
+                // 把消失 / 被改掉的旧文字以浅蓝斜体显现在原位置（在生成的 PDF 中可直接看到）。
+                // OpenCvSharp 的 PutText 仅支持 ASCII/Latin-1；遇到土耳其语变音或中文等字符会触发
+                // "Cannot marshal" 异常，故此处做安全过滤 + 异常兜底，确保单个文字失败不会中断整页比对。
+                if (oldSide && !string.IsNullOrWhiteSpace(it.OldText) && IsAsciiRenderable(it.OldText!))
+                {
+                    var (tb, tg, tr) = ParseColor(ann.ColorOldText);
+                    var tcolor = new Scalar(tb, tg, tr);
+                    double fs = Math.Max(0.55, h / 28.0);
+                    int tx = x;
+                    int ty = Math.Max((int)(12 * fs), y - (int)(5 * fs));
+                    try
+                    {
+                        Cv2.PutText(bgr, it.OldText!, new Point(tx, ty),
+                            HersheyFonts.HersheySimplex | HersheyFonts.Italic, fs, tcolor,
+                            Math.Max(1, ann.LineWidth - 1), LineTypes.AntiAlias);
+                    }
+                    catch { /* 非 ASCII 字符无法用 Hershey 字体渲染，跳过（蓝虚线圈仍标记位置） */ }
+                }
             }
         }
 
@@ -699,6 +765,22 @@ namespace EGpdf2df.Engine
                 int sx0 = (int)Math.Round(x0 + dx * s0), sy0 = (int)Math.Round(y0 + dy * s0);
                 int sx1 = (int)Math.Round(x0 + dx * s1), sy1 = (int)Math.Round(y0 + dy * s1);
                 Cv2.Line(bgr, new Point(sx0, sy0), new Point(sx1, sy1), color, thickness, LineTypes.AntiAlias);
+            }
+        }
+
+        // Dashed ellipse used to CIRCLE old-side text/number diffs.
+        static void DrawDashedEllipse(Mat bgr, int cx, int cy, int ax, int ay, Scalar color, int thickness)
+        {
+            int dash = 16, gap = 9;
+            // Ramanujan perimeter approximation — good enough for even dash spacing.
+            double perim = Math.PI * (3 * (ax + ay) - Math.Sqrt((3 * ax + ay) * (ax + 3 * ay)));
+            double total = Math.Max(perim, 1);
+            int n = (int)(total / (dash + gap)) + 1;
+            for (int i = 0; i < n; i++)
+            {
+                double a0 = i * (dash + gap) / total * 360.0;
+                double a1 = Math.Min(i * (dash + gap) + dash, total) / total * 360.0;
+                Cv2.Ellipse(bgr, new Point(cx, cy), new Size(ax, ay), 0, a0, a1, color, thickness, LineTypes.AntiAlias);
             }
         }
 
@@ -778,6 +860,83 @@ namespace EGpdf2df.Engine
             }
             L($"  图纸号配对: 匹配 {pairs.Count} 页, 新增 {addedTgt.Count} 页, 删除 {removedBase.Count} 页");
             return (pairs, addedTgt, removedBase);
+        }
+
+        // Figure (drawn pipes) ↔ material-table (BOM) 1:1 cross-check.
+        //   • figure side  = pipe numbers found in the upper part of the target pages
+        //     (above `yFraction` of the page height — the isometric drawing itself);
+        //   • table side   = either the user's corrected material table (CSV/TSV upload,
+        //     authoritative) OR the pipe numbers found in the lower band of the pages.
+        // The result reports which numbers are on both sides, which are drawn-but-missing
+        // from the BOM, and which are in the BOM-but-not-drawn.
+        static PipeMatch CrossCheckPipes(List<(string no, double yc, double h)> tgtPipes,
+            string? correctedTable, double yFraction, Action<string> L)
+        {
+            var result = new PipeMatch { Enabled = true };
+            var figure = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var table = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var p in tgtPipes)
+            {
+                bool isTable = p.yc >= yFraction * p.h;
+                if (isTable) table.Add(p.no);
+                else figure.Add(p.no);
+            }
+
+            if (!string.IsNullOrWhiteSpace(correctedTable) && File.Exists(correctedTable))
+            {
+                result.TableSource = "upload:" + Path.GetFileName(correctedTable);
+                table.Clear();
+                try
+                {
+                    foreach (var line in File.ReadLines(correctedTable))
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        // Accept comma OR tab separated; tolerate quotes.
+                        var cells = line.Split(new[] { ',', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (var raw in cells)
+                        {
+                            var cell = raw.Trim().Trim('"', '\'');
+                            if (TextGeometry.LooksLikeLineNo(cell)) table.Add(cell.ToUpperInvariant());
+                        }
+                    }
+                    L($"  材料表交叉核对: 使用上传表 {Path.GetFileName(correctedTable)}，提取管线号 {table.Count} 个");
+                }
+                catch (Exception ex)
+                {
+                    L($"  [warn] 读取上传材料表失败，回退到 PDF 内材料表: {ex.Message}");
+                    // Re-derive the table side from the PDF lower band.
+                    table.Clear();
+                    foreach (var p in tgtPipes)
+                        if (p.yc >= yFraction * p.h) table.Add(p.no);
+                    result.TableSource = "pdf";
+                }
+            }
+            else
+            {
+                result.TableSource = "pdf";
+            }
+
+            var matched = new List<string>();
+            var figureOnly = new List<string>();
+            var tableOnly = new List<string>();
+            foreach (var f in figure) (table.Contains(f) ? matched : figureOnly).Add(f);
+            foreach (var t in table) if (!figure.Contains(t)) tableOnly.Add(t);
+            matched.Sort(); figureOnly.Sort(); tableOnly.Sort();
+            result.Matched = matched;
+            result.FigureOnly = figureOnly;
+            result.TableOnly = tableOnly;
+            L($"  管线号一一对应: 匹配 {matched.Count}，图中独有(材料表缺) {figureOnly.Count}，材料表独有(图中未画) {tableOnly.Count}");
+            return result;
+        }
+
+        // OpenCvSharp PutText uses the Hershey fonts which only cover printable ASCII.
+        // Turkish/CJK/accents would throw on marshaling or render as mojibake, so we
+        // only attempt to draw text that is purely ASCII (pipe numbers, English labels).
+        static bool IsAsciiRenderable(string s)
+        {
+            foreach (char c in s) if (c < 0x20 || c > 0x7E) return false;
+            return true;
         }
 
         static double Round(double v) => Math.Round(v, 1);

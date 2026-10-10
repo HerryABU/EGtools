@@ -14,6 +14,9 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("pages")] public List<int>? Pages { get; set; }
         [JsonPropertyName("regions")] public List<ReqRegion>? Regions { get; set; }
         [JsonPropertyName("options")] public ReqOptions? Options { get; set; }
+        // 用户人工修正后重新上传的材料表（CSV/TSV）。提供后，管线号"材料表侧"以此表为准，
+        // 与"图中管线号"做一一对应核对。
+        [JsonPropertyName("correctedMaterialTable")] public string? CorrectedMaterialTable { get; set; }
     }
 
     public sealed class ReqRegion
@@ -31,6 +34,10 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("diffThreshold")] public int? DiffThreshold { get; set; }
         [JsonPropertyName("yTolerance")] public int? YTolerance { get; set; }
         [JsonPropertyName("xTolerance")] public int? XTolerance { get; set; }
+        // 是否启用"图中管线号 ↔ 材料表"一一对应核对。
+        [JsonPropertyName("pipeMatch")] public bool? PipeMatch { get; set; }
+        // 材料表区域判定：页高比例阈值（默认 0.62）。可覆盖配置文件。
+        [JsonPropertyName("materialTableYFraction")] public double? MaterialTableYFraction { get; set; }
     }
 
     public sealed class Bbox
@@ -46,6 +53,26 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("output")] public string Output { get; set; } = "";
         [JsonPropertyName("summary")] public DiffSummary Summary { get; set; } = new();
         [JsonPropertyName("diffs")] public List<DiffItem> Diffs { get; set; } = new();
+        [JsonPropertyName("alignments")] public List<AlignInfo> Alignments { get; set; } = new();
+        [JsonPropertyName("pipeMatch")] public PipeMatch? PipeMatch { get; set; }
+    }
+
+    public sealed class AlignInfo
+    {
+        [JsonPropertyName("page")] public int Page { get; set; }
+        [JsonPropertyName("scale")] public double Scale { get; set; }      // 统一缩放（基准→目标）
+        [JsonPropertyName("dxPt")] public double DxPt { get; set; }        // 平移 dx（PDF pt）
+        [JsonPropertyName("dyPt")] public double DyPt { get; set; }        // 平移 dy（PDF pt）
+    }
+
+    // 图中管线号 ↔ 材料表 一一对应核对结果。
+    public sealed class PipeMatch
+    {
+        [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+        [JsonPropertyName("tableSource")] public string TableSource { get; set; } = ""; // "pdf" | "upload:<file>"
+        [JsonPropertyName("matched")] public List<string> Matched { get; set; } = new();       // 两侧都有
+        [JsonPropertyName("figureOnly")] public List<string> FigureOnly { get; set; } = new(); // 图中画出但材料表缺失
+        [JsonPropertyName("tableOnly")] public List<string> TableOnly { get; set; } = new();   // 材料表有但图中未画出
     }
 
     public sealed class DiffSummary
@@ -64,11 +91,11 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("type")] public string Type { get; set; } = "";   // "graphic" | "text"
         [JsonPropertyName("bbox")] public Bbox Bbox { get; set; } = new();
         [JsonPropertyName("confidence")] public double Confidence { get; set; }
-        // Direction of the change:
-        //   "added"    → new-only / changed on the new side → RED SOLID
-        //   "removed"  → old-only (present in baseline, gone in target) → BLUE DASHED
-        //   "modified" → both sides carry ink but differ → RED SOLID
-        //   "moved"    → text shifted position → RED SOLID
+        // Direction of the change (drives the PDF annotation):
+        //   "added"    → new-only              → RED SOLID (rectangle for graphics, circle for text)
+        //   "removed"  → old-only              → BLUE DASHED + light-blue italic "disappeared" text
+        //   "modified" → text changed          → BLUE DASHED + light-blue italic old text
+        //   "moved"    → text shifted position → BLUE DASHED + light-blue italic old text (old spot)
         [JsonPropertyName("changeType")] public string? ChangeType { get; set; }
         [JsonPropertyName("oldText")] public string? OldText { get; set; }
         [JsonPropertyName("newText")] public string? NewText { get; set; }
