@@ -27,6 +27,12 @@ add_executable(EGtoolsFrontend
     src/schemes.cpp
     src/schemepage.h
     src/schemepage.cpp
+    src/diffpage.h
+    src/diffpage.cpp
+    src/excelcomparepage.h
+    src/excelcomparepage.cpp
+    src/charsegmentpanel.h
+    src/charsegmentpanel.cpp
     src/types.h
     res/app_icon.rc
 )

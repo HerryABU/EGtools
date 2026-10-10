@@ -18,6 +18,9 @@ class QStackedWidget;
 class HomePage;
 class SchemePage;
 class SchemeStore;
+class DiffPage;
+class ExcelComparePage;
+class CharSegmentPanel;
 
 // The Qt shell. It owns NO PDF processing logic: it displays pages rendered by
 // the CLI, captures rubber-band selections, exports the region JSON contract for
@@ -39,12 +42,10 @@ public slots:
     void onClearRegions();
     void onExportJson();
     void onExtract();
-    void onDiff();
     void onManual();
     void onAbout();
     void onHome();
     void onWholePageExtract();
-    void onExcelCompare();
     void onSchemes();
     void onCaptureAsScheme();
     void onRewriteRegion(const QString& schemeId, int regionIndex);
@@ -52,6 +53,7 @@ public slots:
     void onSchemeStatus(const QString& msg);
     void onModeChanged(int index);
     void onRegionSelected(int page, const QString& kind, const QRectF& rectPt);
+    void onTextPreview(int page, const QString& text);
 
 private:
     void buildUi();
@@ -72,6 +74,13 @@ private:
     void applySchemeToCanvas(const Scheme& s);
     void loadSchemeIntoStore(const Scheme& s);
 
+    // Stacked page indices (the left sidebar switches between these).
+    enum PageIdx { PageHome = 0, PagePdf = 1, PageDiff = 2, PageExcel = 3, PageScheme = 4 };
+    void navTo(int index);
+    // Load every vector word of a page (kernel --words) into the canvas so the
+    // rubber band can recognise text live as the user drags.
+    void loadPageWords(int page);
+
     QString m_cliDir;
     QString m_pdfPath;
     int     m_pageCount = 0;
@@ -83,10 +92,15 @@ private:
     HomePage*    m_home = nullptr;
     SchemePage*  m_schemes = nullptr;
     SchemeStore* m_schemeStore = nullptr;
+    DiffPage*    m_diffPage = nullptr;
+    ExcelComparePage* m_excelPage = nullptr;
+    CharSegmentPanel* m_charPanel = nullptr;
+    QListWidget* m_nav = nullptr;
     QString      m_rewriteSchemeId;   // non-empty => a rewrite is in progress
     int          m_rewriteRow = -1;
     QComboBox*   m_modeCombo = nullptr;
     QLabel*      m_pageLabel = nullptr;
+    QLabel*      m_recogLabel = nullptr;  // live in-canvas text recognition readout
     QTabWidget*  m_tabs = nullptr;
     QTableWidget* m_table = nullptr;
     QListWidget* m_pipes = nullptr;

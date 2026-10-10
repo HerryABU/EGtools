@@ -4,6 +4,9 @@
 #include "homepage.h"
 #include "schemes.h"
 #include "schemepage.h"
+#include "diffpage.h"
+#include "excelcomparepage.h"
+#include "charsegmentpanel.h"
 
 #include <QApplication>
 #include <QAction>
@@ -95,7 +98,7 @@ void MainWindow::buildUi()
     connect(clearA,   &QAction::triggered, this, &MainWindow::onClearRegions);
     connect(exportA,  &QAction::triggered, this, &MainWindow::onExportJson);
     connect(extractA, &QAction::triggered, this, &MainWindow::onExtract);
-    connect(diffA,    &QAction::triggered, this, &MainWindow::onDiff);
+    connect(diffA,    &QAction::triggered, this, [this]{ navTo(PageDiff); });
 
     // Menu bar: 文件 / 操作 / 帮助 (帮助 holds the in-app manual).
     auto* mFile = menuBar()->addMenu(QStringLiteral("文件(&F)"));
@@ -127,6 +130,7 @@ void MainWindow::buildUi()
     m_view = new PdfView();
     m_view->setKind(QStringLiteral("detail_table"));
     connect(m_view, &PdfView::regionSelected, this, &MainWindow::onRegionSelected);
+    connect(m_view, &PdfView::textPreview, this, &MainWindow::onTextPreview);
 
     auto* scroll = new QScrollArea();
     scroll->setWidget(m_view);
@@ -147,11 +151,24 @@ void MainWindow::buildUi()
     topRow->addWidget(new QLabel(QStringLiteral("页码:")));
     topRow->addWidget(m_pageLabel);
 
+    // 字符段（导出列集）面板：查看 / 编辑 / 恢复默认。
+    m_charPanel = new CharSegmentPanel();
+    connect(m_charPanel, &CharSegmentPanel::statusMessage, this, &MainWindow::log);
+    auto* charBox = new QGroupBox(QStringLiteral("字符段（导出列集）"));
+    auto* charLay = new QVBoxLayout(charBox);
+    charLay->addWidget(m_charPanel);
+    charBox->setMaximumHeight(230);
+
     auto* leftPane = new QWidget();
     auto* leftLay = new QVBoxLayout(leftPane);
     leftLay->setContentsMargins(4, 4, 4, 4);
     leftLay->addLayout(topRow);
+    m_recogLabel = new QLabel(QStringLiteral("框选识别：在图上拖拽框选，松手前实时显示范围内文字"));
+    m_recogLabel->setWordWrap(true);
+    m_recogLabel->setStyleSheet(QStringLiteral("QLabel{background:#fff7e0;border:1px solid #e0c060;padding:3px 6px;border-radius:4px;color:#5a4500;}"));
+    leftLay->addWidget(m_recogLabel);
     leftLay->addWidget(scroll, 1);
+    leftLay->addWidget(charBox);
 
     m_tabs = new QTabWidget();
     m_table = new QTableWidget();
@@ -191,40 +208,71 @@ void MainWindow::buildUi()
     split->setStretchFactor(0, 3);
     split->setStretchFactor(1, 2);
 
-    // Page 0 = home, page 1 = PDF workspace, page 2 = reusable box schemes.
+    // ---- Sidebar navigation: every function gets its own page ----
+    m_nav = new QListWidget();
+    m_nav->setFixedWidth(150);
+    m_nav->setStyleSheet(QStringLiteral("QListWidget{font-size:13px;} QListWidget::item{padding:8px 6px;} QListWidget::item:selected{background:#2d7d46;color:#fff;}"));
+    m_nav->addItem(QStringLiteral("首页"));
+    m_nav->addItem(QStringLiteral("PDF → Excel"));
+    m_nav->addItem(QStringLiteral("PDF 比对"));
+    m_nav->addItem(QStringLiteral("Excel 比对"));
+    m_nav->addItem(QStringLiteral("框选方案"));
+    m_nav->setCurrentRow(PageHome);
+    connect(m_nav, &QListWidget::currentRowChanged, this, &MainWindow::navTo);
+
+    // Pages: 0 home, 1 PDF→Excel workspace, 2 PDF diff, 3 Excel compare, 4 schemes.
     m_home = new HomePage();
     m_schemeStore = new SchemeStore();
     m_schemes = new SchemePage(m_schemeStore);
+    m_diffPage = new DiffPage();
+    m_excelPage = new ExcelComparePage();
+    connect(m_diffPage,  &DiffPage::statusMessage,  this, &MainWindow::log);
+    connect(m_excelPage, &ExcelComparePage::statusMessage, this, &MainWindow::log);
+
     m_stack = new QStackedWidget();
-    m_stack->addWidget(m_home);
-    m_stack->addWidget(split);
-    m_stack->addWidget(m_schemes);
-    setCentralWidget(m_stack);
+    m_stack->addWidget(m_home);     // PageHome
+    m_stack->addWidget(split);      // PagePdf  (the PDF→Excel workspace)
+    m_stack->addWidget(m_diffPage); // PageDiff
+    m_stack->addWidget(m_excelPage);// PageExcel
+    m_stack->addWidget(m_schemes);  // PageScheme
+
+    auto* navSplit = new QSplitter(Qt::Horizontal);
+    navSplit->addWidget(m_nav);
+    navSplit->addWidget(m_stack);
+    navSplit->setStretchFactor(0, 0);
+    navSplit->setStretchFactor(1, 1);
+    setCentralWidget(navSplit);
 
     connect(m_schemes, &SchemePage::rewriteRequested, this, &MainWindow::onRewriteRegion);
     connect(m_schemes, &SchemePage::reuseRequested,   this, &MainWindow::onReuseScheme);
     connect(m_schemes, &SchemePage::statusMessage,    this, &MainWindow::onSchemeStatus);
 
     connect(m_home, &HomePage::startExtract, this, [this]{
-        // "开始使用" / 区域框选提取卡片 → 进入工作区并直接打开 PDF 选择框
-        showPage(1);
-        onOpen();
+        navTo(PagePdf); onOpen();
     });
-    connect(m_home, &HomePage::openPdfRequested,     this, [this]{ showPage(1); onOpen(); });
-    connect(m_home, &HomePage::wholePageExtract,     this, &MainWindow::onWholePageExtract);
-    connect(m_home, &HomePage::diffRequested,        this, &MainWindow::onDiff);
-    connect(m_home, &HomePage::excelCompareRequested,this, &MainWindow::onExcelCompare);
-    connect(m_home, &HomePage::schemesRequested,     this, [this]{ onSchemes(); });
+    connect(m_home, &HomePage::openPdfRequested,     this, [this]{ navTo(PagePdf); onOpen(); });
+    connect(m_home, &HomePage::wholePageExtract,     this, [this]{ navTo(PagePdf); onWholePageExtract(); });
+    connect(m_home, &HomePage::diffRequested,        this, [this]{ navTo(PageDiff); });
+    connect(m_home, &HomePage::excelCompareRequested,this, [this]{ navTo(PageExcel); });
+    connect(m_home, &HomePage::schemesRequested,     this, [this]{ navTo(PageScheme); });
     connect(m_home, &HomePage::manualRequested,      this, &MainWindow::onManual);
     connect(m_home, &HomePage::aboutRequested,       this, &MainWindow::onAbout);
 
-    statusBar()->showMessage(QStringLiteral("就绪 — 从首页开始，或打开一个 PDF"));
+    statusBar()->showMessage(QStringLiteral("就绪 — 从首页开始，或左侧选择功能"));
     refreshKernelStatus();
+}
+
+void MainWindow::navTo(int index)
+{
+    if (!m_stack) return;
+    m_stack->setCurrentIndex(index);
+    if (index == PageHome) refreshKernelStatus();
 }
 
 void MainWindow::showPage(int index)
 {
-    if (m_stack) m_stack->setCurrentIndex(index);
+    if (m_nav) m_nav->setCurrentRow(index);
+    else if (m_stack) m_stack->setCurrentIndex(index);
 }
 
 void MainWindow::refreshKernelStatus()
@@ -240,6 +288,9 @@ void MainWindow::refreshKernelStatus()
         m_home->setKernelStatus(false,
             QStringLiteral("内核状态：缺少 %1 — 请在下方「CLI 目录」指定内核目录").arg(missing.join(QStringLiteral(" / "))));
     }
+    if (m_diffPage)  m_diffPage->setCliDir(m_cliDir);
+    if (m_excelPage) m_excelPage->setCliDir(m_cliDir);
+    if (m_charPanel) m_charPanel->setCliDir(m_cliDir);
 }
 
 void MainWindow::setCliDir(const QString& d)
@@ -314,6 +365,7 @@ bool MainWindow::openPdf(const QString& path)
     m_view->setPage(img, scale, 0);
     m_view->setPageIndex(0);
     m_pwPt = pw; m_phPt = ph; m_scale = scale;
+    loadPageWords(0);
     m_pageLabel->setText(QStringLiteral("%1 / %2").arg(1).arg(m_pageCount));
     log(QStringLiteral("已打开 %1（%2 页，%3 x %4 pt）")
             .arg(QFileInfo(path).fileName()).arg(m_pageCount).arg(pw).arg(ph));
@@ -360,8 +412,7 @@ void MainWindow::onOpen()
 
 void MainWindow::onHome()
 {
-    showPage(0);
-    refreshKernelStatus();
+    navTo(PageHome);
 }
 
 // ---- Full-page material table extraction (drives EGpdf2excel directly) ----
@@ -391,33 +442,6 @@ void MainWindow::onWholePageExtract()
 }
 
 // ---- Excel drawing comparison (drives EGexcel2df directly) ----
-void MainWindow::onExcelCompare()
-{
-    QString a = QFileDialog::getOpenFileName(this, QStringLiteral("旧图纸 Excel"), QString(),
-                                             QStringLiteral("Excel (*.xlsx *.xlsm)"));
-    if (a.isEmpty()) return;
-    QString b = QFileDialog::getOpenFileName(this, QStringLiteral("新图纸 Excel"), QString(),
-                                             QStringLiteral("Excel (*.xlsx *.xlsm)"));
-    if (b.isEmpty()) return;
-    QString outXlsx = QFileDialog::getSaveFileName(this, QStringLiteral("输出对比清单"),
-        QStringLiteral("图纸变化清单.xlsx"), QStringLiteral("Excel (*.xlsx)"));
-    if (outXlsx.isEmpty()) return;
-
-    showPage(1);
-    QString out, err;
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGexcel2df")),
-        {a, b, QStringLiteral("-o"), outXlsx}, out, err);
-    log(QStringLiteral("[Excel 对比] rc=%1").arg(rc));
-    if (!err.trimmed().isEmpty()) log(err.trimmed());
-    if (rc == 0) {
-        m_tabs->setCurrentWidget(m_logView);
-        QMessageBox::information(this, QStringLiteral("Excel 对比"),
-            QStringLiteral("对比完成，输出：\n%1").arg(outXlsx));
-    } else {
-        log(QStringLiteral("Excel 对比失败，退出码 %1").arg(rc));
-    }
-}
-
 void MainWindow::onRenderPage()
 {
     if (m_pdfPath.isEmpty()) return;
@@ -425,6 +449,7 @@ void MainWindow::onRenderPage()
     if (renderPage(m_pageIndex, img, scale, pw, ph)) {
         m_view->setPage(img, scale, m_pageIndex);
         m_scale = scale; m_pwPt = pw; m_phPt = ph;
+        loadPageWords(m_pageIndex);
         m_pageLabel->setText(QStringLiteral("%1 / %2").arg(m_pageIndex + 1).arg(m_pageCount));
         log(QStringLiteral("渲染第 %1 页 (%2 x %3 px)").arg(m_pageIndex + 1).arg(img.width()).arg(img.height()));
     }
@@ -476,6 +501,52 @@ void MainWindow::onClearRegions()
     m_pipes->clear();
     m_jsonView->clear();
     log(QStringLiteral("已清空框选"));
+}
+
+// Live in-canvas text recognition readout: while the user drags a rubber band
+// this shows the vector text inside the box (no raster OCR — the words are the
+// kernel's own structured-text output, re-projected through the same scale).
+void MainWindow::onTextPreview(int /*page*/, const QString& text)
+{
+    if (!m_recogLabel) return;
+    if (text.isEmpty())
+        m_recogLabel->setText(QStringLiteral("框选识别：在图上拖拽框选，松手前实时显示范围内文字"));
+    else
+        m_recogLabel->setText(QStringLiteral("识别到文字（%1 词）：%2")
+            .arg(text.split(QStringLiteral(" "), Qt::SkipEmptyParts).size()).arg(text));
+}
+
+// Load every vector word of the just-rendered page so the rubber band can
+// recognise text live. Runs the kernel --words mode and re-projects the boxes
+// into the canvas pt coordinate space.
+void MainWindow::loadPageWords(int page)
+{
+    if (m_pdfPath.isEmpty() || !m_view) return;
+    QString out, err;
+    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
+        {QStringLiteral("--words"), QString::number(page), m_pdfPath}, out, err);
+    if (rc != 0) {
+        log(QStringLiteral("[words] 提取页文字失败 rc=%1").arg(rc));
+        return;
+    }
+    QJsonParseError pe{};
+    QJsonDocument doc = QJsonDocument::fromJson(out.toUtf8(), &pe);
+    if (pe.error != QJsonParseError::NoError || !doc.isObject()) {
+        log(QStringLiteral("[words] 解析失败: %1").arg(pe.errorString()));
+        return;
+    }
+    QVector<WordBox> words;
+    for (const QJsonValue& wv : doc.object().value(QStringLiteral("words")).toArray()) {
+        QJsonObject w = wv.toObject();
+        WordBox wb;
+        wb.rectPt = QRectF(w.value(QStringLiteral("x0")).toDouble(), w.value(QStringLiteral("y0")).toDouble(),
+                           w.value(QStringLiteral("x1")).toDouble() - w.value(QStringLiteral("x0")).toDouble(),
+                           w.value(QStringLiteral("y1")).toDouble() - w.value(QStringLiteral("y0")).toDouble());
+        wb.text = w.value(QStringLiteral("text")).toString();
+        words.append(wb);
+    }
+    m_view->setPageWords(words);
+    log(QStringLiteral("已加载本页矢量文字 %1 词（实时识别就绪）").arg(words.size()));
 }
 
 // ---------------------------------------------------------------- JSON contract
@@ -615,41 +686,6 @@ void MainWindow::showRegionResponse(const QJsonObject& resp)
     log(QStringLiteral("提取完成：%1 个区域，字框叠加 %2 个").arg(regions.size()).arg(overlay.size()));
 }
 
-void MainWindow::onDiff()
-{
-    QString a = QFileDialog::getOpenFileName(this, QStringLiteral("基准图 (baseline)"), QString(), QStringLiteral("PDF (*.pdf)"));
-    if (a.isEmpty()) return;
-    QString b = QFileDialog::getOpenFileName(this, QStringLiteral("目标图 (target)"), QString(), QStringLiteral("PDF (*.pdf)"));
-    if (b.isEmpty()) return;
-
-    QTemporaryDir tmp;
-    QString outPdf = QDir(tmp.path()).filePath(QStringLiteral("diff.pdf"));
-    QString out, err;
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2df")),
-        {a, b, QStringLiteral("-o"), outPdf}, out, err);
-    if (!err.trimmed().isEmpty()) log(QStringLiteral("[EGpdf2df] ") + err.trimmed());
-    if (rc != 0) { log(QStringLiteral("图纸差异失败，退出码 %1").arg(rc)); return; }
-
-    m_jsonView->setPlainText(out);
-    m_tabs->setCurrentWidget(m_jsonView);
-    // Render the produced diff PDF into the view for a quick look.
-    QTemporaryDir tmp2;
-    QString bmp = QDir(tmp2.path()).filePath(QStringLiteral("diff.bmp"));
-    QString out2, err2;
-    if (CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
-            {QStringLiteral("--render"), QStringLiteral("--page"), QStringLiteral("0"),
-             QStringLiteral("--scale"), QStringLiteral("1"), QStringLiteral("--render-out"), bmp, outPdf},
-            out2, err2) == 0) {
-        QImage img = QImageReader(bmp).read();
-        if (!img.isNull()) {
-            m_view->setPage(img, 1.0, 0);
-            log(QStringLiteral("已显示差异图（红框标注）"));
-            return;
-        }
-    }
-    log(QStringLiteral("差异 PDF 已生成: %1（未能内嵌预览）").arg(outPdf));
-}
-
 void MainWindow::onManual()
 {
     ManualDialog dlg(this);
@@ -673,7 +709,7 @@ void MainWindow::onSchemes()
 {
     if (!m_schemes) return;
     m_schemes->reload();
-    showPage(2);
+    navTo(PageScheme);
 }
 
 void MainWindow::onSchemeStatus(const QString& msg) { log(msg); }
