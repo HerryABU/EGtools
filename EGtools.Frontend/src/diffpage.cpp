@@ -4,15 +4,21 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGroupBox>
 #include <QHBoxLayout>
-#include <QImageReader>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPixmap>
 #include <QPushButton>
+#include <QSpinBox>
+#include <QCheckBox>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QPixmap>
+#include <QImageReader>
 #include <QSplitter>
 #include <QTextEdit>
 #include <QVBoxLayout>
@@ -36,29 +42,76 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     tgtRow->addWidget(m_tgtEdit, 1);
     tgtRow->addWidget(tgtBtn);
 
-    m_runBtn = new QPushButton(QStringLiteral("开始比对（红线=新增/改动，蓝虚线=删除）"));
+    auto* csvRow = new QHBoxLayout();
+    m_csvEdit = new QLineEdit();
+    m_csvEdit->setPlaceholderText(QStringLiteral("人工修正材料表 (CSV/TSV，可选)"));
+    auto* csvBtn = new QPushButton(QStringLiteral("选择…"));
+    auto* csvClr = new QPushButton(QStringLiteral("清除"));
+    csvRow->addWidget(new QLabel(QStringLiteral("材料表:")));
+    csvRow->addWidget(m_csvEdit, 1);
+    csvRow->addWidget(csvBtn);
+    csvRow->addWidget(csvClr);
+
+    auto* optRow = new QHBoxLayout();
+    m_dpiSpin = new QSpinBox();
+    m_dpiSpin->setRange(60, 400);
+    m_dpiSpin->setValue(200);
+    m_dpiSpin->setSuffix(QStringLiteral(" DPI"));
+    m_pipeChk = new QCheckBox(QStringLiteral("管线号↔材料表一一对应"));
+    m_pipeChk->setChecked(true);
+    optRow->addWidget(new QLabel(QStringLiteral("渲染:")));
+    optRow->addWidget(m_dpiSpin);
+    optRow->addWidget(m_pipeChk);
+    optRow->addStretch();
+
+    m_runBtn = new QPushButton(QStringLiteral("开始比对（红实线/圈=新增·蓝虚线/圈=删除·浅蓝斜体=消失文字）"));
     m_runBtn->setStyleSheet(QStringLiteral("QPushButton{background:#2d7d46;color:#fff;padding:6px 12px;border-radius:5px;font-weight:600;}"));
     auto* openBtn = new QPushButton(QStringLiteral("打开差异图…"));
+    auto* btnRow = new QHBoxLayout();
+    btnRow->addWidget(m_runBtn);
+    btnRow->addWidget(openBtn);
+    btnRow->addStretch();
 
     m_status = new QLabel(QStringLiteral("内核状态：未探测"));
     m_status->setWordWrap(true);
+
+    // ---- 图例 ----
+    auto* legend = new QGroupBox(QStringLiteral("图例（差异直接标注在新 PDF 中）"));
+    auto* legendLay = new QVBoxLayout(legend);
+    legendLay->addWidget(new QLabel(QStringLiteral(
+        "● <font color='#FF0000'>红实线圈画</font> = 新增 / 改动的文字或序号\n"
+        "■ <font color='#FF0000'>红实线矩形</font> = 新增 / 改动的图像\n"
+        "● <font color='#1E66E0'>蓝虚线圈画</font> = 删除 / 改动的文字（蓝虚线区域）\n"
+        "■ <font color='#1E66E0'>蓝虚线矩形</font> = 删除的图像\n"
+        "<font color='#1E66E0'><i>✎ 浅蓝斜体</i></font> = 消失 / 被改掉的旧文字（原位置重现）")));
+    legendLay->setSpacing(2);
+
+    // ---- 管线号↔材料表一一对应结果 ----
+    auto* pipeBox = new QGroupBox(QStringLiteral("管线号 ↔ 材料表 一一对应"));
+    auto* pipeLay = new QVBoxLayout(pipeBox);
+    m_pipeView = new QTextEdit();
+    m_pipeView->setReadOnly(true);
+    m_pipeView->setLineWrapMode(QTextEdit::NoWrap);
+    m_pipeView->setPlainText(QStringLiteral("运行后显示：匹配 / 图中独有(材料表缺) / 材料表独有(图中未画)"));
+    pipeLay->addWidget(m_pipeView);
 
     auto* ctrl = new QWidget();
     auto* ctrlLay = new QVBoxLayout(ctrl);
     ctrlLay->setContentsMargins(8, 8, 8, 8);
     ctrlLay->addLayout(baseRow);
     ctrlLay->addLayout(tgtRow);
-    auto* btnRow = new QHBoxLayout();
-    btnRow->addWidget(m_runBtn);
-    btnRow->addWidget(openBtn);
-    btnRow->addStretch();
+    ctrlLay->addLayout(csvRow);
+    ctrlLay->addLayout(optRow);
     ctrlLay->addLayout(btnRow);
     ctrlLay->addWidget(m_status);
+    ctrlLay->addWidget(legend);
+    ctrlLay->addWidget(pipeBox, 1);
     ctrlLay->addStretch();
 
     m_jsonView = new QTextEdit();
     m_jsonView->setReadOnly(true);
     m_jsonView->setLineWrapMode(QTextEdit::NoWrap);
+    m_jsonView->setPlainText(QStringLiteral("差异 JSON 摘要（运行后显示）"));
 
     m_preview = new QLabel(QStringLiteral("差异标注预览（运行后显示）"));
     m_preview->setAlignment(Qt::AlignCenter);
@@ -66,10 +119,10 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     m_preview->setMinimumHeight(280);
 
     auto* right = new QSplitter(Qt::Vertical);
-    right->addWidget(m_jsonView);
     right->addWidget(m_preview);
-    right->setStretchFactor(0, 3);
-    right->setStretchFactor(1, 2);
+    right->addWidget(m_jsonView);
+    right->setStretchFactor(0, 2);
+    right->setStretchFactor(1, 3);
 
     auto* split = new QSplitter(Qt::Horizontal);
     split->addWidget(ctrl);
@@ -83,6 +136,8 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
 
     connect(baseBtn, &QPushButton::clicked, this, &DiffPage::onPickBaseline);
     connect(tgtBtn,  &QPushButton::clicked, this, &DiffPage::onPickTarget);
+    connect(csvBtn,  &QPushButton::clicked, this, &DiffPage::onPickCsv);
+    connect(csvClr,  &QPushButton::clicked, this, &DiffPage::onClearCsv);
     connect(m_runBtn,&QPushButton::clicked, this, &DiffPage::onRun);
     connect(openBtn, &QPushButton::clicked, this, &DiffPage::onBrowsePreview);
 }
@@ -124,6 +179,18 @@ void DiffPage::onPickTarget()
     if (!p.isEmpty()) m_tgtEdit->setText(p);
 }
 
+void DiffPage::onPickCsv()
+{
+    QString p = QFileDialog::getOpenFileName(this, QStringLiteral("选择人工修正材料表"),
+        QString(), QStringLiteral("CSV/TSV (*.csv *.tsv *.txt)"));
+    if (!p.isEmpty()) m_csvEdit->setText(p);
+}
+
+void DiffPage::onClearCsv()
+{
+    m_csvEdit->clear();
+}
+
 void DiffPage::onRun()
 {
     const QString a = m_baseEdit->text().trimmed();
@@ -134,13 +201,37 @@ void DiffPage::onRun()
     }
     QTemporaryDir tmp;
     if (!tmp.isValid()) { emit statusMessage(QStringLiteral("无法创建临时目录")); return; }
-    QString outPdf = QDir(tmp.path()).filePath(QStringLiteral("diff.pdf"));
+    QString reqPath = QDir(tmp.path()).filePath(QStringLiteral("req.json"));
+    QString outPdf  = QDir(tmp.path()).filePath(QStringLiteral("diff.pdf"));
+
+    // 构造请求 JSON（含选项与可选的人工修正材料表）。
+    QJsonObject opt;
+    opt[QStringLiteral("renderDpi")] = m_dpiSpin->value();
+    opt[QStringLiteral("pipeMatch")] = m_pipeChk->isChecked();
+    QJsonObject req;
+    req[QStringLiteral("baseline")] = a;
+    req[QStringLiteral("target")]   = b;
+    req[QStringLiteral("output")]   = outPdf;
+    req[QStringLiteral("options")]  = opt;
+    const QString csv = m_csvEdit->text().trimmed();
+    if (!csv.isEmpty()) req[QStringLiteral("correctedMaterialTable")] = csv;
+
+    QFile rf(reqPath);
+    if (!rf.open(QIODevice::WriteOnly | QIODevice::Text)
+        || rf.write(QJsonDocument(req).toJson(QJsonDocument::Compact)) < 0) {
+        emit statusMessage(QStringLiteral("无法写入请求 JSON"));
+        return;
+    }
+    rf.close();
 
     QString out, err;
     int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2df")),
-        {a, b, QStringLiteral("-o"), outPdf}, out, err);
+        {QStringLiteral("--json"), reqPath}, out, err);
     emit statusMessage(QStringLiteral("[EGpdf2df] rc=%1 %2").arg(rc).arg(err.trimmed()));
     m_jsonView->setPlainText(out);
+
+    // 解析输出：对齐信息 + 管线号↔材料表一一对应。
+    showPipeMatch(QJsonDocument::fromJson(out.toUtf8()).object());
 
     if (rc != 0) return;
 
@@ -156,11 +247,59 @@ void DiffPage::onRun()
             m_preview->setPixmap(QPixmap::fromImage(img).scaled(
                 m_preview->width() - 16, m_preview->height() - 16,
                 Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            emit statusMessage(QStringLiteral("差异图已生成并预览（红实线=新增/改动，蓝虚线=删除）"));
+            emit statusMessage(QStringLiteral("差异图已生成并预览：红/蓝圈画 + 浅蓝斜体消失文字"));
             return;
         }
     }
     m_preview->setText(QStringLiteral("差异 PDF 已生成，但预览渲染失败：%1").arg(err2.trimmed()));
+}
+
+void DiffPage::showPipeMatch(const QJsonObject& root)
+{
+    m_pipeView->clear();
+    if (root.isEmpty()) { m_pipeView->setPlainText(QStringLiteral("无 JSON 输出")); return; }
+
+    QStringList lines;
+    // 对齐信息
+    QJsonArray aligns = root.value(QStringLiteral("alignments")).toArray();
+    if (!aligns.isEmpty()) {
+        lines << QStringLiteral("【对齐】先按图纸号配对，再估算平移后比对：");
+        for (const QJsonValue& v : aligns) {
+            QJsonObject o = v.toObject();
+            lines << QStringLiteral("  页%1  缩放=%2  平移 dx=%3pt dy=%4pt")
+                        .arg(o.value(QStringLiteral("page")).toInt() + 1)
+                        .arg(o.value(QStringLiteral("scale")).toDouble(), 0, 'f', 4)
+                        .arg(o.value(QStringLiteral("dxPt")).toDouble(), 0, 'f', 1)
+                        .arg(o.value(QStringLiteral("dyPt")).toDouble(), 0, 'f', 1);
+        }
+    }
+
+    QJsonObject pm = root.value(QStringLiteral("pipeMatch")).toObject();
+    if (!pm.isEmpty()) {
+        QString src = pm.value(QStringLiteral("tableSource")).toString();
+        QJsonArray matched   = pm.value(QStringLiteral("matched")).toArray();
+        QJsonArray figureOnly = pm.value(QStringLiteral("figureOnly")).toArray();
+        QJsonArray tableOnly  = pm.value(QStringLiteral("tableOnly")).toArray();
+        lines << QStringLiteral("");
+        lines << QStringLiteral("【管线号↔材料表 一一对应】  材料表来源：%1").arg(src);
+        lines << QStringLiteral("  匹配(两侧都有)：%1 项").arg(matched.size());
+        lines << QStringLiteral("  图中独有 / 材料表缺(风险)：%1 项").arg(figureOnly.size());
+        lines << QStringLiteral("  材料表独有 / 图中未画(风险)：%1 项").arg(tableOnly.size());
+        auto dump = [&](const QString& title, const QJsonArray& arr) {
+            if (arr.isEmpty()) return;
+            lines << QStringLiteral("  %1：").arg(title);
+            QStringList items;
+            for (const QJsonValue& v : arr) items << v.toString();
+            lines << QStringLiteral("    ") + items.join(QStringLiteral(", "));
+        };
+        dump(QStringLiteral("匹配"), matched);
+        dump(QStringLiteral("图中独有"), figureOnly);
+        dump(QStringLiteral("材料表独有"), tableOnly);
+    } else {
+        lines << QStringLiteral("");
+        lines << QStringLiteral("【管线号↔材料表】未启用或未输出");
+    }
+    m_pipeView->setPlainText(lines.join(QStringLiteral("\n")));
 }
 
 void DiffPage::onBrowsePreview()
