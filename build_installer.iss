@@ -51,6 +51,10 @@ VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}
 ArchitecturesInstallIn64BitMode=x64
 ArchitecturesAllowed=x64
 PrivilegesRequired=admin
+; Let a STANDARD USER install without elevation (a per-user install under
+; %LOCALAPPDATA%\Programs) either from the wizard or with /CURRENTUSER. The
+; default remains an all-users machine-wide install under Program Files.
+PrivilegesRequiredOverridesAllowed=dialog commandline
 ; Lowest supported OS: Windows 10 1809 (build 17763) — the floor for .NET 9.
 MinVersion=10.0.17763
 
@@ -93,7 +97,10 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\EGtoolsFrontend\{#MyQtExeNa
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 ; Explicit, visible opt-in to add the three CLI tools to the system PATH.
-Name: "addtopath"; Description: "将命令行工具 (EGpdf2excel / EGexcel2df / EGpdf2df) 添加到 PATH"; GroupDescription: "附加选项"; Flags: checkedonce
+; Hidden for per-user (non-elevated) installs: HKLM\...\Environment\Path cannot be
+; written without administrator rights, so offering the option there would only
+; produce a silently-skipped step.
+Name: "addtopath"; Description: "将命令行工具 (EGpdf2excel / EGexcel2df / EGpdf2df) 添加到 PATH"; GroupDescription: "附加选项"; Flags: checkedonce; Check: IsAdminInstallMode
 
 [Run]
 ; Launch the Qt front-end on finish (optional).
@@ -236,10 +243,19 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    dir := ExpandConstant('{app}');
-    RegWriteStringValue(APP_ROOT, APP_KEY, APPDIR_VAL, dir);
-    if WizardIsTaskSelected('addtopath') then
-      ModifyPath(True, dir);
+    // A per-user (non-elevated) install cannot write HKLM. Only record the install
+    // dir / touch the system PATH in an all-users install, and never let a failed
+    // registry write abort the installation itself.
+    if IsAdminInstallMode then
+    begin
+      dir := ExpandConstant('{app}');
+      try
+        RegWriteStringValue(APP_ROOT, APP_KEY, APPDIR_VAL, dir);
+      except
+      end;
+      if WizardIsTaskSelected('addtopath') then
+        ModifyPath(True, dir);
+    end;
   end;
 end;
 
@@ -249,8 +265,14 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    dir := GetInstallDir();
-    ModifyPath(False, dir);
-    RegDeleteKeyIncludingSubkeys(APP_ROOT, APP_KEY);
+    if IsAdminInstallMode then
+    begin
+      try
+        dir := GetInstallDir();
+        ModifyPath(False, dir);
+        RegDeleteKeyIncludingSubkeys(APP_ROOT, APP_KEY);
+      except
+      end;
+    end;
   end;
 end;
