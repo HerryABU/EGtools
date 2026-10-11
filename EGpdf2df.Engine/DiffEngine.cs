@@ -762,6 +762,10 @@ namespace EGpdf2df.Engine
             public string? Serial;                  // 序号(匹配键)，可为 null(自由文本)
             public string Content = "";              // 该条目的拼接内容(原始)
             public List<TextGeometry.Word> Words = new();
+            // 原始行结构：每行记录 (文字, 行左基线x, 基线y(display y-down), 渲染高度, 原始字号)。
+            // 重绘时逐行用"页面实际渲染高度"反推字号(规避 CAD PDF 的 Tf 大字号+矩阵缩放) + 原位置，
+            // 保证字号与换行与原文一致。
+            public List<(string text, double x0, double baselineY, double height, double size)> Lines = new();
             public double X0, Y0, X1, Y1;           // 合并包围盒(目标 pt 帧)
             public double LastYc;                    // 末行中心 y(续行判断)
             public double Xc => (X0 + X1) / 2;
@@ -848,6 +852,8 @@ namespace EGpdf2df.Engine
 
         static void AddWords(TextItem it, List<TextGeometry.Word> line)
         {
+            double bx0 = double.MaxValue, by0 = double.MaxValue, by1 = double.MinValue;
+            double baselineSum = 0, sizeSum = 0; int n = 0;
             foreach (var w in line)
             {
                 bool first = it.Words.Count == 0;
@@ -855,6 +861,18 @@ namespace EGpdf2df.Engine
                 it.X0 = Math.Min(it.X0, w.x0); it.Y0 = Math.Min(it.Y0, w.y0);
                 it.X1 = Math.Max(it.X1, w.x1); it.Y1 = Math.Max(it.Y1, w.y1);
                 it.Words.Add(w);
+                bx0 = Math.Min(bx0, w.x0);
+                by0 = Math.Min(by0, w.y0); by1 = Math.Max(by1, w.y1);
+                baselineSum += w.y1;   // y1 = 基线(display y-down, 字底部)
+                sizeSum += w.size;
+                n++;
+            }
+            if (n > 0)
+            {
+                // 该行：左基线 x = min(x0)，基线 y = 平均 y1，渲染高度 = 行顶到基线(by1-by0)，
+                // 原始字号 = 平均 size(可能含 CAD 矩阵缩放，仅作参考，重绘以渲染高度为准)。
+                double height = Math.Max(1.0, by1 - by0);
+                it.Lines.Add((JoinContent(line), bx0, baselineSum / n, height, sizeSum / n));
             }
             it.LastYc = line.Average(w => w.yc);
         }
@@ -870,6 +888,17 @@ namespace EGpdf2df.Engine
         static Bbox BboxOf(TextItem it)
             => new Bbox { X = Round(it.X0), Y = Round(it.Y0), Width = Round(it.X1 - it.X0), Height = Round(it.Y1 - it.Y0) };
 
+        // 把内部 TextItem 的原始行结构转成契约 TextLine 列表（含 x / 基线 / 字号），
+        // 供 PdfVectorDiff 逐行按原字号、原位置重绘，确保"字号 + 换行"与原文一致。
+        static List<TextLine>? ToLines(TextItem? it)
+        {
+            if (it == null || it.Lines.Count == 0) return null;
+            var out_ = new List<TextLine>();
+            foreach (var ln in it.Lines)
+                out_.Add(new TextLine { Text = ln.text, X = ln.x0, Baseline = ln.baselineY, Height = ln.height, Size = ln.size });
+            return out_;
+        }
+
         static DiffItem MkItem(int page, TextItem it, string change)
             => new DiffItem
             {
@@ -878,6 +907,8 @@ namespace EGpdf2df.Engine
                 ChangeType = change,
                 OldText = change == "added" ? null : it.Content,
                 NewText = change == "removed" ? null : it.Content,
+                OldLines = change == "added" ? null : ToLines(it),
+                NewLines = change == "removed" ? null : ToLines(it),
                 Confidence = 0.9,
                 Bbox = BboxOf(it),
             };
@@ -927,7 +958,9 @@ namespace EGpdf2df.Engine
                         items.Add(new DiffItem
                         {
                             Page = page, Type = "text", ChangeType = "changed",
-                            OldText = a.Content, NewText = b.Content, Confidence = 0.92, Bbox = BboxOf(b),
+                            OldText = a.Content, NewText = b.Content,
+                            OldLines = ToLines(a), NewLines = ToLines(b),
+                            Confidence = 0.92, Bbox = BboxOf(b),
                         });
                 }
                 else

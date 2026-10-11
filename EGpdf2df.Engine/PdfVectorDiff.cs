@@ -65,11 +65,11 @@ namespace EGpdf2df.Engine
             // 文字差异：直接改文字颜色（不画圈/点）。新增=红，删除=蓝，变更=红(新)+蓝(旧)。
             var textAddedCol = ParseColor(ann.TextAddedColor) ?? ColorConstants.RED;
             var textRemovedCol = ParseColor(ann.TextRemovedColor) ?? new DeviceRgb(0, 0, 255);
-            // 嵌入 Unicode 字体（默认 Arial，含土耳其语等字形），让"消失文字"的浅蓝斜体
+            // 嵌入 Unicode 字体（默认 Arial，含土耳其语等字形），让差异文字(红/蓝重绘)
             // 真正渲染；字体缺失时回退内置 Helvetica（仅 ASCII）。
             var unicodeFont = LoadUnicodeFont(ann.FontPathItalic) ?? LoadUnicodeFont(ann.FontPathRegular);
             var italFont = unicodeFont ?? PdfFontFactory.CreateFont(StandardFonts.HELVETICA_OBLIQUE);
-            Console.Error.WriteLine($"  [font] 消失文字字体: {(unicodeFont != null ? "EMBEDDED Unicode(Arial)" : "FALLBACK Helvetica(仅ASCII)")}");
+            Console.Error.WriteLine($"  [font] 差异文字字体: {(unicodeFont != null ? "EMBEDDED Unicode(Arial)" : "FALLBACK Helvetica(仅ASCII)")}");
             int textRenders = 0;
             var byPage = new Dictionary<int, PageAnno>();
             foreach (var p in pages) byPage[p.Page] = p;
@@ -128,26 +128,24 @@ namespace EGpdf2df.Engine
                 string dir = (ann.TextInsertDirection ?? "down").Trim().ToLowerInvariant();
                 foreach (var it in a.TextItems)
                 {
-                    if (it.ChangeType == "added" || it.ChangeType == "changed")
+                    // 新增 / 变更新内容 → 红色，逐行按原字号 + 原位置覆盖在原黑色文字之上(改原字色)。
+                    if ((it.ChangeType == "added" || it.ChangeType == "changed") && it.NewLines != null)
+                        DrawColoredText(overCanvas, it.NewLines, textAddedCol, 0, 0,
+                            tA, tB, tC, tD, mA, mB, mC, mD, mE, mF, italFont, ref textRenders);
+                    // 删除 / 变更旧内容 → 蓝色，逐行按原字号 + 原位置插入到原文本框(git - 行)；
+                    // 变更时旧(蓝)文字按 TextInsertDirection 方向插入到"新(红)"文字文本框附近。
+                    if ((it.ChangeType == "removed" || it.ChangeType == "changed") && it.OldLines != null)
                     {
-                        var tNew = it.NewText;   // added / changed 的新内容（MkItem 已置）
-                        if (!string.IsNullOrWhiteSpace(tNew))
-                            DrawColoredText(overCanvas, tNew, it.Bbox, textAddedCol, 0, 0,
-                                tA, tB, tC, tD, mA, mB, mC, mD, mE, mF, italFont, ref textRenders);
-                    }
-                    if (it.ChangeType == "removed" || it.ChangeType == "changed")
-                    {
-                        var tOld = it.OldText;
-                        if (!string.IsNullOrWhiteSpace(tOld))
+                        double dx = 0, dy = 0;
+                        if (it.ChangeType == "changed")
                         {
-                            // 删除: 目标侧无新文字，蓝字直接落入原文本框(无需偏移)；
-                            // 变更: 旧(蓝)文字按方向插入到"新(红)"文字文本框附近，避免重叠。
-                            double dx = 0, dy = 0;
-                            if (it.ChangeType == "changed")
-                                InsertOffset(dir, it.Bbox, out dx, out dy);
-                            DrawColoredText(overCanvas, tOld, it.Bbox, textRemovedCol, dx, dy,
-                                tA, tB, tC, tD, mA, mB, mC, mD, mE, mF, italFont, ref textRenders);
+                            double fs = 10;
+                            if (it.OldLines.Count > 0)
+                            { double s = 0; foreach (var l in it.OldLines) s += l.Size; fs = s / it.OldLines.Count; }
+                            InsertOffset(dir, fs, out dx, out dy);
                         }
+                        DrawColoredText(overCanvas, it.OldLines, textRemovedCol, dx, dy,
+                            tA, tB, tC, tD, mA, mB, mC, mD, mE, mF, italFont, ref textRenders);
                     }
                 }
             }
@@ -235,42 +233,50 @@ namespace EGpdf2df.Engine
             c.RestoreState();
         }
 
-        // 把一段文字以指定颜色重绘在 OVER 层（DISPLAY 坐标 → 内容空间）。这是"文字改色"
-        // 的核心：新增/变更的新文字覆盖在目标原黑色文字之上（变红，改原字色），
-        // 删除/变更的旧文字以蓝色插入到原文本框（git - 行）。xOffDisp/yOffDisp 为显示帧
-        // 下的额外偏移(pt)，用于变更时把"旧(蓝)"文字按方向挪到"新(红)"文字文本框附近。
-        static void DrawColoredText(PdfCanvas c, string text, Bbox bbox, Color col, double xOffDisp, double yOffDisp,
+        // 把一组"原始行"以指定颜色逐行重绘在 OVER 层（DISPLAY 坐标 → 内容空间）。这是
+        // "文字改色/插入"的核心：每行都用**原字号 + 原左基线 x + 原基线 y** 绘制，所以
+        // 重绘后字号与换行与原文完全一致，不会漂移也不会塌陷成一行。新增/变更新内容→红
+        // (覆盖原黑字,改原字色)；删除/变更旧内容→蓝(插入原文本框,git - 行)。
+        // xOffDisp/yOffDisp 为显示帧下的额外偏移(pt)，用于变更时把"旧(蓝)"文字按方向
+        // 挪到"新(红)"文字文本框附近。
+        static void DrawColoredText(PdfCanvas c, List<TextLine> lines, Color col,
+            double xOffDisp, double yOffDisp,
             float tA, float tB, float tC, float tD,
             float mA, float mB, float mC, float mD, float mE, float mF,
             PdfFont font, ref int renders)
         {
-            float x = (float)bbox.X, yTop = (float)bbox.Y;
-            float h = (float)bbox.Height;
-            float fs = Math.Max(6f, h / 2 + 4f);
-            double bx = x + xOffDisp, by = Math.Max(1f, yTop + 1f + yOffDisp);   // baseline in DISPLAY y-down
-            ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
-            c.SaveState();
-            c.SetFillColor(col);
-            c.BeginText();
-            c.SetFontAndSize(font, fs);
-            c.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
-            c.ShowText(Escape(text));
-            c.EndText();
-            c.RestoreState();
-            renders++;
+            foreach (var ln in lines)
+            {
+                if (string.IsNullOrWhiteSpace(ln.Text)) continue;
+                // 字号以"页面实际渲染高度"反推(÷≈0.9 的 ascent 比例)，规避 CAD PDF 惯用的
+                // 大 Tf 字号 + 文本矩阵缩放导致字号失真；使重绘文字的视觉大小与原文一致。
+                float fs = (float)Math.Max(4.0, ln.Height / 0.9);
+                double bx = ln.X + xOffDisp;                              // 原行左基线 x
+                double by = ln.Baseline + yOffDisp;                       // 原基线 y(display y-down)
+                ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
+                c.SaveState();
+                c.SetFillColor(col);
+                c.BeginText();
+                c.SetFontAndSize(font, fs);
+                c.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
+                c.ShowText(Escape(ln.Text));
+                c.EndText();
+                c.RestoreState();
+                renders++;
+            }
         }
 
         // 变更时旧(蓝)文字相对新(红)文字的插入方向偏移（DISPLAY 帧，单位 pt）：
-        // down=下方, up=上方, right=右侧, left=左侧；gap 取字号与框高的较大者，确保不重叠。
-        static void InsertOffset(string dir, Bbox bbox, out double dx, out double dy)
+        // down=下方, up=上方, right=右侧, left=左侧；gap 取原字号 * 1.2(≈ 原行距)，
+        // 与原文行距一致，避免重叠也不破坏版面节奏。
+        static void InsertOffset(string dir, double fontSize, out double dx, out double dy)
         {
-            double h = bbox.Height, w = bbox.Width;
-            double gap = Math.Max(8.0, h * 1.4);
+            double gap = Math.Max(6.0, fontSize * 1.2);
             switch (dir)
             {
                 case "up":    dx = 0;            dy = -gap;       break;
-                case "right": dx =  (w + 6.0);   dy = 0;          break;
-                case "left":  dx = -(w + 6.0);   dy = 0;          break;
+                case "right": dx =  gap;         dy = 0;          break;
+                case "left":  dx = -gap;         dy = 0;          break;
                 default:      dx = 0;            dy =  gap;       break; // down
             }
         }

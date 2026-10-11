@@ -127,5 +127,21 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("changeType")] public string? ChangeType { get; set; }
         [JsonPropertyName("oldText")] public string? OldText { get; set; }
         [JsonPropertyName("newText")] public string? NewText { get; set; }
+        // 原始行结构（用于重绘时保持"字号 + 换行"与原文一致）：每条目按行记录
+        // 原始左基线 x、基线 y(display 帧, y-down)、原始字号 size、该行文字。
+        // 新增 → NewLines；删除 → OldLines；变更 → 两者都有（红=新, 蓝=旧）。
+        [JsonPropertyName("fontSize")] public double FontSize { get; set; }
+        [JsonPropertyName("oldLines")] public List<TextLine>? OldLines { get; set; }
+        [JsonPropertyName("newLines")] public List<TextLine>? NewLines { get; set; }
+    }
+
+    // 单条文字的原始一行（重绘保真用）。坐标均为 DISPLAY 帧(pt, y-down, 原点左上)。
+    public sealed class TextLine
+    {
+        [JsonPropertyName("text")] public string Text { get; set; } = "";
+        [JsonPropertyName("x")] public double X { get; set; }          // 行左基线 x
+        [JsonPropertyName("baseline")] public double Baseline { get; set; } // 基线 y(≈ 字底部)
+        [JsonPropertyName("height")] public double Height { get; set; } // 页面实际渲染高度(pt，含缩放)
+        [JsonPropertyName("size")] public double Size { get; set; }    // 原始 Tf 字号(pt，可能含矩阵缩放，仅参考)
     }
 }

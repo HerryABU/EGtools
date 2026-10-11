@@ -22,8 +22,9 @@ namespace EGtools.Core
         public class Word
         {
             public double x0, y0, x1, y1, xc, yc;
+            public double size = 8;   // 字体大小(pt)，从 MuPDF 字符 Size 取，重绘时保持原字号
             public string text = "";
-            public override string ToString() => $"[{text}] x0={x0:F1} xc={xc:F1} yc={yc:F1}";
+            public override string ToString() => $"[{text}] x0={x0:F1} xc={xc:F1} yc={yc:F1} sz={size:F1}";
         }
 
         public static string Norm(string t) => Regex.Replace(t ?? "", @"[^\w一-鿿]", "").ToLowerInvariant();
@@ -98,7 +99,7 @@ namespace EGtools.Core
                     if (breakHere) Push();
                     if (!has || breakHere)
                     {
-                        w = new Word { x0 = g.x0, y0 = g.y0, x1 = g.urx, y1 = g.y1, text = g.text };
+                        w = new Word { x0 = g.x0, y0 = g.y0, x1 = g.urx, y1 = g.y1, text = g.text, size = g.sz };
                         wSz = g.sz;
                         has = true;
                     }
