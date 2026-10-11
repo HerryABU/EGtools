@@ -16,12 +16,24 @@ namespace EGpdf2df.Engine
     public class PageAnno
     {
         public int Page;                                   // target page index (0-based)
+        /// <summary>
+        /// 本目标页对应的**基准页号(1-based)**。两版页序可以不同（实测新版插入一页后整体错位），
+        /// 抽取"删除文字"必须用基准页自己的页号去查基准文档，不能想当然用目标页号——
+        /// 目标 175 页 / 基准 170 页时用目标页号查基准会直接越界。
+        /// </summary>
+        public int BasePage1;
         public float Wpt;                                  // page width  in PDF points
         public float Hpt;                                  // page height in PDF points
         public List<List<double>> AddedContours = new();   // 新增墨元   → 红 实线填充(真描红)
         public List<List<double>> RemovedContours = new(); // 删除墨元   → 红 虚线填充(真描红)
         public List<List<double>> ChangedContours = new(); // 变更墨元   → 绿 实线填充(真描红)
         public List<DiffItem> TextItems = new();
+        /// <summary>
+        /// 矢量线画差异：沿实际变更的线段描边（内容空间 pt, y-up，**不做 /Rotate 补偿**——
+        /// 它本来就在内容空间）。CAD 线画图上"这条线是新增/删除"才是正确语义，
+        /// 且沿线描边天然不遮挡底图（对比实心填充块会盖住图面）。
+        /// </summary>
+        public List<VectorGeomDiff.Run> Strokes = new();
     }
 
     /// <summary>
@@ -146,6 +158,28 @@ namespace EGpdf2df.Engine
                 }
                 overCanvas.RestoreState();
 
+                // ---- 矢量线画差异：沿变更线段描边（内容空间，无需 /Rotate 补偿）----
+                // 相比像素路径的填充块，这里画的是"真正变掉的那几条线"，语义精确且不遮挡底图。
+                if (a.Strokes.Count > 0)
+                {
+                    overCanvas.SaveState();
+                    float vw = Math.Max(1.0f, (float)ann.LineWidth);
+                    foreach (var run in a.Strokes)
+                    {
+                        if (run.Pts.Count < 4) continue;
+                        bool removed = run.Dir == "removed";
+                        var col = removed ? traceCol : run.Dir == "changed" ? changeCol : traceCol;
+                        overCanvas.SetStrokeColor(col).SetLineWidth(vw);
+                        if (removed) overCanvas.SetLineDash(new float[] { 5f, 3f }, 0);
+                        else overCanvas.SetLineDash(new float[0], 0);
+                        overCanvas.MoveTo((float)run.Pts[0], (float)run.Pts[1]);
+                        for (int k = 2; k < run.Pts.Count; k += 2)
+                            overCanvas.LineTo((float)run.Pts[k], (float)run.Pts[k + 1]);
+                        overCanvas.Stroke();
+                    }
+                    overCanvas.RestoreState();
+                }
+
                 // ---- 文字差异重绘（最后绘制，确保红/蓝字形压在图形填充之上，清晰可读）----
                 if (addedBoxes.Count > 0)
                 {
@@ -154,8 +188,24 @@ namespace EGpdf2df.Engine
                 }
                 if (removedBoxes.Count > 0)
                 {
-                    TextRedlineDiff.DrawRemoved(pdf, baselinePdf, i, removedBoxes, textRemovedCol);
-                    textRenders += removedBoxes.Count;
+                    // ⚠️ 用【基准页自己的页号】：两版页序可不同（新版插页会使整体错位），
+                    // 用目标页号查基准文档会越界或抽错页。
+                    int bp = a.BasePage1 > 0 ? a.BasePage1 : i;
+                    bool ok = bp <= baselinePdf.GetNumberOfPages();
+                    // 页框尺寸/旋转必须一致，否则 DISPLAY 帧坐标与基准内容空间对不上，
+                    // 抽出来的字形会跑位。不一致就跳过（宁可少标，不标错）。
+                    if (ok)
+                    {
+                        var bpg = baselinePdf.GetPage(bp);
+                        var bmb = bpg.GetMediaBox();
+                        int brot = ((bpg.GetRotation() % 360) + 360) % 360;
+                        ok = Math.Abs(bmb.GetWidth() - Wc) < 0.5 && Math.Abs(bmb.GetHeight() - Hc) < 0.5 && brot == rot;
+                    }
+                    if (ok)
+                    {
+                        TextRedlineDiff.DrawRemoved(pdf, baselinePdf, bp, removedBoxes, textRemovedCol);
+                        textRenders += removedBoxes.Count;
+                    }
                 }
             }
             Console.Error.WriteLine($"  [font] 文字差异(内容流重着色/抽取)处理 {textRenders} 处（新增红/删除蓝，保留原始字体与版式）");
@@ -181,6 +231,19 @@ namespace EGpdf2df.Engine
                 case 180: a = -1; b = 0;  c = 0;  d = 1;  e = ox + Wc; f = oy;      break;
                 case 270: a = 0;  b = -1; c = -1; d = 0;  e = ox + Wc; f = oy + Hc; break;
                 default:  a = 1;  b = 0;  c = 0;  d = -1; e = ox;      f = oy + Hc; break; // rot = 0
+            }
+        }
+
+        // 上式的逆变换：内容空间 → DISPLAY 帧（供报告统一口径）。
+        public static void ContentToDisplay(int rot, float Wc, float Hc, float ox, float oy,
+            double xc, double yc, out double xd, out double yd)
+        {
+            switch (rot)
+            {
+                case 90:  xd = yc - oy;          yd = xc - ox;          break;
+                case 180: xd = ox + Wc - xc;     yd = yc - oy;          break;
+                case 270: xd = oy + Hc - yc;     yd = ox + Wc - xc;     break;
+                default:  xd = xc - ox;          yd = oy + Hc - yc;     break; // rot = 0
             }
         }
 

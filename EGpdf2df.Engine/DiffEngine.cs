@@ -58,9 +58,16 @@ namespace EGpdf2df.Engine
                     int nBase = baseDoc.Pages.Count;
                     int nTgt = tgtDoc.Pages.Count;
 
-                    // Pair pages by drawing number (图纸号) so the comparison is 1:1 and
-                    // robust to reordering. When the caller pins specific pages (region /
-                    // scoped diff) we keep the old index-based behaviour.
+                    // 矢量线画路径用的页面内容流来源（整份只开一次；只有走 vector 方法时才需要）。
+                    using var baseSrc = new VectorPageSource(baseCtxPath ?? req.Baseline);
+                    using var tgtSrc = new VectorPageSource(tgtCtxPath ?? req.Target);
+                    bool useVectorGraphic = cfg.GraphicDiff.Enabled
+                        && string.Equals(cfg.GraphicDiff.GraphicMethod, "vector", StringComparison.OrdinalIgnoreCase);
+
+                    //⚠️ 配对必须按【线画本身】，不能用"图纸号"：本项目标题栏每页都印同一个项目号
+                    // (408-101-051)，按图纸号分组会退化成按页序配对；新版插入一页后其后全体错位，
+                    // 逐页比对两页不同图纸 → 上千条假差异（实测错位页命中率仅 ~60%、上千 runs，
+                    // 而真实对应页是 100% / 0 runs）。这是"误判率极高"的头号原因。
                     List<(int basePno, int tgtPno, string no)> pagePairs;
                     List<(int page, string no)> addedPages = new();    // target-only
                     List<(int page, string no)> removedPages = new();  // baseline-only
@@ -68,6 +75,19 @@ namespace EGpdf2df.Engine
                     {
                         pagePairs = req.Pages.Where(p => p >= 0 && p < Math.Min(nBase, nTgt))
                                               .Select(p => (p, p, "")).ToList();
+                    }
+                    else if (useVectorGraphic && nBase > 0 && nTgt > 0)
+                    {
+                        var bFp = new List<double[]>(nBase);
+                        for (int i = 0; i < nBase; i++)
+                            bFp.Add(VectorGeomDiff.Fingerprint(VectorLinework.Extract(baseSrc, i)));
+                        var tFp = new List<double[]>(nTgt);
+                        for (int j = 0; j < nTgt; j++)
+                            tFp.Add(VectorGeomDiff.Fingerprint(VectorLinework.Extract(tgtSrc, j)));
+                        var (pr, ad, rm) = VectorGeomDiff.MatchPagesByLinework(bFp, tFp, cfg.GraphicDiff.PageMatchMinSim, L);
+                        pagePairs = pr.Select(x => (x.b, x.t, "linework")).ToList();
+                        addedPages = ad.Select(j => (j, "linework")).ToList();
+                        removedPages = rm.Select(i => (i, "linework")).ToList();
                     }
                     else
                     {
@@ -175,12 +195,60 @@ namespace EGpdf2df.Engine
             var pageAnno = new PageAnno
             {
                 Page = tgtPno,
+                BasePage1 = basePno + 1,          // 抽取"删除文字"要按基准页自己的页号查基准文档
                 Wpt = (float)(tBounds.X1 - tBounds.X0),
                 Hpt = (float)(tBounds.Y1 - tBounds.Y0),
             };
 
-                        // ----- STEP 1: GRAPHIC diff (text excluded) — trace the ACTUAL changed SHAPE -----
-                        if (cfg.GraphicDiff.Enabled)
+                        // ----- STEP 1: GRAPHIC diff -----
+                        // 两条路径：
+                        //   vector (默认) —— 解析内容流取线画 + 几何标定 + 共线覆盖匹配，
+                        //                   纯矢量、不做位图渲染，误报率低；
+                        //   pixel         —— 旧的两版渲染成位图后逐像素/逐轮廓比对（回退路径）。
+                        bool vecMethod = cfg.GraphicDiff.Enabled
+                            && string.Equals(cfg.GraphicDiff.GraphicMethod, "vector", StringComparison.OrdinalIgnoreCase);
+                        if (vecMethod)
+                        {
+                            // ⚠️ 必须用【页面级】重载：本项目大量页面把整套线画塞在 Form XObject 里，
+                            // 页面内容流只有几十字节（`q /Meta0 Do Q`）。用纯 content 重载会得到空线画。
+                            var bLine = VectorLinework.Extract(baseSrc, basePno);
+                            var tLine = VectorLinework.Extract(tgtSrc, tgtPno);
+                            var vr = VectorGeomDiff.Compare(bLine, tLine,
+                                cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, L);
+                            pageAnno.Strokes.AddRange(vr.Runs);
+                            int rotT = tgtSrc.Rotation(tgtPno);
+                            float WcT = tBounds.X1 - tBounds.X0, HcT = tBounds.Y1 - tBounds.Y0;
+                            float oxT = tBounds.X0, oyT = tBounds.Y0;
+                            foreach (var run in vr.Runs)
+                            {
+                                double rminx = double.MaxValue, rminy = double.MaxValue;
+                                double rmaxx = double.MinValue, rmaxy = double.MinValue;
+                                for (int k = 0; k + 1 < run.Pts.Count; k += 2)
+                                {
+                                    rminx = Math.Min(rminx, run.Pts[k]); rmaxx = Math.Max(rmaxx, run.Pts[k]);
+                                    rminy = Math.Min(rminy, run.Pts[k + 1]); rmaxy = Math.Max(rmaxy, run.Pts[k + 1]);
+                                }
+                                if (run.Pts.Count == 0) continue;
+                                // 转成 DISPLAY 帧(y-down) 供报告统一口径
+                                PdfVectorDiff.ContentToDisplay(rotT, WcT, HcT, oxT, oyT, rminx, rminy, out double dx0, out double dy0);
+                                PdfVectorDiff.ContentToDisplay(rotT, WcT, HcT, oxT, oyT, rmaxx, rmaxy, out double dx1, out double dy1);
+                                diffs.Add(new DiffItem
+                                {
+                                    Page = tgtPno,
+                                    Type = "graphic",
+                                    ChangeType = run.Dir == "changed" ? "changed" : run.Dir,
+                                    Bbox = new Bbox
+                                    {
+                                        X = Round(Math.Min(dx0, dx1)), Y = Round(Math.Min(dy0, dy1)),
+                                        Width = Round(Math.Abs(dx1 - dx0)), Height = Round(Math.Abs(dy1 - dy0)),
+                                    },
+                                    Confidence = 0.98
+                                });
+                            }
+                            L($"  [vec] 线画差异: 变更折线 {vr.Runs.Count} 条 " +
+                              $"(新增 {vr.Runs.Count(r => r.Dir == "added")} / 删除 {vr.Runs.Count(r => r.Dir == "removed")})");
+                        }
+                        else if (cfg.GraphicDiff.Enabled)
                         {
                             using var maskedBase = baseGrayAligned.Clone();
                             using var maskedTgt = tgtGray.Clone();

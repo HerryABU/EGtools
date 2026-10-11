@@ -28,6 +28,23 @@ namespace EGpdf2df.Engine
         {
             public bool Enabled { get; set; } = true;
             public string Method { get; set; } = "edge";   // "edge" | "absdiff" | "ssim"
+            // 图形差异检测路径：
+            //   "vector" (默认) = 直接解析内容流取线画 → 几何标定 → 共线覆盖匹配。
+            //                     纯矢量、不做位图渲染，误报率低（本项目 CAD 图是纯矢量）。
+            //   "pixel"         = 旧的两版渲染成位图 + OpenCV 逐像素/逐轮廓比对。
+            //                     对 1~2pt 配准误差零容忍，细线整体错位会整图点亮，仅作回退。
+            public string GraphicMethod { get; set; } = "vector";
+            // 矢量比对容差(pt)：两版同名线画允许的位置偏差。
+            // 实测两版导出存在 2~4pt 的残余配准差（不只是纯缩放/平移），tol=1 会把大量未变线画
+            // 报成变更：实测某页 5870 条 → tol=3 时 244 条（24×），而"完全相同的页"在任何 tol 下
+            // 都稳定在 2~3 条（不引入误报）。同时真正大改的页在 tol=3 仍保留 3000+ 条，
+            // 到 tol=5 就会被吃掉（824 条）——3.0 是"不漏真差异、不产假差异"的平衡点。
+            public double VectorTolPt { get; set; } = 3.0;
+            // 矢量比对方向容差(度)：防止密集区被"横穿而过"的无关线段误判为覆盖。
+            public double VectorAngleTolDeg { get; set; } = 12.0;
+            // 页面配对（按线画指纹）的最小余弦相似度：低于此值视为"不同图纸"，不配对。
+            // 实测同图纸≈0.99+、不同图纸≈0.3~0.6，0.85 有很宽的裕度。
+            public double PageMatchMinSim { get; set; } = 0.85;
             public int Threshold { get; set; } = 60;        // absdiff path: 0..255
             public bool ExcludeText { get; set; } = true;
             public int GaussianBlur { get; set; } = 5;
@@ -109,7 +126,7 @@ namespace EGpdf2df.Engine
 {
   ""precision"": ""medium"",
   ""renderDpi"": 200,
-  ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
+  ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""graphicMethod"": ""vector"", ""vectorTolPt"": 3.0, ""vectorAngleTolDeg"": 12.0, ""pageMatchMinSim"": 0.85, ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
   ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""markStyle"": ""semi"", ""markStrokeColor"": """", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },

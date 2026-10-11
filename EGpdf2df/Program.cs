@@ -34,6 +34,8 @@ public static class Program
         string? markStyle = null, markStrokeColor = null;
         bool readStdin = false;
         bool locateMode = false;
+        bool vecDiag = false;
+        bool vecScan = false;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -47,6 +49,8 @@ public static class Program
                 case "--config": configPath = take(""); break;
                 case "--stdin": readStdin = true; break;
                 case "--locate": locateMode = true; break;
+                case "--vecdiag": vecDiag = true; break;
+                case "--vecscan": vecScan = true; break;
                 case "-o": case "--output": output = take(""); break;
                 case "-p": case "--pages": pagesArg = take(""); break;
                 case "--text-added-color": textAddedColor = take(""); break;
@@ -67,6 +71,22 @@ public static class Program
         // ---- locate mode: find a text string's coordinates in both PDFs ----
         if (locateMode)
             return RunLocate(jsonFile, readStdin, L);
+
+        // ---- vecdiag mode: 矢量线画提取诊断（有几条线段、标定与匹配率多少）----
+        if (vecDiag)
+        {
+            if (baseline == null || target == null) { L("[error] --vecdiag needs <baseline> <target> [-p page]"); return 2; }
+            return RunVecDiag(baseline, target, pagesArg, L);
+        }
+
+        // ---- vecscan mode: 用【线画自身】判定两版页面对应关系 ----
+        // 每页标题栏都是同一个项目号，按图纸号配对会退化成按页序配对；一旦新版插入/删除页，
+        // 后续全体错位。此模式对一个基准页扫描全部目标页，命中率最高者 = 真实对应页。
+        if (vecScan)
+        {
+            if (baseline == null || target == null) { L("[error] --vecscan needs <baseline> <target> [-p basePages]"); return 2; }
+            return RunVecScan(baseline, target, pagesArg, L);
+        }
 
         DiffRequest? req = null;
         if (jsonFile != null)
@@ -179,6 +199,95 @@ public static class Program
         }
         var result = new JsonObject { ["baseline"] = baseline, ["target"] = target, ["results"] = outArr };
         Console.WriteLine(result.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        return 0;
+    }
+
+    /// <summary>
+    /// 矢量线画诊断：报告两版指定页的线段数、标定结果与覆盖匹配率、以及最大的若干变更折线。
+    /// 用于快速判断"某页为什么报这么多/这么少差异"。
+    /// </summary>
+    /// <summary>
+    /// 用线画自身判定页面对应：对给定基准页扫描全部目标页，报告覆盖命中率最高的目标页。
+    /// 这是"两版页序是否真的对齐"的权威判据——命中率 ~100% 即真实对应页。
+    /// </summary>
+    static int RunVecScan(string baseline, string target, string? pagesArg, Action<string> L)
+    {
+        var cfg = Pdf2dfConfig.Load(null);
+        var bases = pagesArg != null
+            ? pagesArg.Split(',').Select(s => int.Parse(s.Trim())).ToList()
+            : new List<int> { 0, 1, 2, 3, 4, 5 };
+        using var bSrc = new VectorPageSource(baseline);
+        using var tSrc = new VectorPageSource(target);
+        int tMax = Math.Min(tSrc.PageCount, 14);
+        L($"[scan] 扫描目标页 0..{tMax - 1}");
+
+        // 目标页线画预先提取并缓存（提取是主要开销）
+        var tCache = new Dictionary<int, List<VectorLinework.Seg>>();
+        for (int j = 0; j < tMax; j++) tCache[j] = VectorLinework.Extract(tSrc, j);
+
+        foreach (var bi in bases)
+        {
+            var b = VectorLinework.Extract(bSrc, bi);
+            var scored = new List<(int t, double hit, int runs)>();
+            for (int j = 0; j < tMax; j++)
+            {
+                var t = tCache[j];
+                if (t.Count == 0 || b.Count == 0) continue;
+                var r = VectorGeomDiff.Compare(b, t, cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, null, quick: true);
+                scored.Add((j, r.CalibHitRate, r.Runs.Count));
+            }
+            scored.Sort((x, y) => y.hit.CompareTo(x.hit));
+            string top = string.Join("  ", scored.Take(4).Select(s => $"tgt{s.t}: {s.hit * 100:F1}% runs={s.runs}"));
+            L($"[scan] base {bi} (segs={b.Count}) -> {top}");
+        }
+        return 0;
+    }
+
+    static string Span(List<VectorLinework.Seg> segs)
+    {
+        double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
+        foreach (var s in segs)
+        {
+            x0 = Math.Min(x0, Math.Min(s.X0, s.X1)); x1 = Math.Max(x1, Math.Max(s.X0, s.X1));
+            y0 = Math.Min(y0, Math.Min(s.Y0, s.Y1)); y1 = Math.Max(y1, Math.Max(s.Y0, s.Y1));
+        }
+        if (x0 > x1) return "(empty)";
+        return $"x[{x0:F1},{x1:F1}] y[{y0:F1},{y1:F1}]";
+    }
+
+    static int RunVecDiag(string baseline, string target, string? pagesArg, Action<string> L)
+    {
+        var pages = new List<int>();
+        // 真实工作流是【按图纸号配对】，两版页序常有偏移（实测新版多插一页 → 后续整体错位一位）。
+        // 故诊断支持 "基准页:目标页" 形式，如 -p 5:6,6:7，避免用错位的同号页得出"整页都变了"的假结论。
+        var pairs2 = new List<(int b, int t)>();
+        if (pagesArg != null)
+            foreach (var seg in pagesArg.Split(','))
+            {
+                var kv = seg.Trim().Split(':');
+                pairs2.Add(kv.Length == 2
+                    ? (int.Parse(kv[0]), int.Parse(kv[1]))
+                    : (int.Parse(kv[0]), int.Parse(kv[0])));
+            }
+        else pairs2.Add((0, 0));
+        var cfg = Pdf2dfConfig.Load(null);
+        using var bSrc = new VectorPageSource(baseline);
+        using var tSrc = new VectorPageSource(target);
+        foreach (var (p, q) in pairs2)
+        {
+            if (p < 0 || p >= bSrc.PageCount || q < 0 || q >= tSrc.PageCount) { L($"[vec] page {p}:{q} out of range"); continue; }
+            var b = VectorLinework.Extract(bSrc, p);
+            var t = VectorLinework.Extract(tSrc, q);
+            L($"[vec] page {p}:{q}: contentBase={bSrc.Content(p).Length}B contentTgt={tSrc.Content(q).Length}B");
+            L($"[vec] page {p}:{q}: baseSegs={b.Count} tgtSegs={t.Count} rotBase={bSrc.Rotation(p)} rotTgt={tSrc.Rotation(q)}");
+            L($"[vec] page {p}:{q}: bboxBase={Span(b)}  bboxTgt={Span(t)}");
+            var r = VectorGeomDiff.Compare(b, t, cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, L);
+            var byDir = r.Runs.GroupBy(x => x.Dir).ToDictionary(g => g.Key, g => g.Count());
+            L($"[vec] page {p}:{q}: runs={r.Runs.Count} " +
+              string.Join(" ", byDir.Select(kv => $"{kv.Key}={kv.Value}")));
+            foreach (var run in r.Runs.OrderByDescending(x => x.Length).Take(5))
+                L($"[vec]    {run.Dir,-8} len={run.Length:F1} pts={run.Pts.Count / 2}");
+        }
         return 0;
     }
 
