@@ -106,12 +106,21 @@ namespace EGpdf2df.Engine
                     StrokePoly(underCanvas, c, scale, changeCol, lw, solid: true);
                 foreach (var it in a.TextItems)
                 {
-                    bool oldSide = IsOldSide(it.ChangeType);
-                    var ringCol = (it.ChangeType == "changed") ? changeCol : circleCol;
                     float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
                     float w = (float)it.Bbox.Width, h = (float)it.Bbox.Height;
-                    float rx = Math.Max(2f, w / 2 + 4f), ry = Math.Max(2f, h / 2 + 4f);
-                    DrawEllipse(underCanvas, x + w / 2, yTop + h / 2, rx, ry, ringCol, lw, solid: !oldSide);
+                    if (it.ChangeType == "changed")
+                    {
+                        // 变更(同序号、内容不同)：绿色椭圆圈。数量少、最需要引人注意。
+                        float rx = Math.Max(2f, w / 2 + 4f), ry = Math.Max(2f, h / 2 + 4f);
+                        DrawEllipse(underCanvas, x + w / 2, yTop + h / 2, rx, ry, changeCol, lw, solid: true);
+                    }
+                    else
+                    {
+                        // 新增 / 删除：只画一个"小圆点"定位标记，而不是给成百上千条都套大圈
+                        // ——这是此前"整页铺满圆圈、viewer 全炸"的直接原因。
+                        float r = Math.Max(2.5f, lw);
+                        DrawDot(underCanvas, x + w / 2, yTop + h / 2, r, circleCol);
+                    }
                 }
                 underCanvas.RestoreState();
 
@@ -249,6 +258,17 @@ namespace EGpdf2df.Engine
             c.CurveTo(cx - rx, cy - oy, cx - ox, cy - ry, cx, cy - ry);
             c.CurveTo(cx + ox, cy - ry, cx + rx, cy - oy, cx + rx, cy);
             c.ClosePath().Stroke();
+            c.RestoreState();
+        }
+
+        // 小实心圆点 —— 新增 / 删除文本的紧凑定位标记。体量极小(半径仅几 pt)，
+        // 即使一页有成百处也不会像大椭圆圈那样铺满画面、拖垮 viewer。
+        static void DrawDot(PdfCanvas c, float cx, float cy, float r, Color col)
+        {
+            c.SaveState();
+            c.SetFillColor(col);
+            c.Circle(cx, cy, r);
+            c.Fill();
             c.RestoreState();
         }
 

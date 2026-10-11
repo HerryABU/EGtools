@@ -84,8 +84,10 @@ namespace EGpdf2df.Engine
                     foreach (var (basePno, tgtPno, no) in pagePairs)
                     {
                         L($"  图纸号 {no}: 基准页 {basePno + 1} ↔ 目标页 {tgtPno + 1}");
-                        var baseB = RenderBgr(baseDoc, basePno, scale, out int bw, out int bh, out var bBounds);
-                        var tgtB = RenderBgr(tgtDoc, tgtPno, scale, out int tw, out int th, out var tBounds);
+                        // ⚠️ 必须释放：dpi 200 下这两张彩色大图各约 360MB，不释放会随页数
+                        // 线性累积 → 全本文档跑到几十页就 OOM 崩溃(用户报的"崩溃很厉害")。
+                        using var baseB = RenderBgr(baseDoc, basePno, scale, out int bw, out int bh, out var bBounds);
+                        using var tgtB = RenderBgr(tgtDoc, tgtPno, scale, out int tw, out int th, out var tBounds);
                         using var baseGray = new Mat(); Cv2.CvtColor(baseB, baseGray, ColorConversionCodes.BGR2GRAY);
                         using var tgtGray = new Mat(); Cv2.CvtColor(tgtB, tgtGray, ColorConversionCodes.BGR2GRAY);
 
@@ -247,6 +249,7 @@ namespace EGpdf2df.Engine
                             pageAnno.TextItems.AddRange(textItems);
                         }
 
+                        textMask?.Dispose();      // 单页文本掩膜(约 120MB)必须随页释放，否则累积 OOM
                         baseGrayAligned.Dispose();
                         resp.Summary.GraphicDiffs += diffs.Count(d => d.Type == "graphic");
                         resp.Summary.TextDiffs += diffs.Count(d => d.Type == "text");
@@ -324,6 +327,20 @@ namespace EGpdf2df.Engine
             // alpha=0, and dropping the alpha channel alone would turn them black.
             // Compositing guarantees correct contrast for both raster and edge diff.
             var bgr = new Mat(h, w, MatType.CV_8UC3);
+            // 快速路径：整页不透明(alpha 全 255，绝大多数工程图)时直接去掉 alpha 通道。
+            // 避免构造多张 CV_32FC3 浮点大图(dpi200 下每张约 1.4GB)，这是全本文档
+            // 跑到几十页就 OOM 崩溃的主因之一。
+            using (var aChk = new Mat())
+            {
+                Cv2.ExtractChannel(rgba, aChk, 3);
+                Cv2.MinMaxLoc(aChk, out double minA, out _);
+                if (minA >= 255.0)
+                {
+                    Cv2.CvtColor(rgba, bgr, ColorConversionCodes.RGBA2BGR);
+                    rgba.Dispose();
+                    return bgr;
+                }
+            }
             using var alpha = new Mat(); Cv2.ExtractChannel(rgba, alpha, 3);
             using var aF = new Mat(); alpha.ConvertTo(aF, MatType.CV_32FC1, 1.0 / 255.0);
             using var bgrF = new Mat();
@@ -754,52 +771,69 @@ namespace EGpdf2df.Engine
         // Group words into lines (by baseline), then into items. A line that begins with a
         // serial token starts a new item; subsequent non-serial lines that hug the item's
         // left edge / line spacing are absorbed as continuation (wrapped notes).
+        // 把页面词流切成"有序号的条目"。序号优先取管道/管线号(408.101.P76 这类点分标识符)，
+        // 其次纯数字(材料表 NO 列)、NOTE n / ITEM n。
+        // ⚠️ 关键：一行(row, 按 yc 聚类)里可能出现多个独立标签(如两个管段号并排)，必须在
+        // 每个"序号起点"处切分，否则并排的两个编号会被并成一条、导致与另一版对不上 → 误报。
         static List<TextItem> Itemize(List<TextGeometry.Word> words)
         {
             var sorted = words.Where(w => !string.IsNullOrWhiteSpace(w.text))
                               .OrderBy(w => w.yc).ThenBy(w => w.x0).ToList();
-            var lines = new List<List<TextGeometry.Word>>();
+            var rows = new List<List<TextGeometry.Word>>();
             foreach (var w in sorted)
             {
-                var last = lines.Count > 0 ? lines[lines.Count - 1] : null;
+                var last = rows.Count > 0 ? rows[rows.Count - 1] : null;
                 double lh = w.y1 - w.y0;
                 if (last != null && Math.Abs(w.yc - last.Average(x => x.yc)) <= Math.Max(4.0, lh))
                     last.Add(w);
-                else lines.Add(new List<TextGeometry.Word> { w });
+                else rows.Add(new List<TextGeometry.Word> { w });
             }
             var items = new List<TextItem>();
-            TextItem? cur = null;
-            foreach (var line in lines)
+            TextItem? curItem = null;
+            List<TextGeometry.Word>? curWords = null;
+            void Flush()
             {
-                string? serial = LineSerial(line);
-                if (serial != null)
+                if (curItem != null && curWords != null && curWords.Count > 0)
+                { AddWords(curItem, curWords); items.Add(curItem); }
+                curItem = null; curWords = null;
+            }
+            foreach (var row in rows)
+            {
+                for (int i = 0; i < row.Count; i++)
                 {
-                    cur = new TextItem { Serial = serial, Content = JoinContent(line) };
-                    AddWords(cur, line);
-                    items.Add(cur);
+                    var w = row[i];
+                    var wt = (w.text ?? "").Trim();
+                    string? ser = SerialOf(wt, row, i);
+                    if (ser != null)
+                    {
+                        Flush();
+                        curWords = new List<TextGeometry.Word> { w };
+                        curItem = new TextItem { Serial = ser, Content = wt };
+                    }
+                    else if (curItem == null)
+                    {
+                        curWords = new List<TextGeometry.Word> { w };
+                        curItem = new TextItem { Serial = null, Content = wt };
+                    }
+                    else
+                    {
+                        curWords!.Add(w);
+                        curItem.Content = string.IsNullOrEmpty(curItem.Content) ? wt : curItem.Content + " " + wt;
+                    }
                 }
-                else if (cur != null && IsContinuation(line, cur))
-                {
-                    cur.Content += " " + JoinContent(line);
-                    AddWords(cur, line);
-                }
-                else
-                {
-                    cur = new TextItem { Serial = null, Content = JoinContent(line) };
-                    AddWords(cur, line);
-                    items.Add(cur);
-                }
+                Flush();
             }
             return items;
         }
 
-        static string? LineSerial(List<TextGeometry.Word> line)
+        // 序号识别：管道/管线号 > 纯数字 > NOTE n / ITEM n。均为原样保留(不剥离后缀)。
+        static string? SerialOf(string wt, List<TextGeometry.Word> row, int i)
         {
-            if (line.Count == 0) return null;
-            var f = line[0].text.Trim();
-            if (RePureNum.IsMatch(f)) return f;                                  // 纯数字序号(材料表 NO 列)
-            if (ReLabelNum.IsMatch(f) && line.Count > 1 && RePureNum.IsMatch(line[1].text.Trim()))
-                return f + " " + line[1].text.Trim();                           // NOTE 1 / ITEM 2 …
+            if (TextGeometry.LooksLikeLineNo(wt)) return wt.ToUpperInvariant();  // 管段号 408.101.P76
+            if (i == 0 && RePureNum.IsMatch(wt)) return wt;                      // 纯数字序号(材料表 NO 列)
+            if (i == 0 && ReLabelNum.IsMatch(wt) && i + 1 < row.Count
+                && RePureNum.IsMatch((row[i + 1].text ?? "").Trim()))
+                return wt + " " + (row[i + 1].text ?? "").Trim();               // NOTE 1 / ITEM 2 …
             return null;
         }
 
@@ -851,8 +885,14 @@ namespace EGpdf2df.Engine
         static List<DiffItem> TextDiff(List<TextGeometry.Word> wordsA, List<TextGeometry.Word> wordsB,
             Pdf2dfConfig.TextCfg t, int page, List<Bbox> regions, Rectangle tBounds, double scale)
         {
-            var IA = Itemize(wordsA.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList());
-            var IB = Itemize(wordsB.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList());
+            // 只保留"有序号"的条目参与比对（管道号 408.101.P## / NOTE n / 材料表 NO 等）。
+            // 无序号的自有文本(标题、图框、英文说明)在两版导出时分词/换行极易不一致，
+            // 逐条比对会产生海量伪差异并把整页画满标记 —— 用户明确要求：先按序号配对，
+            // 再看序号对应内容是否相同，无序号文本不报差异。
+            var IA = Itemize(wordsA.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList())
+                     .Where(it => it.Serial != null).ToList();
+            var IB = Itemize(wordsB.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList())
+                     .Where(it => it.Serial != null).ToList();
             var inside = regions.Count == 0 ? (Func<double, double, bool>)((x, y) => true)
                                            : (x, y) => regions.Any(r => x >= r.X && x <= r.X + r.Width && y >= r.Y && y <= r.Y + r.Height);
             IA = IA.Where(it => inside(it.Xc, it.Yc)).ToList();
