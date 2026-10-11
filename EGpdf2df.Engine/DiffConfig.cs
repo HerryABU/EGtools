@@ -58,14 +58,15 @@ namespace EGpdf2df.Engine
 
         public sealed class AnnotationCfg
         {
-            public string ColorNew { get; set; } = "#FF0000";   // new-only / changed → RED SOLID
-            public string ColorOld { get; set; } = "#1E66E0";   // old-only → BLUE DASHED
-            public string ColorOldText { get; set; } = "#66B2FF"; // 消失文字（浅蓝斜体）— disappeared text
+            // 三个可由用户 / 前端自定义的颜色（传入色号 #RRGGBB）：
+            //   TraceColor  → 图形（管线/设备/图元）差异的描红描边（默认红）。
+            //   CircleColor → 文字 / 序号差异的圈画标记（默认蓝）。
+            //   TextColor   → 消失 / 变更文字的浅色标注（默认浅蓝）。
+            // 图形方向由线型区分：新增/变更 = 实线，删除 = 虚线（沿用"红=新、蓝=旧"语义的等价表达）。
+            public string TraceColor { get; set; } = "#FF0000";   // 描红线（图形轮廓）
+            public string CircleColor { get; set; } = "#1E66E0";  // 圆圈（文字标记）
+            public string TextColor { get; set; } = "#66B2FF";    // 文字（消失/变更标注）
             public int LineWidth { get; set; } = 3;
-            public bool Fill { get; set; } = false;             // text diffs (new-side): translucent fill
-            public int FillAlpha { get; set; } = 60;            // 0..255
-            // 文字/序号差异用"圈画"（椭圆）而非方框；图像差异仍用矩形描红。
-            public bool CircleText { get; set; } = true;
             // 嵌入 Unicode 字体（默认 Windows Arial，含土耳其语等字形），让"消失文字"
             // 的浅蓝斜体真正渲染；字体文件缺失时回退内置 Helvetica（仅 ASCII）。
             public string FontPathRegular { get; set; } = "C:/Windows/Fonts/arial.ttf";
@@ -90,7 +91,7 @@ namespace EGpdf2df.Engine
   ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""colorNew"": ""#FF0000"", ""colorOld"": ""#1E66E0"", ""colorOldText"": ""#66B2FF"", ""lineWidth"": 3, ""fill"": false, ""fillAlpha"": 60, ""circleText"": true, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
+  ""annotation"": { ""traceColor"": ""#FF0000"", ""circleColor"": ""#1E66E0"", ""textColor"": ""#66B2FF"", ""lineWidth"": 3, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
   ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 

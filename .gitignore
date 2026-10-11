@@ -101,6 +101,10 @@ installer/
 publish/
 *.msi
 
+# -------- Local test / verification scratch (not project source) --------
+# 临时比对产物、验证脚本与预览图（输入/输出 PDF 在仓库外的 Desktop/tools/tz）。
+tz/
+
 # -------- Workspace tooling state (not project source) --------
 .workbuddy/
 

@@ -9,6 +9,7 @@ class QTextEdit;
 class QPushButton;
 class QSpinBox;
 class QCheckBox;
+class QComboBox;
 class QGroupBox;
 
 // Dedicated "PDF 比对 / 图纸差异" page (drives EGpdf2df).
@@ -33,11 +34,18 @@ private slots:
     void onClearCsv();
     void onRun();
     void onBrowsePreview();
+    void onPickTraceColor();
+    void onPickCircleColor();
+    void onPickTextColor();
 
 private:
     QString cliExe(const QString& name) const;
     void refreshKernelStatus();
     void showPipeMatch(const QJsonObject& root);
+    // 弹出颜色选择器；确认后更新按钮色块与颜色值。返回是否改动。
+    bool pickColor(const QString& title, QString& color, QPushButton* btn);
+    // 同步按钮色块（背景=当前颜色，深色底用白字）。
+    static void paintSwatch(QPushButton* btn, const QString& hex);
 
     QString m_cliDir;
     QLineEdit* m_baseEdit = nullptr;
@@ -45,6 +53,14 @@ private:
     QLineEdit* m_csvEdit  = nullptr;
     QSpinBox*  m_dpiSpin = nullptr;
     QCheckBox* m_pipeChk = nullptr;
+    QComboBox* m_precCombo = nullptr;            // 精细度 fine/medium/coarse
+    // 三个可自定义标注色（传给内核 options.colors）。
+    QString m_traceColor  = QStringLiteral("#FF0000");  // 描红线（图形轮廓）
+    QString m_circleColor = QStringLiteral("#1E66E0");  // 圆圈（文字标记）
+    QString m_textColor   = QStringLiteral("#66B2FF");  // 文字（消失/变更）
+    QPushButton* m_traceColorBtn  = nullptr;
+    QPushButton* m_circleColorBtn = nullptr;
+    QPushButton* m_textColorBtn   = nullptr;
     QTextEdit* m_jsonView = nullptr;
     QTextEdit* m_pipeView = nullptr;
     QLabel*   m_preview   = nullptr;

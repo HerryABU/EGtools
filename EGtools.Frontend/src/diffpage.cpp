@@ -14,6 +14,9 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QColorDialog>
+#include <QColor>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -59,10 +62,39 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     m_dpiSpin->setSuffix(QStringLiteral(" DPI"));
     m_pipeChk = new QCheckBox(QStringLiteral("管线号↔材料表一一对应"));
     m_pipeChk->setChecked(true);
+    // 精细度：用户调参（灵敏捕捉微小差异 ↔ 粗略忽略小差异与几毫米偏移）。
+    m_precCombo = new QComboBox();
+    m_precCombo->addItem(QStringLiteral("灵敏 (fine)"),   QStringLiteral("fine"));
+    m_precCombo->addItem(QStringLiteral("标准 (medium)"), QStringLiteral("medium"));
+    m_precCombo->addItem(QStringLiteral("粗略 (coarse)"), QStringLiteral("coarse"));
+    m_precCombo->setCurrentIndex(1);
     optRow->addWidget(new QLabel(QStringLiteral("渲染:")));
     optRow->addWidget(m_dpiSpin);
+    optRow->addWidget(new QLabel(QStringLiteral("精细度:")));
+    optRow->addWidget(m_precCombo);
     optRow->addWidget(m_pipeChk);
     optRow->addStretch();
+
+    // ---- 颜色选择器：描红线 / 圆圈 / 文字（色号传入内核 options.colors） ----
+    auto* colRow = new QHBoxLayout();
+    m_traceColorBtn  = new QPushButton();
+    m_circleColorBtn = new QPushButton();
+    m_textColorBtn   = new QPushButton();
+    for (QPushButton* b : {m_traceColorBtn, m_circleColorBtn, m_textColorBtn}) {
+        b->setFixedSize(56, 24);
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    paintSwatch(m_traceColorBtn,  m_traceColor);
+    paintSwatch(m_circleColorBtn, m_circleColor);
+    paintSwatch(m_textColorBtn,   m_textColor);
+    colRow->addWidget(new QLabel(QStringLiteral("颜色:")));
+    colRow->addWidget(new QLabel(QStringLiteral("描红线")));
+    colRow->addWidget(m_traceColorBtn);
+    colRow->addWidget(new QLabel(QStringLiteral("圆圈")));
+    colRow->addWidget(m_circleColorBtn);
+    colRow->addWidget(new QLabel(QStringLiteral("文字")));
+    colRow->addWidget(m_textColorBtn);
+    colRow->addStretch();
 
     m_runBtn = new QPushButton(QStringLiteral("开始比对（红实线/圈=新增·蓝虚线/圈=删除·浅蓝斜体=消失文字）"));
     m_runBtn->setStyleSheet(QStringLiteral("QPushButton{background:#2d7d46;color:#fff;padding:6px 12px;border-radius:5px;font-weight:600;}"));
@@ -79,11 +111,11 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     auto* legend = new QGroupBox(QStringLiteral("图例（差异直接标注在新 PDF 中）"));
     auto* legendLay = new QVBoxLayout(legend);
     legendLay->addWidget(new QLabel(QStringLiteral(
-        "● <font color='#FF0000'>红实线圈画</font> = 新增 / 改动的文字或序号\n"
-        "■ <font color='#FF0000'>红实线矩形</font> = 新增 / 改动的图像\n"
-        "● <font color='#1E66E0'>蓝虚线圈画</font> = 删除 / 改动的文字（蓝虚线区域）\n"
-        "■ <font color='#1E66E0'>蓝虚线矩形</font> = 删除的图像\n"
-        "<font color='#1E66E0'><i>✎ 浅蓝斜体</i></font> = 消失 / 被改掉的旧文字（原位置重现）")));
+        "● <b>描红线(实线)</b> = 新增 / 改动的图形（1:1 描出图形真实轮廓，非方框/圆圈）\n"
+        "● <b>描红线(虚线)</b> = 被删除的图形（1:1 描出原轮廓）\n"
+        "● <b>圆圈(实/虚线)</b> = 新增 / 删除的文字或序号\n"
+        "<i>消失 / 被改掉的旧文字</i> = 浅色斜体在原位置重现\n"
+        "三种颜色（描红线 / 圆圈 / 文字）可用上方颜色选择器自定，色号直接传给内核。")));
     legendLay->setSpacing(2);
 
     // ---- 管线号↔材料表一一对应结果 ----
@@ -102,6 +134,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     ctrlLay->addLayout(tgtRow);
     ctrlLay->addLayout(csvRow);
     ctrlLay->addLayout(optRow);
+    ctrlLay->addLayout(colRow);
     ctrlLay->addLayout(btnRow);
     ctrlLay->addWidget(m_status);
     ctrlLay->addWidget(legend);
@@ -140,6 +173,50 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     connect(csvClr,  &QPushButton::clicked, this, &DiffPage::onClearCsv);
     connect(m_runBtn,&QPushButton::clicked, this, &DiffPage::onRun);
     connect(openBtn, &QPushButton::clicked, this, &DiffPage::onBrowsePreview);
+    connect(m_traceColorBtn,  &QPushButton::clicked, this, &DiffPage::onPickTraceColor);
+    connect(m_circleColorBtn, &QPushButton::clicked, this, &DiffPage::onPickCircleColor);
+    connect(m_textColorBtn,   &QPushButton::clicked, this, &DiffPage::onPickTextColor);
+}
+
+// 同步颜色按钮的色块：背景=当前颜色；深色底自动换白字，浅色底用黑字。
+void DiffPage::paintSwatch(QPushButton* btn, const QString& hex)
+{
+    if (!btn) return;
+    const QColor c(hex);
+    const QString textCol = (c.lightness() > 150) ? QStringLiteral("#000000") : QStringLiteral("#FFFFFF");
+    btn->setText(hex.toUpper());
+    btn->setStyleSheet(QStringLiteral(
+        "QPushButton{background:%1;color:%2;border:1px solid #888;border-radius:4px;font-size:11px;}")
+        .arg(c.name(), textCol));
+}
+
+// 打开系统取色器；确认后写入 color 并刷新按钮色块。
+bool DiffPage::pickColor(const QString& title, QString& color, QPushButton* btn)
+{
+    const QColor init(color);
+    const QColor picked = QColorDialog::getColor(init, this, title);
+    if (!picked.isValid()) return false;
+    color = picked.name(QColor::HexRgb).toUpper();   // 规范化 #RRGGBB
+    paintSwatch(btn, color);
+    return true;
+}
+
+void DiffPage::onPickTraceColor()
+{
+    if (pickColor(QStringLiteral("选择描红线颜色（图形轮廓）"), m_traceColor, m_traceColorBtn))
+        emit statusMessage(QStringLiteral("描红线颜色 = %1").arg(m_traceColor));
+}
+
+void DiffPage::onPickCircleColor()
+{
+    if (pickColor(QStringLiteral("选择圆圈颜色（文字标记）"), m_circleColor, m_circleColorBtn))
+        emit statusMessage(QStringLiteral("圆圈颜色 = %1").arg(m_circleColor));
+}
+
+void DiffPage::onPickTextColor()
+{
+    if (pickColor(QStringLiteral("选择文字颜色（消失/变更标注）"), m_textColor, m_textColorBtn))
+        emit statusMessage(QStringLiteral("文字颜色 = %1").arg(m_textColor));
 }
 
 QString DiffPage::cliExe(const QString& name) const
@@ -204,10 +281,18 @@ void DiffPage::onRun()
     QString reqPath = QDir(tmp.path()).filePath(QStringLiteral("req.json"));
     QString outPdf  = QDir(tmp.path()).filePath(QStringLiteral("diff.pdf"));
 
-    // 构造请求 JSON（含选项与可选的人工修正材料表）。
+    // 构造请求 JSON（含选项、精细度、三个自定义颜色与可选的人工修正材料表）。
     QJsonObject opt;
     opt[QStringLiteral("renderDpi")] = m_dpiSpin->value();
     opt[QStringLiteral("pipeMatch")] = m_pipeChk->isChecked();
+    if (m_precCombo)
+        opt[QStringLiteral("precision")] = m_precCombo->currentData().toString();
+    // 颜色选择器 → options.colors（描红线 / 圆圈 / 文字），内核据色号着色。
+    QJsonObject colors;
+    colors[QStringLiteral("trace")]  = m_traceColor;
+    colors[QStringLiteral("circle")] = m_circleColor;
+    colors[QStringLiteral("text")]   = m_textColor;
+    opt[QStringLiteral("colors")] = colors;
     QJsonObject req;
     req[QStringLiteral("baseline")] = a;
     req[QStringLiteral("target")]   = b;

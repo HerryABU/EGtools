@@ -57,9 +57,9 @@ namespace EGpdf2df.Engine
             // images does NOT balloon the file — the base content stays the same size.
             writer.SetSmartMode(true);
             using var pdf = new PdfDocument(new PdfReader(targetPath), writer);
-            var red = ColorConstants.RED;
-            var blue = ColorConstants.BLUE;
-            var lightBlue = new DeviceRgb(150, 200, 255);
+            var traceCol = ParseColor(ann.TraceColor) ?? ColorConstants.RED;   // 图形描红描边
+            var circleCol = ParseColor(ann.CircleColor) ?? ColorConstants.BLUE; // 文字/序号圈画
+            var textCol = ParseColor(ann.TextColor) ?? new DeviceRgb(150, 200, 255); // 消失/变更文字
             // 嵌入 Unicode 字体（默认 Arial，含土耳其语等字形），让"消失文字"的浅蓝斜体
             // 真正渲染；字体缺失时回退内置 Helvetica（仅 ASCII）。
             var unicodeFont = LoadUnicodeFont(ann.FontPathItalic) ?? LoadUnicodeFont(ann.FontPathRegular);
@@ -95,13 +95,13 @@ namespace EGpdf2df.Engine
                 underCanvas.SaveState();
                 underCanvas.ConcatMatrix(mA, mB, mC, mD, mE, mF);
                 foreach (var c in a.AddedContours)
-                    DrawContour(underCanvas, c, scale, red, lw, solid: true);
+                    DrawContour(underCanvas, c, scale, traceCol, lw, solid: true);
                 foreach (var c in a.RemovedContours)
-                    DrawContour(underCanvas, c, scale, blue, lw, solid: false);
+                    DrawContour(underCanvas, c, scale, traceCol, lw, solid: false);
                 foreach (var it in a.TextItems)
                 {
                     bool oldSide = IsOldSide(it.ChangeType);
-                    var col = oldSide ? blue : red;
+                    var col = circleCol;
                     float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
                     float w = (float)it.Bbox.Width, h = (float)it.Bbox.Height;
                     float rx = Math.Max(2f, w / 2 + 4f), ry = Math.Max(2f, h / 2 + 4f);
@@ -123,7 +123,7 @@ namespace EGpdf2df.Engine
                     double bx = x, by = Math.Max(1f, yTop + 1f);      // baseline in DISPLAY y-down
                     ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
                     overCanvas.SaveState();
-                    overCanvas.SetFillColor(lightBlue);
+                    overCanvas.SetFillColor(textCol);
                     overCanvas.BeginText();
                     overCanvas.SetFontAndSize(italFont, fs);
                     overCanvas.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
@@ -213,6 +213,23 @@ namespace EGpdf2df.Engine
         }
 
         static string Escape(string s) => s.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
+
+        // 解析用户传入的色号 #RRGGBB / #RRGGBBAA → iText DeviceRgb（忽略 alpha）。
+        static Color ParseColor(string? hex)
+        {
+            if (string.IsNullOrWhiteSpace(hex)) return null!;
+            try
+            {
+                var h = hex.Trim().TrimStart('#');
+                if (h.Length == 6 || h.Length == 8)
+                    return new DeviceRgb(
+                        Convert.ToInt32(h.Substring(0, 2), 16),
+                        Convert.ToInt32(h.Substring(2, 2), 16),
+                        Convert.ToInt32(h.Substring(4, 2), 16));
+            }
+            catch { }
+            return null!;
+        }
 
         // 嵌入 Unicode 字体（Identity-H），使土耳其语等非 ASCII 文字也能渲染；失败返回 null。
         static PdfFont LoadUnicodeFont(string? path)

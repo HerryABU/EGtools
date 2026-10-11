@@ -40,6 +40,17 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("materialTableYFraction")] public double? MaterialTableYFraction { get; set; }
         // 精细度预设：fine | medium | coarse（覆盖配置文件精度，映射阈值/最小面积/容差）。
         [JsonPropertyName("precision")] public string? Precision { get; set; }
+        // 标注颜色（前端颜色选择器传入色号 #RRGGBB）：
+        //   trace  = 图形（管线/设备/图元）描红描边；circle = 文字/序号圈画；text = 消失/变更文字。
+        [JsonPropertyName("colors")] public ReqColors? Colors { get; set; }
+    }
+
+    // 前端可选传入的标注颜色（缺省则使用配置文件默认）。
+    public sealed class ReqColors
+    {
+        [JsonPropertyName("trace")] public string? Trace { get; set; }   // 描红线
+        [JsonPropertyName("circle")] public string? Circle { get; set; } // 圆圈
+        [JsonPropertyName("text")] public string? Text { get; set; }    // 文字
     }
 
     public sealed class Bbox
@@ -94,10 +105,10 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("bbox")] public Bbox Bbox { get; set; } = new();
         [JsonPropertyName("confidence")] public double Confidence { get; set; }
         // Direction of the change (drives the PDF annotation):
-        //   "added"    → new-only              → RED SOLID (rectangle for graphics, circle for text)
-        //   "removed"  → old-only              → BLUE DASHED + light-blue italic "disappeared" text
-        //   "modified" → text changed          → BLUE DASHED + light-blue italic old text
-        //   "moved"    → text shifted position → BLUE DASHED + light-blue italic old text (old spot)
+        //   "added"    → new-only              → 图形用 TraceColor 实线描边；文字用 CircleColor 实线圈
+        //   "removed"  → old-only              → 图形用 TraceColor 虚线描边；文字用 CircleColor 虚线圈 + TextColor 浅色标注旧文字
+        //   "modified" → text changed          → CircleColor 虚线圈 + TextColor 浅色旧文字
+        //   "moved"    → text shifted position → CircleColor 虚线圈 + TextColor 浅色旧文字（原位置）
         [JsonPropertyName("changeType")] public string? ChangeType { get; set; }
         [JsonPropertyName("oldText")] public string? OldText { get; set; }
         [JsonPropertyName("newText")] public string? NewText { get; set; }

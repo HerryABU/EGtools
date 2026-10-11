@@ -1,6 +1,7 @@
 {
   "comment": "EGpdf2df 图纸差异检测配置。所有 DPI、阈值、配准与标注参数都从这里读，改动后无需重新编译。不针对任何具体图纸硬编码坐标。",
   "renderDpi": 200,
+  "precision": "medium",
   "graphicDiff": {
     "comment": "第一步：图形/图元差异。对比前用文字包围盒把文字区域涂白排除，避免文字位置微调被误报为图形变化。",
     "enabled": true,
@@ -8,7 +9,8 @@
     "threshold": 60,
     "excludeText": true,
     "gaussianBlur": 5,
-    "minComponentArea": 24
+    "minComponentArea": 24,
+    "tolerancePx": 0
   },
   "textDiff": {
     "comment": "第二步：文字/注释差异，独立于像素对比。按位置匹配基线/目标文字，识别 增/删/改/移动。",
@@ -20,17 +22,25 @@
     "moveTolerance": 6
   },
   "registration": {
-    "comment": "两幅图配准，使相同内容尽量重合。优先 ORB+单应性；纯线条图纸特征不足时降级为不平移直接对比。",
-    "method": "orb",
+    "comment": "两幅图配准：先对齐再比较。默认 FFT 相位相关（对纯线条图纸稳）；容差(毫米)用于忽略几毫米的显示/打印偏移。",
+    "method": "phase",
+    "toleranceMm": 2.0,
     "maxFeatures": 5000,
     "matchRatio": 0.15,
     "ransacThreshold": 5.0
   },
   "annotation": {
-    "comment": "差异标注样式（红色）。颜色为十六进制 RGB。",
-    "color": "#FF0000",
-    "lineWidth": 2,
-    "fill": false,
-    "fillAlpha": 60
+    "comment": "差异标注样式。三个颜色可由前端颜色选择器覆盖（传入 #RRGGBB）；图形方向由线型区分（新增/变更=实线，删除=虚线）。",
+    "traceColor": "#FF0000",
+    "circleColor": "#1E66E0",
+    "textColor": "#66B2FF",
+    "lineWidth": 3,
+    "fontPathRegular": "C:/Windows/Fonts/arial.ttf",
+    "fontPathItalic": "C:/Windows/Fonts/ariali.ttf"
+  },
+  "pipeMatch": {
+    "comment": "图中管线号 ↔ 材料表 一一对应核对；材料表判定阈值为页高比例。",
+    "enabled": true,
+    "materialTableYFraction": 0.62
   }
 }

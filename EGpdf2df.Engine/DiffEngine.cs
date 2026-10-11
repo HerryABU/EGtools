@@ -193,7 +193,12 @@ namespace EGpdf2df.Engine
                                 maskedBase.SetTo(Scalar.All(255), outside);
                                 maskedTgt.SetTo(Scalar.All(255), outside);
                             }
-                            var contours = GraphicDiff(maskedBase, maskedTgt, cfg.GraphicDiff);
+                            // Outline band radius (px) = the FULL annotation stroke width, so the
+                            // traced silhouette keeps a visible hollow core (white gap on each side
+                            // = radius - halfStroke = halfStroke) and can never self-fill; thin
+                            // linework also merges into one clean outline instead of a tangle.
+                            int bandPx = (int)Math.Max(1, Math.Round(Math.Max(1.2, cfg.Annotation.LineWidth) * scale));
+                            var contours = GraphicDiff(maskedBase, maskedTgt, cfg.GraphicDiff, cfg.GraphicDiff.TolerancePx, bandPx);
                             // Defensive guard: a contour fully contained within a (margin-expanded)
                             // TEXT word box is a glyph artifact, never a figure change.
                             var textPx = TextWordRectsPx(tgtWords, scale, tBounds.X0, tBounds.Y0, 6)
@@ -541,77 +546,148 @@ namespace EGpdf2df.Engine
             public Rect Rect;
         }
 
-        static List<GraphicContour> GraphicDiff(Mat a, Mat b, Pdf2dfConfig.GraphicCfg g)
+        // ---- TRUE 1:1 SHAPE tracing (not a circle, box, or simulated line) ----
+        // Two-stage, like the text diff: (1) LOCALIZE where the drawing changed with a
+        // clean EDGE difference — few, well-placed candidate regions (robust to the noise a
+        // raw ink difference explodes into when one revision is up-scaled), then (2) for each
+        // candidate, trace the ACTUAL full outline of the element that changed:
+        //   • added ink   → full outline of the new primitive in the TARGET  (TraceColor, solid)
+        //   • removed ink → full outline of the old primitive in the BASELINE (TraceColor, dashed)
+        // The outline is the real connected-component boundary of the linework (OpenCV
+        // FindContours on the element's ink mask) — a genuine trace of the pipe/equipment,
+        // never a thin "difference shell" and never an approximated circle/box.
+        // Library: OpenCvSharp FindContours — the standard, professional contour tracer.
+        static List<GraphicContour> GraphicDiff(Mat a, Mat b, Pdf2dfConfig.GraphicCfg g, int tolPx, int bandPx)
         {
-            using var diff = g.Method switch
-            {
-                "ssim" => SsimDiff(a, b),
-                "absdiff" => AbsDiffMap(a, b, g),
-                _ => EdgeDiff(a, b)   // "edge" — best for line/figure drawings
-            };
-            using var blur = new Mat();
-            Cv2.GaussianBlur(diff, blur, new Size(g.GaussianBlur, g.GaussianBlur), 0);
-            using var bin = new Mat();
-            Cv2.Threshold(blur, bin, g.Threshold, 255, ThresholdTypes.Binary);
-            using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(3, 3));
-            using var opened = new Mat();
-            Cv2.MorphologyEx(bin, opened, MorphTypes.Open, kernel);
+            // a = baseline (aligned, text excluded, white bg); b = target.
+            using var baseInk = new Mat(); using var tgtInk = new Mat();
+            Cv2.Threshold(a, baseInk, 128, 255, ThresholdTypes.BinaryInv); // dark pixels = ink
+            Cv2.Threshold(b, tgtInk, 128, 255, ThresholdTypes.BinaryInv);
 
-            // ApproxNone: capture EVERY vertex of the changed-region boundary so the
-            // outline is a pixel-accurate TRUE TRACE of the actual shape — never a
-            // simulated box/circle. ApproxPolyDP below acts purely as a point-count
-            // decimator (tiny epsilon), not a shape-rounding step.
-            // 容差侵蚀：忽略"偏离几毫米"的误差/显示偏移造成的光晕伪影（消除"红线填满"观感）。
-            // 在形态学开运算之后再腐蚀一圈，宽度 = TolerancePx（由 Registration.ToleranceMm 换算）。
-            Mat contourSrc = opened;
-            Mat? eroded = null;
-            if (g.TolerancePx > 0)
-            {
-                using var ek = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(g.TolerancePx, g.TolerancePx));
-                eroded = new Mat();
-                Cv2.Erode(opened, eroded, ek);
-                contourSrc = eroded;
-            }
+            // (1) localize changed regions cleanly with an edge difference.
+            using var edge = EdgeDiff(a, b);
 
-            Cv2.FindContours(contourSrc, out Point[][] contours, out _, RetrievalModes.External, ContourApproximationModes.ApproxNone);
-            eroded?.Dispose();
+            // (2) full ink-component labels on each side → lift the REAL element outline.
+            Mat tgtLabels = new Mat(), tgtStats = new Mat(), tgtC = new Mat();
+            Cv2.ConnectedComponentsWithStats(tgtInk, tgtLabels, tgtStats, tgtC, PixelConnectivity.Connectivity8);
+            Mat baseLabels = new Mat(), baseStats = new Mat(), baseC = new Mat();
+            Cv2.ConnectedComponentsWithStats(baseInk, baseLabels, baseStats, baseC, PixelConnectivity.Connectivity8);
+
+            Cv2.FindContours(edge, out Point[][] seeds, out _, RetrievalModes.External, ContourApproximationModes.ApproxNone);
             var items = new List<GraphicContour>();
-            foreach (var c in contours)
+            foreach (var s in seeds)
             {
-                var r = Cv2.BoundingRect(c);
+                var r = Cv2.BoundingRect(s);
                 if (r.Width * r.Height < g.MinComponentArea) continue;
-                // Direction: compare ink presence in baseline (aligned) vs target so we know
-                // whether the change is new-only or old-only.
-                double inkBase = MeanDark(a, r);
-                double inkTgt = MeanDark(b, r);
-                string dir;
-                if (inkTgt > inkBase + 0.04) dir = "added";        // new has lines, old doesn't → RED solid
-                else if (inkBase > inkTgt + 0.04) dir = "removed"; // old had lines, new doesn't → BLUE dashed
-                else dir = "modified";                             // both carry ink but differ → RED solid
-                // Simplify the contour to keep the real shape while cutting point count:
-                // a long free-form edge is reduced to its salient vertices.
-                Point[] approx = c;
-                if (c.Length > 200)
+                if ((double)r.Width / a.Width > 0.6 && (double)r.Height / a.Height > 0.6) continue; // whole-page guard
+                int cx = Clamp(r.X + r.Width / 2, a.Width - 1);
+                int cy = Clamp(r.Y + r.Height / 2, a.Height - 1);
+                // direction from ink presence at the candidate (which side actually has ink).
+                double inkBase = MeanDark(a, r), inkTgt = MeanDark(b, r);
+                string dir = inkTgt > inkBase + 0.04 ? "added" : inkBase > inkTgt + 0.04 ? "removed" : "modified";
+                bool removed = dir != "added";
+                var labels = removed ? baseLabels : tgtLabels;
+                var stats = removed ? baseStats : tgtStats;
+                int lab = labels.At<int>(cy, cx);
+                if (lab <= 0) continue;
+                int lx = stats.At<int>(lab, 0), ly = stats.At<int>(lab, 1), lw = stats.At<int>(lab, 2), lh = stats.At<int>(lab, 3);
+                int area = stats.At<int>(lab, 4); // CC_STAT_AREA
+                if (area > a.Width * a.Height * 0.25) continue; // skip a giant connected network blob
+                // Drop tiny specks on the ORIGINAL ink area (before dilation inflates them) so
+                // the outline band can't resurrect antialias noise as a "diff".
+                if (area < g.MinComponentArea) continue;
+                // crop the labels image to this element's box (+margin) and mask just this label.
+                // The margin must exceed the dilation radius, otherwise the dilation below is
+                // CLIPPED at the crop edge and has no effect (the outline stays razor-thin).
+                int marg = 2 + bandPx;
+                int mx = Math.Max(0, lx - marg), my = Math.Max(0, ly - marg);
+                int mw = Math.Min(a.Width - mx, lw + 2 * marg), mh = Math.Min(a.Height - my, lh + 2 * marg);
+                using var crop = new Mat(labels, new Rect(mx, my, mw, mh));
+                using var labVal = new Mat(crop.Size(), crop.Type(), new Scalar(lab));
+                using var comp = new Mat();
+                Cv2.Compare(crop, labVal, comp, CmpType.EQ);
+                labVal.Dispose();
+                // DILATE the element's ink before contouring → the trace is a clean HOLLOW
+                // silhouette instead of hugging every hairline stroke:
+                //   • thin strokes merge into one band → no "double-line" tangle;
+                //   • the band is always wider than the annotation stroke, so a 3pt stroke
+                //     can never self-fill a thin sliver → fixes the "红线填满" artefact.
+                // The band radius = one stroke width, so the hollow core stays visible
+                // (white gap on each side = radius - halfStroke) while the red still hugs the
+                // element's real boundary.
+                if (bandPx > 0)
                 {
-                    double perim = 0;
-                    for (int i = 0; i < c.Length; i++)
-                    {
-                        var p0 = c[i]; var p1 = c[(i + 1) % c.Length];
-                        perim += Math.Sqrt((p1.X - p0.X) * (p1.X - p0.X) + (p1.Y - p0.Y) * (p1.Y - p0.Y));
-                    }
-                    approx = Cv2.ApproxPolyDP(c, Math.Max(1.0, perim * 0.002), true);
+                    using var k = Cv2.GetStructuringElement(MorphShapes.Ellipse, new Size(2 * bandPx + 1, 2 * bandPx + 1));
+                    Cv2.Dilate(comp, comp, k);
                 }
-                var pts = new List<double>(approx.Length * 2);
-                foreach (var p in approx) { pts.Add(p.X); pts.Add(p.Y); }
-                items.Add(new GraphicContour { Pts = pts, Dir = dir, Rect = r });
+                Cv2.FindContours(comp, out Point[][] cs, out _, RetrievalModes.External, ContourApproximationModes.ApproxNone);
+                foreach (var cc in cs)
+                {
+                    var rr = Cv2.BoundingRect(cc);
+                    if (rr.Width * rr.Height < g.MinComponentArea) continue;
+                    var shifted = new Point[cc.Length];
+                    for (int i = 0; i < cc.Length; i++) shifted[i] = new Point(cc[i].X + mx, cc[i].Y + my);
+                    EmitContour(items, shifted, dir, g);
+                }
             }
-            return items;
+            tgtLabels.Dispose(); tgtStats.Dispose(); tgtC.Dispose();
+            baseLabels.Dispose(); baseStats.Dispose(); baseC.Dispose();
+            // Ignore a few-mm REGISTRATION error: an added trace and a removed trace that are
+            // the SAME shape merely shifted within ToleranceMm cancel each other (user:
+            // "偏离几毫米…忽略"). A larger real move / add / delete stays.
+            return CancelShiftedTraces(items, Math.Max(2, tolPx));
         }
 
-        // Edge-based difference — the most robust method for CAD / isometric line
-        // drawings. We extract Canny edges of both renders and compare them, so a
-        // moved/resized/added line (even a hair-thin one) is caught, while grayscale
-        // anti-aliasing and tonal variation are ignored.
+        // Cancel added/removed element traces that are the same shape merely shifted within
+        // `tol` px (registration error). Returns the kept traces.
+        static List<GraphicContour> CancelShiftedTraces(List<GraphicContour> items, int tol)
+        {
+            var added = new List<GraphicContour>();
+            var rem = new List<GraphicContour>();
+            foreach (var it in items)
+                if (it.Dir == "removed") rem.Add(it); else added.Add(it);
+            var remSkipped = new HashSet<int>();
+            var kept = new List<GraphicContour>();
+            foreach (var a in added)
+            {
+                bool cancelled = false;
+                for (int j = 0; j < rem.Count; j++)
+                {
+                    if (remSkipped.Contains(j)) continue;
+                    var ar = new Rect(a.Rect.X - tol, a.Rect.Y - tol, a.Rect.Width + 2 * tol, a.Rect.Height + 2 * tol);
+                    var rr = new Rect(rem[j].Rect.X - tol, rem[j].Rect.Y - tol, rem[j].Rect.Width + 2 * tol, rem[j].Rect.Height + 2 * tol);
+                    if (ar.IntersectsWith(rr)) { remSkipped.Add(j); cancelled = true; break; }
+                }
+                if (!cancelled) kept.Add(a);
+            }
+            for (int j = 0; j < rem.Count; j++) if (!remSkipped.Contains(j)) kept.Add(rem[j]);
+            return kept;
+        }
+
+        // Simplify a contour (vertex decimator only — never rounds the shape) and emit as a
+        // VECTOR polygon carrying its change direction.
+        static void EmitContour(List<GraphicContour> items, Point[] c, string dir, Pdf2dfConfig.GraphicCfg g)
+        {
+            Point[] approx = c;
+            if (c.Length > 200)
+            {
+                double perim = 0;
+                for (int i = 0; i < c.Length; i++)
+                {
+                    var p0 = c[i]; var p1 = c[(i + 1) % c.Length];
+                    perim += Math.Sqrt((p1.X - p0.X) * (p1.X - p0.X) + (p1.Y - p0.Y) * (p1.Y - p0.Y));
+                }
+                approx = Cv2.ApproxPolyDP(c, Math.Max(1.0, perim * 0.002), true);
+            }
+            var pts = new List<double>(approx.Length * 2);
+            foreach (var p in approx) { pts.Add(p.X); pts.Add(p.Y); }
+            items.Add(new GraphicContour { Pts = pts, Dir = dir, Rect = Cv2.BoundingRect(c) });
+        }
+
+        static int Clamp(int v, int max) => v < 0 ? 0 : v > max ? max : v;
+
+        // Edge-based difference for LOCALIZING changed regions: Canny edges of both renders
+        // (robust to grayscale anti-aliasing) compared, thresholded, opened. Cheap & clean.
         static Mat EdgeDiff(Mat a, Mat b)
         {
             using var ea = new Mat(); using var eb = new Mat();
@@ -619,54 +695,20 @@ namespace EGpdf2df.Engine
             Cv2.Canny(b, eb, 40, 120);
             var d = new Mat();
             Cv2.Absdiff(ea, eb, d);
+            using var k = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(3, 3));
+            Cv2.MorphologyEx(d, d, MorphTypes.Open, k); // de-noise
             return d;
         }
 
-        static Mat AbsDiffMap(Mat a, Mat b, Pdf2dfConfig.GraphicCfg g)
+        // Fraction of DARK pixels (ink / lines) inside a pixel-space rectangle. Decides the
+        // DIRECTION of a localized change: which side actually carries ink.
+        static double MeanDark(Mat gray, Rect r)
         {
-            using var d = new Mat();
-            Cv2.Absdiff(a, b, d);
-            var m = new Mat();
-            Cv2.Threshold(d, m, g.Threshold, 255, ThresholdTypes.Binary);
-            return m;
-        }
-
-        static Mat SsimDiff(Mat a, Mat b, int win = 11)
-        {
-            using var af = new Mat(); using var bf = new Mat();
-            a.ConvertTo(af, MatType.CV_32F); b.ConvertTo(bf, MatType.CV_32F);
-            float C1 = (float)((0.01 * 255) * (0.01 * 255));
-            float C2 = (float)((0.03 * 255) * (0.03 * 255));
-            using var muA = new Mat(); using var muB = new Mat();
-            Cv2.GaussianBlur(af, muA, new Size(win, win), 1.5);
-            Cv2.GaussianBlur(bf, muB, new Size(win, win), 1.5);
-            using var af2 = new Mat(); using var bf2 = new Mat(); using var ab = new Mat();
-            Cv2.Multiply(af, af, af2); Cv2.Multiply(bf, bf, bf2); Cv2.Multiply(af, bf, ab);
-            using var muA2 = new Mat(); using var muB2 = new Mat(); using var muAB = new Mat();
-            Cv2.GaussianBlur(af2, muA2, new Size(win, win), 1.5);
-            Cv2.GaussianBlur(bf2, muB2, new Size(win, win), 1.5);
-            Cv2.GaussianBlur(ab, muAB, new Size(win, win), 1.5);
-            using var muA_sq = new Mat(); using var muB_sq = new Mat(); using var muAmuB = new Mat();
-            Cv2.Multiply(muA, muA, muA_sq); Cv2.Multiply(muB, muB, muB_sq); Cv2.Multiply(muA, muB, muAmuB);
-            using var sA2 = new Mat(); using var sB2 = new Mat(); using var sAB = new Mat();
-            Cv2.Subtract(muA2, muA_sq, sA2); Cv2.Subtract(muB2, muB_sq, sB2); Cv2.Subtract(muAB, muAmuB, sAB);
-
-            using var num = new Mat(); using var t1 = new Mat(); using var t2 = new Mat();
-            Cv2.Multiply(muA, muB, t1); Cv2.Add(t1, t1, t1);          // 2*muA*muB
-            Cv2.Add(t1, new Scalar(C1), num);                          // + C1
-            Cv2.Multiply(sAB, new Scalar(2), t2); Cv2.Add(t2, new Scalar(C2), t2); // 2*sAB + C2
-            Cv2.Multiply(num, t2, num);                                 // numerator
-
-            using var den = new Mat(); using var d1m = new Mat(); using var d2m = new Mat();
-            Cv2.Add(muA2, muB2, d1m); Cv2.Add(d1m, new Scalar(C1), d1m);
-            Cv2.Add(sA2, sB2, d2m); Cv2.Add(d2m, new Scalar(C2), d2m);
-            Cv2.Multiply(d1m, d2m, den);
-
-            using var ssim = new Mat(); Cv2.Divide(num, den, ssim);
-            using var one = new Mat(ssim.Size(), ssim.Type(), Scalar.All(1.0));
-            using var ones = new Mat(); Cv2.Subtract(one, ssim, ones);
-            var outp = new Mat(); ones.ConvertTo(outp, MatType.CV_8U, 255.0);
-            return outp;
+            if (gray.Empty() || r.Width <= 0 || r.Height <= 0) return 0;
+            using var roi = new Mat(gray, r);
+            using var bin = new Mat();
+            Cv2.Threshold(roi, bin, 128, 1, ThresholdTypes.BinaryInv);  // dark → 1
+            return Cv2.Mean(bin).Val0;                                  // average = dark fraction
         }
 
         // Both word lists are expected in the SAME (target) point frame.
@@ -774,17 +816,6 @@ namespace EGpdf2df.Engine
                 // word is already in the target point frame → bbox directly.
                 Bbox = new Bbox { X = Round(w.x0), Y = Round(w.y0), Width = Round(w.x1 - w.x0), Height = Round(w.y1 - w.y0) },
             };
-        }
-
-        // Fraction of DARK pixels (ink / lines) inside a pixel-space rectangle. Used to
-        // decide the DIRECTION of a graphic change: which side actually carries ink.
-        static double MeanDark(Mat gray, Rect r)
-        {
-            if (gray.Empty() || r.Width <= 0 || r.Height <= 0) return 0;
-            using var roi = new Mat(gray, r);
-            using var bin = new Mat();
-            Cv2.Threshold(roi, bin, 128, 1, ThresholdTypes.BinaryInv);  // dark → 1
-            return Cv2.Mean(bin).Val0;                                  // average = dark fraction
         }
 
         // ------------------------------------------------------------------
