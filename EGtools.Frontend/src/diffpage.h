@@ -8,6 +8,7 @@ class QLineEdit;
 class QTextEdit;
 class QPushButton;
 class QSpinBox;
+class QDoubleSpinBox;
 class QCheckBox;
 class QComboBox;
 class QGroupBox;
@@ -36,6 +37,7 @@ private slots:
     void onBrowsePreview();
     void onPickTraceColor();
     void onPickCircleColor();
+    void onPickChangeColor();
     void onPickTextColor();
 
 private:
@@ -54,13 +56,19 @@ private:
     QSpinBox*  m_dpiSpin = nullptr;
     QCheckBox* m_pipeChk = nullptr;
     QComboBox* m_precCombo = nullptr;            // 精细度 fine/medium/coarse
-    // 三个可自定义标注色（传给内核 options.colors）。
-    QString m_traceColor  = QStringLiteral("#FF0000");  // 描红线（图形轮廓）
-    QString m_circleColor = QStringLiteral("#1E66E0");  // 圆圈（文字标记）
-    QString m_textColor   = QStringLiteral("#66B2FF");  // 文字（消失/变更）
+    // 四个可自定义标注色（传给内核 options.colors）：描红/变更绿/圆圈/文字。
+    QString m_traceColor  = QStringLiteral("#FF0000");  // 描红线（新增/删除图形）
+    QString m_changeColor = QStringLiteral("#16A34A");  // 变更绿（内容改动的图形/文字）
+    QString m_circleColor = QStringLiteral("#FF0000");  // 圆圈（文字/序号标记）
+    QString m_textColor   = QStringLiteral("#66B2FF");  // 文字（消失/变更标注）
     QPushButton* m_traceColorBtn  = nullptr;
+    QPushButton* m_changeColorBtn = nullptr;
     QPushButton* m_circleColorBtn = nullptr;
     QPushButton* m_textColorBtn   = nullptr;
+    // 描红/填充可调参数（线宽粗细、填充透明度、填充外扩像素）。
+    QSpinBox*      m_lwSpin   = nullptr;   // 线宽(描边粗细) 1..10
+    QDoubleSpinBox* m_opacSpin = nullptr;  // 填充透明度 0..1
+    QSpinBox*      m_haloSpin = nullptr;   // 填充外扩像素 0..20
     QTextEdit* m_jsonView = nullptr;
     QTextEdit* m_pipeView = nullptr;
     QLabel*   m_preview   = nullptr;

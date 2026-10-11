@@ -75,28 +75,54 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     optRow->addWidget(m_pipeChk);
     optRow->addStretch();
 
-    // ---- 颜色选择器：描红线 / 圆圈 / 文字（色号传入内核 options.colors） ----
+    // ---- 颜色选择器：描红线 / 变更绿 / 圆圈 / 文字（色号传入内核 options.colors） ----
     auto* colRow = new QHBoxLayout();
     m_traceColorBtn  = new QPushButton();
+    m_changeColorBtn = new QPushButton();
     m_circleColorBtn = new QPushButton();
     m_textColorBtn   = new QPushButton();
-    for (QPushButton* b : {m_traceColorBtn, m_circleColorBtn, m_textColorBtn}) {
+    for (QPushButton* b : {m_traceColorBtn, m_changeColorBtn, m_circleColorBtn, m_textColorBtn}) {
         b->setFixedSize(56, 24);
         b->setCursor(Qt::PointingHandCursor);
     }
     paintSwatch(m_traceColorBtn,  m_traceColor);
+    paintSwatch(m_changeColorBtn, m_changeColor);
     paintSwatch(m_circleColorBtn, m_circleColor);
     paintSwatch(m_textColorBtn,   m_textColor);
     colRow->addWidget(new QLabel(QStringLiteral("颜色:")));
-    colRow->addWidget(new QLabel(QStringLiteral("描红线")));
+    colRow->addWidget(new QLabel(QStringLiteral("描红")));
     colRow->addWidget(m_traceColorBtn);
+    colRow->addWidget(new QLabel(QStringLiteral("变更")));
+    colRow->addWidget(m_changeColorBtn);
     colRow->addWidget(new QLabel(QStringLiteral("圆圈")));
     colRow->addWidget(m_circleColorBtn);
     colRow->addWidget(new QLabel(QStringLiteral("文字")));
     colRow->addWidget(m_textColorBtn);
     colRow->addStretch();
 
-    m_runBtn = new QPushButton(QStringLiteral("开始比对（红实线/圈=新增·蓝虚线/圈=删除·浅蓝斜体=消失文字）"));
+    // ---- 描红/填充可调参数：线宽粗细 / 填充透明度 / 填充外扩 ----
+    auto* parRow = new QHBoxLayout();
+    m_lwSpin = new QSpinBox();
+    m_lwSpin->setRange(1, 12);
+    m_lwSpin->setValue(3);
+    m_lwSpin->setSuffix(QStringLiteral(" px"));
+    m_opacSpin = new QDoubleSpinBox();
+    m_opacSpin->setRange(0.0, 1.0);
+    m_opacSpin->setSingleStep(0.05);
+    m_opacSpin->setValue(0.40);
+    m_haloSpin = new QSpinBox();
+    m_haloSpin->setRange(0, 20);
+    m_haloSpin->setValue(0);
+    m_haloSpin->setSuffix(QStringLiteral(" px"));
+    parRow->addWidget(new QLabel(QStringLiteral("线宽:")));
+    parRow->addWidget(m_lwSpin);
+    parRow->addWidget(new QLabel(QStringLiteral("填充透明度:")));
+    parRow->addWidget(m_opacSpin);
+    parRow->addWidget(new QLabel(QStringLiteral("填充外扩:")));
+    parRow->addWidget(m_haloSpin);
+    parRow->addStretch();
+
+    m_runBtn = new QPushButton(QStringLiteral("开始比对（红/绿填充=图形变更·圆圈=文字·浅蓝斜体=消失文字）"));
     m_runBtn->setStyleSheet(QStringLiteral("QPushButton{background:#2d7d46;color:#fff;padding:6px 12px;border-radius:5px;font-weight:600;}"));
     auto* openBtn = new QPushButton(QStringLiteral("打开差异图…"));
     auto* btnRow = new QHBoxLayout();
@@ -111,11 +137,12 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     auto* legend = new QGroupBox(QStringLiteral("图例（差异直接标注在新 PDF 中）"));
     auto* legendLay = new QVBoxLayout(legend);
     legendLay->addWidget(new QLabel(QStringLiteral(
-        "● <b>描红线(实线)</b> = 新增 / 改动的图形（1:1 描出图形真实轮廓，非方框/圆圈）\n"
-        "● <b>描红线(虚线)</b> = 被删除的图形（1:1 描出原轮廓）\n"
+        "● <b>红填充(实线轮廓)</b> = 新增图形 — 真描红：精确填充变更区域(非描边/非方框/非圈)\n"
+        "● <b>红填充(虚线轮廓)</b> = 删除图形 — 原轮廓真填充\n"
+        "● <b>绿填充(实线轮廓)</b> = 变更：同序号/同位置但内容改动(绿)\n"
         "● <b>圆圈(实/虚线)</b> = 新增 / 删除的文字或序号\n"
         "<i>消失 / 被改掉的旧文字</i> = 浅色斜体在原位置重现\n"
-        "三种颜色（描红线 / 圆圈 / 文字）可用上方颜色选择器自定，色号直接传给内核。")));
+        "文字比对按<b>序号配对</b>再比内容，位置位移不影响判定；四种颜色与线宽/透明度/外扩均可自定，色号直接传给内核。")));
     legendLay->setSpacing(2);
 
     // ---- 管线号↔材料表一一对应结果 ----
@@ -135,6 +162,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     ctrlLay->addLayout(csvRow);
     ctrlLay->addLayout(optRow);
     ctrlLay->addLayout(colRow);
+    ctrlLay->addLayout(parRow);
     ctrlLay->addLayout(btnRow);
     ctrlLay->addWidget(m_status);
     ctrlLay->addWidget(legend);
@@ -174,6 +202,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     connect(m_runBtn,&QPushButton::clicked, this, &DiffPage::onRun);
     connect(openBtn, &QPushButton::clicked, this, &DiffPage::onBrowsePreview);
     connect(m_traceColorBtn,  &QPushButton::clicked, this, &DiffPage::onPickTraceColor);
+    connect(m_changeColorBtn, &QPushButton::clicked, this, &DiffPage::onPickChangeColor);
     connect(m_circleColorBtn, &QPushButton::clicked, this, &DiffPage::onPickCircleColor);
     connect(m_textColorBtn,   &QPushButton::clicked, this, &DiffPage::onPickTextColor);
 }
@@ -203,8 +232,14 @@ bool DiffPage::pickColor(const QString& title, QString& color, QPushButton* btn)
 
 void DiffPage::onPickTraceColor()
 {
-    if (pickColor(QStringLiteral("选择描红线颜色（图形轮廓）"), m_traceColor, m_traceColorBtn))
+    if (pickColor(QStringLiteral("选择描红线颜色（新增/删除图形）"), m_traceColor, m_traceColorBtn))
         emit statusMessage(QStringLiteral("描红线颜色 = %1").arg(m_traceColor));
+}
+
+void DiffPage::onPickChangeColor()
+{
+    if (pickColor(QStringLiteral("选择变更绿颜色（内容改动图形/文字）"), m_changeColor, m_changeColorBtn))
+        emit statusMessage(QStringLiteral("变更绿颜色 = %1").arg(m_changeColor));
 }
 
 void DiffPage::onPickCircleColor()
@@ -287,9 +322,14 @@ void DiffPage::onRun()
     opt[QStringLiteral("pipeMatch")] = m_pipeChk->isChecked();
     if (m_precCombo)
         opt[QStringLiteral("precision")] = m_precCombo->currentData().toString();
-    // 颜色选择器 → options.colors（描红线 / 圆圈 / 文字），内核据色号着色。
+    // 描红/填充可调参数（线宽粗细 / 填充透明度 / 填充外扩像素）。
+    opt[QStringLiteral("lineWidth")]   = m_lwSpin->value();
+    opt[QStringLiteral("fillOpacity")] = m_opacSpin->value();
+    opt[QStringLiteral("haloPx")]      = m_haloSpin->value();
+    // 颜色选择器 → options.colors（描红 / 变更绿 / 圆圈 / 文字），内核据色号着色。
     QJsonObject colors;
     colors[QStringLiteral("trace")]  = m_traceColor;
+    colors[QStringLiteral("change")] = m_changeColor;
     colors[QStringLiteral("circle")] = m_circleColor;
     colors[QStringLiteral("text")]   = m_textColor;
     opt[QStringLiteral("colors")] = colors;

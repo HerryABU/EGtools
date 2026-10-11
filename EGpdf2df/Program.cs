@@ -83,14 +83,20 @@ public static class Program
 
         var cfg = Pdf2dfConfig.Load(configPath);
         if (output != null) req.Output = output;
-        // 前端颜色选择器覆盖默认标注色（描红线 / 圆圈 / 文字）。
+        // 前端颜色选择器 / 参数覆盖默认标注样式。
         if (req?.Options?.Colors != null)
         {
             var c = req.Options.Colors;
             if (!string.IsNullOrWhiteSpace(c.Trace)) cfg.Annotation.TraceColor = c.Trace;
+            if (!string.IsNullOrWhiteSpace(c.Change)) cfg.Annotation.ChangeColor = c.Change;
             if (!string.IsNullOrWhiteSpace(c.Circle)) cfg.Annotation.CircleColor = c.Circle;
             if (!string.IsNullOrWhiteSpace(c.Text)) cfg.Annotation.TextColor = c.Text;
         }
+        var o = req?.Options;
+        if (o?.LineWidth != null) cfg.Annotation.LineWidth = (int)Math.Max(0.5, o.LineWidth.Value);
+        if (o?.FillOpacity != null) cfg.Annotation.FillOpacity = Math.Min(1.0, Math.Max(0.0, o.FillOpacity.Value));
+        if (o?.Outline != null) cfg.Annotation.Outline = o.Outline.Value;
+        if (o?.HaloPx != null) cfg.Annotation.HaloPx = Math.Max(0, o.HaloPx.Value);
         return DiffEngine.Run(req, cfg, L);
     }
 

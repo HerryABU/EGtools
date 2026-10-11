@@ -30,11 +30,15 @@
     "ransacThreshold": 5.0
   },
   "annotation": {
-    "comment": "差异标注样式。三个颜色可由前端颜色选择器覆盖（传入 #RRGGBB）；图形方向由线型区分（新增/变更=实线，删除=虚线）。",
+    "comment": "差异标注样式。颜色可由前端颜色选择器覆盖（传入 #RRGGBB）。三态配色：新增=红、删除=红(虚线)、变更=绿。真描红=填充实际变更区域(半透明)，而非仅描边轮廓；线宽/填充透明度/外扩/是否描边均可调。",
     "traceColor": "#FF0000",
-    "circleColor": "#1E66E0",
+    "changeColor": "#16A34A",
+    "circleColor": "#FF0000",
     "textColor": "#66B2FF",
     "lineWidth": 3,
+    "fillOpacity": 0.40,
+    "outline": true,
+    "haloPx": 0,
     "fontPathRegular": "C:/Windows/Fonts/arial.ttf",
     "fontPathItalic": "C:/Windows/Fonts/ariali.ttf"
   },

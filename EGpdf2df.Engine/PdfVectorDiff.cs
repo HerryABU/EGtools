@@ -4,6 +4,7 @@ using System.IO;
 using iText.Kernel.Colors;
 using iText.Kernel.Pdf;
 using iText.Kernel.Pdf.Canvas;
+using iText.Kernel.Pdf.Extgstate;
 using iText.Kernel.Font;
 using iText.IO.Font;
 using iText.IO.Font.Constants;
@@ -20,8 +21,9 @@ namespace EGpdf2df.Engine
         public int Page;                                   // target page index (0-based)
         public float Wpt;                                  // page width  in PDF points
         public float Hpt;                                  // page height in PDF points
-        public List<List<double>> AddedContours = new();   // new/changed ink → RED SOLID
-        public List<List<double>> RemovedContours = new(); // old-only ink  → BLUE DASHED
+        public List<List<double>> AddedContours = new();   // 新增墨元   → 红 实线填充(真描红)
+        public List<List<double>> RemovedContours = new(); // 删除墨元   → 红 虚线填充(真描红)
+        public List<List<double>> ChangedContours = new(); // 变更墨元   → 绿 实线填充(真描红)
         public List<DiffItem> TextItems = new();
     }
 
@@ -57,8 +59,9 @@ namespace EGpdf2df.Engine
             // images does NOT balloon the file — the base content stays the same size.
             writer.SetSmartMode(true);
             using var pdf = new PdfDocument(new PdfReader(targetPath), writer);
-            var traceCol = ParseColor(ann.TraceColor) ?? ColorConstants.RED;   // 图形描红描边
-            var circleCol = ParseColor(ann.CircleColor) ?? ColorConstants.BLUE; // 文字/序号圈画
+            var traceCol = ParseColor(ann.TraceColor) ?? ColorConstants.RED;   // 新增/删除 描红(红)
+            var changeCol = ParseColor(ann.ChangeColor) ?? new DeviceRgb(22, 163, 74); // 变更 描红(绿)
+            var circleCol = ParseColor(ann.CircleColor) ?? ColorConstants.RED; // 文字/序号圈画边色
             var textCol = ParseColor(ann.TextColor) ?? new DeviceRgb(150, 200, 255); // 消失/变更文字
             // 嵌入 Unicode 字体（默认 Arial，含土耳其语等字形），让"消失文字"的浅蓝斜体
             // 真正渲染；字体缺失时回退内置 Helvetica（仅 ASCII）。
@@ -88,34 +91,46 @@ namespace EGpdf2df.Engine
 
                 float lw = Math.Max(1.2f, (float)ann.LineWidth);
 
-                // ---- UNDER layer: red/blue shape traces + text-marker rings ----
+                // ---- UNDER layer: crisp outline strokes + text-marker rings ----
                 // Inserted BEFORE the original content stream so the original characters /
-                // linework paint on top and are never obscured by the diff strokes.
+                // linework paint on top and are never obscured by the diff outlines. This
+                // honours the "红线放在字下面" requirement for the outline edges.
                 var underCanvas = new PdfCanvas(page.NewContentStreamBefore(), page.GetResources(), pdf);
                 underCanvas.SaveState();
                 underCanvas.ConcatMatrix(mA, mB, mC, mD, mE, mF);
                 foreach (var c in a.AddedContours)
-                    DrawContour(underCanvas, c, scale, traceCol, lw, solid: true);
+                    StrokePoly(underCanvas, c, scale, traceCol, lw, solid: true);
                 foreach (var c in a.RemovedContours)
-                    DrawContour(underCanvas, c, scale, traceCol, lw, solid: false);
+                    StrokePoly(underCanvas, c, scale, traceCol, lw, solid: false);
+                foreach (var c in a.ChangedContours)
+                    StrokePoly(underCanvas, c, scale, changeCol, lw, solid: true);
                 foreach (var it in a.TextItems)
                 {
                     bool oldSide = IsOldSide(it.ChangeType);
-                    var col = circleCol;
+                    var ringCol = (it.ChangeType == "changed") ? changeCol : circleCol;
                     float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
                     float w = (float)it.Bbox.Width, h = (float)it.Bbox.Height;
                     float rx = Math.Max(2f, w / 2 + 4f), ry = Math.Max(2f, h / 2 + 4f);
-                    DrawEllipse(underCanvas, x + w / 2, yTop + h / 2, rx, ry, col, lw, solid: !oldSide);
+                    DrawEllipse(underCanvas, x + w / 2, yTop + h / 2, rx, ry, ringCol, lw, solid: !oldSide);
                 }
                 underCanvas.RestoreState();
 
-                // ---- OVER layer: disappeared / changed-away text (light-blue italic) ----
-                // Drawn on a separate top layer so the old text stays readable where the
-                // new revision removed it (no original character sits there to be covered).
+                // ---- OVER layer: TRUE FILL (真描红) of the changed shape + disappeared text ----
+                // The fill is a translucent vector highlight drawn ON TOP of the actual
+                // changed linework (so it is actually visible, unlike an under-layer fill
+                // that the original black ink would hide). FillOpacity (default 0.40) keeps
+                // the underlying drawing readable; this is a genuine vector fill of the
+                // precise changed region — never a rasterised highlight.
                 var overCanvas = new PdfCanvas(page);
+                // (a) fill the changed shapes: added/removed = red, changed = green.
+                foreach (var c in a.AddedContours) FillPoly(overCanvas, c, scale, traceCol, ann.FillOpacity);
+                foreach (var c in a.RemovedContours) FillPoly(overCanvas, c, scale, traceCol, ann.FillOpacity);
+                foreach (var c in a.ChangedContours) FillPoly(overCanvas, c, scale, changeCol, ann.FillOpacity);
+                // (b) disappeared / changed-away text (light label). changed → green, else light-blue.
                 foreach (var it in a.TextItems)
                 {
                     if (!IsOldSide(it.ChangeType) || string.IsNullOrWhiteSpace(it.OldText)) continue;
+                    var tcol = (it.ChangeType == "changed") ? changeCol : textCol;
                     textRenders++;
                     float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
                     float h = (float)it.Bbox.Height;
@@ -123,7 +138,7 @@ namespace EGpdf2df.Engine
                     double bx = x, by = Math.Max(1f, yTop + 1f);      // baseline in DISPLAY y-down
                     ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
                     overCanvas.SaveState();
-                    overCanvas.SetFillColor(textCol);
+                    overCanvas.SetFillColor(tcol);
                     overCanvas.BeginText();
                     overCanvas.SetFontAndSize(italFont, fs);
                     overCanvas.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
@@ -136,8 +151,8 @@ namespace EGpdf2df.Engine
             pdf.Close();
         }
 
-        static bool IsOldSide(string changeType)
-            => changeType == "removed" || changeType == "modified" || changeType == "moved";
+        static bool IsOldSide(string? changeType)
+            => changeType == "removed" || changeType == "modified" || changeType == "changed" || changeType == "moved";
 
         // Display frame (origin top-left, y-DOWN, units pt, as rendered by MuPDF with
         // /Rotate applied) → content user space (origin bottom-left, y-UP).
@@ -180,17 +195,42 @@ namespace EGpdf2df.Engine
             oy = b * x + d * y + f;
         }
 
-        // Polygon contour in the target pixel frame (DISPLAY frame, y-down) → vector path.
-        static void DrawContour(PdfCanvas c, List<double> pts, double scale, Color col, float lw, bool solid)
+        // Emit a polygon path (no paint) in the target pixel frame (DISPLAY, y-down) → content space.
+        static void PathPoly(PdfCanvas c, List<double> pts, double scale)
+        {
+            if (pts == null || pts.Count < 6) return;
+            c.MoveTo((float)(pts[0] / scale), (float)(pts[1] / scale));
+            for (int i = 2; i < pts.Count; i += 2)
+                c.LineTo((float)(pts[i] / scale), (float)(pts[i + 1] / scale));
+            c.ClosePath();
+        }
+
+        // Crisp outline stroke of a changed-shape polygon (drawn on the UNDER layer, behind
+        // the drawing characters). Solid = new/changed, dashed = removed.
+        static void StrokePoly(PdfCanvas c, List<double> pts, double scale, Color col, float lw, bool solid)
         {
             if (pts == null || pts.Count < 6) return;
             c.SaveState();
             c.SetStrokeColor(col).SetLineWidth(lw);
             if (!solid) c.SetLineDash(new float[] { 5f, 3f }, 0);
-            c.MoveTo((float)(pts[0] / scale), (float)(pts[1] / scale));
-            for (int i = 2; i < pts.Count; i += 2)
-                c.LineTo((float)(pts[i] / scale), (float)(pts[i + 1] / scale));
-            c.ClosePath().Stroke();
+            PathPoly(c, pts, scale);
+            c.Stroke();
+            c.RestoreState();
+        }
+
+        // TRUE FILL (真描红): translucent vector fill of the PRECISE changed region — not a
+        // rasterised highlight, not merely a stroked outline. FillOpacity controls visibility
+        // vs. readability of the underlying linework. No halo expansion is applied here (the
+        // optional halo is baked into the contour by the kernel's dilation step).
+        static void FillPoly(PdfCanvas c, List<double> pts, double scale, Color col, double opacity)
+        {
+            if (pts == null || pts.Count < 6) return;
+            if (opacity <= 0) return;
+            c.SaveState();
+            c.SetExtGState(new PdfExtGState().SetFillOpacity((float)Math.Min(1.0, Math.Max(0.0, opacity))));
+            c.SetFillColor(col);
+            PathPoly(c, pts, scale);
+            c.Fill();
             c.RestoreState();
         }
 

@@ -41,15 +41,24 @@ namespace EGpdf2df.Engine
         // 精细度预设：fine | medium | coarse（覆盖配置文件精度，映射阈值/最小面积/容差）。
         [JsonPropertyName("precision")] public string? Precision { get; set; }
         // 标注颜色（前端颜色选择器传入色号 #RRGGBB）：
-        //   trace  = 图形（管线/设备/图元）描红描边；circle = 文字/序号圈画；text = 消失/变更文字。
+        //   trace  = 新增/删除 描红；change = 变更 描红(绿)；circle = 文字/序号圈画边色；text = 消失/变更文字。
         [JsonPropertyName("colors")] public ReqColors? Colors { get; set; }
+        // 线宽（描红边线粗细，可调参数，覆盖配置文件 lineWidth）。
+        [JsonPropertyName("lineWidth")] public double? LineWidth { get; set; }
+        // 真描红填充透明度 0~1（覆盖配置文件 fillOpacity）。
+        [JsonPropertyName("fillOpacity")] public double? FillOpacity { get; set; }
+        // 是否在填充外再描一条同形边线（覆盖配置文件 outline）。
+        [JsonPropertyName("outline")] public bool? Outline { get; set; }
+        // 填充向外扩张像素(0=精准贴合形状，覆盖配置文件 haloPx)。
+        [JsonPropertyName("haloPx")] public int? HaloPx { get; set; }
     }
 
     // 前端可选传入的标注颜色（缺省则使用配置文件默认）。
     public sealed class ReqColors
     {
-        [JsonPropertyName("trace")] public string? Trace { get; set; }   // 描红线
-        [JsonPropertyName("circle")] public string? Circle { get; set; } // 圆圈
+        [JsonPropertyName("trace")] public string? Trace { get; set; }   // 新增/删除 描红
+        [JsonPropertyName("change")] public string? Change { get; set; } // 变更 描红(绿)
+        [JsonPropertyName("circle")] public string? Circle { get; set; } // 圆圈边色
         [JsonPropertyName("text")] public string? Text { get; set; }    // 文字
     }
 
@@ -105,10 +114,11 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("bbox")] public Bbox Bbox { get; set; } = new();
         [JsonPropertyName("confidence")] public double Confidence { get; set; }
         // Direction of the change (drives the PDF annotation):
-        //   "added"    → new-only              → 图形用 TraceColor 实线描边；文字用 CircleColor 实线圈
-        //   "removed"  → old-only              → 图形用 TraceColor 虚线描边；文字用 CircleColor 虚线圈 + TextColor 浅色标注旧文字
-        //   "modified" → text changed          → CircleColor 虚线圈 + TextColor 浅色旧文字
-        //   "moved"    → text shifted position → CircleColor 虚线圈 + TextColor 浅色旧文字（原位置）
+        //   "added"    → new-only              → TraceColor 实线填充(真描红)；文字用 CircleColor 实线圈
+        //   "removed"  → old-only              → TraceColor 虚线填充(真描红)；文字用 CircleColor 虚线圈 + TextColor 浅色标注旧文字
+        //   "changed"  → 同序号/同位置、内容不同 → ChangeColor 实线填充(真描红,绿)；文字用 ChangeColor 线圈 + 绿旧文字
+        //   "modified" → 旧别名，等同 changed（文本按序号配对后发现内容改动）
+        //   "moved"    → 文本仅位移、内容相同   → CircleColor 虚线圈（不报警，仅标记）
         [JsonPropertyName("changeType")] public string? ChangeType { get; set; }
         [JsonPropertyName("oldText")] public string? OldText { get; set; }
         [JsonPropertyName("newText")] public string? NewText { get; set; }

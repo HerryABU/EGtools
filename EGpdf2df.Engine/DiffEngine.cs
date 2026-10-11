@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using EGtools.Core;
 using MuPDFCore;
 using MuPDFCore.StructuredText;
@@ -193,11 +194,10 @@ namespace EGpdf2df.Engine
                                 maskedBase.SetTo(Scalar.All(255), outside);
                                 maskedTgt.SetTo(Scalar.All(255), outside);
                             }
-                            // Outline band radius (px) = the FULL annotation stroke width, so the
-                            // traced silhouette keeps a visible hollow core (white gap on each side
-                            // = radius - halfStroke = halfStroke) and can never self-fill; thin
-                            // linework also merges into one clean outline instead of a tangle.
-                            int bandPx = (int)Math.Max(1, Math.Round(Math.Max(1.2, cfg.Annotation.LineWidth) * scale));
+                            // 填充外扩半径(px) = 配置 HaloPx × 缩放。HaloPx=0 → 精准贴合变更
+                            // 形状(真描红)，>0 → 填充区向外略微扩张以便极细线也可见。裁剪边距
+                            // (2+halo) 必须 >= 扩张半径，否则扩张被裁边界截断而无效。
+                            int bandPx = (int)Math.Round(cfg.Annotation.HaloPx * scale);
                             var contours = GraphicDiff(maskedBase, maskedTgt, cfg.GraphicDiff, cfg.GraphicDiff.TolerancePx, bandPx);
                             // Defensive guard: a contour fully contained within a (margin-expanded)
                             // TEXT word box is a glyph artifact, never a figure change.
@@ -220,18 +220,19 @@ namespace EGpdf2df.Engine
                                 if (textPx.Any(tr => tr.X <= rx && tr.Y <= ry && tr.Right >= rx + rw && tr.Bottom >= ry + rh))
                                     continue;
                                 // Direction: compare ink presence in baseline (aligned) vs target,
-                                // so we know whether the change is new-only or old-only.
+                                // so we know whether the change is new-only / old-only / changed.
                                 string dir = gc.Dir;
                                 // Store the ACTUAL changed-shape contour as a VECTOR polygon
-                                // (target pixel frame, y-down). removed → BLUE DASHED; added /
-                                // modified → RED SOLID.
+                                // (target pixel frame, y-down). removed → 红虚线填充；added → 红
+                                // 实线填充；modified(两版都有但形状不同) → 绿实线填充(变更)。
                                 if (dir == "removed") pageAnno.RemovedContours.Add(gc.Pts);
+                                else if (dir == "modified") pageAnno.ChangedContours.Add(gc.Pts);
                                 else pageAnno.AddedContours.Add(gc.Pts);
                                 diffs.Add(new DiffItem
                                 {
                                     Page = tgtPno,
                                     Type = "graphic",
-                                    ChangeType = dir,
+                                    ChangeType = dir == "modified" ? "changed" : dir,
                                     Bbox = new Bbox { X = Round(x), Y = Round(y), Width = Round(rw / scale), Height = Round(rh / scale) },
                                     Confidence = 0.95
                                 });
@@ -724,98 +725,185 @@ namespace EGpdf2df.Engine
         //            remaining base word but with DIFFERENT text → "modified".
         //   PASS 3  remaining target words → "added" (new-only → RED solid).
         //   PASS 4  remaining base words → "removed" (old-only → BLUE dashed).
-        static List<DiffItem> TextDiff(List<TextGeometry.Word> wordsA, List<TextGeometry.Word> wordsB,
-            Pdf2dfConfig.TextCfg t, int page, List<Bbox> regions, Rectangle tBounds, double scale)
+        // ------------------------------------------------------------------
+        //  Text diff keyed by 序号 (serial number) — matches the user's drawings
+        //  where every annotation (BOM rows, NOTE legend, …) carries a stable
+        //  serial that is repositioned but content-stable. We therefore:
+        //    1) group each page's words into ITEMS, each item headed by a 序号;
+        //    2) pair items across baseline/target by 序号 VALUE (position-independent,
+        //       so a mere shift of an item never flags a change);
+        //    3) compare the item CONTENT → 变更(changed, green) when the serial is the
+        //       same but the text differs; 新增(added, red) / 删除(removed, red) when a
+        //       serial exists on only one side. Free text without a serial falls back to
+        //       position matching.
+        // ------------------------------------------------------------------
+        static readonly Regex RePureNum = new(@"^\d{1,5}$", RegexOptions.Compiled);
+        static readonly Regex ReLabelNum = new(@"^(NOTE|ITEM|NO|N|REF|REV)\.?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        class TextItem
         {
-            string norm(string s) => TextGeometry.Norm(s);
-            var items = new List<DiffItem>();
-            // Defensive: drop empty / whitespace-only words so they can never produce a
-            // bogus ("None" => "None") diff item.
-            var A = wordsA.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList();
-            var B = wordsB.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList();
-            var consumed = new bool[A.Count];
-            var bMatched = new bool[B.Count];
-            var inside = regions.Count == 0 ? (Func<double, double, bool>)((x, y) => true)
-                                           : (x, y) => regions.Any(r => x >= r.X && x <= r.X + r.Width && y >= r.Y && y <= r.Y + r.Height);
+            public string? Serial;                  // 序号(匹配键)，可为 null(自由文本)
+            public string Content = "";              // 该条目的拼接内容(原始)
+            public List<TextGeometry.Word> Words = new();
+            public double X0, Y0, X1, Y1;           // 合并包围盒(目标 pt 帧)
+            public double LastYc;                    // 末行中心 y(续行判断)
+            public double Xc => (X0 + X1) / 2;
+            public double Yc => (Y0 + Y1) / 2;
+        }
 
-            // ----- PASS 1: content match (same normalized text, near position) -----
-            for (int i = 0; i < B.Count; i++)
+        // Group words into lines (by baseline), then into items. A line that begins with a
+        // serial token starts a new item; subsequent non-serial lines that hug the item's
+        // left edge / line spacing are absorbed as continuation (wrapped notes).
+        static List<TextItem> Itemize(List<TextGeometry.Word> words)
+        {
+            var sorted = words.Where(w => !string.IsNullOrWhiteSpace(w.text))
+                              .OrderBy(w => w.yc).ThenBy(w => w.x0).ToList();
+            var lines = new List<List<TextGeometry.Word>>();
+            foreach (var w in sorted)
             {
-                var tw = B[i];
-                if (!inside(tw.x0, tw.yc)) continue;
-                string tn = norm(tw.text);
-                double bestD = double.MaxValue; int bestJ = -1;
-                for (int j = 0; j < A.Count; j++)
+                var last = lines.Count > 0 ? lines[lines.Count - 1] : null;
+                double lh = w.y1 - w.y0;
+                if (last != null && Math.Abs(w.yc - last.Average(x => x.yc)) <= Math.Max(4.0, lh))
+                    last.Add(w);
+                else lines.Add(new List<TextGeometry.Word> { w });
+            }
+            var items = new List<TextItem>();
+            TextItem? cur = null;
+            foreach (var line in lines)
+            {
+                string? serial = LineSerial(line);
+                if (serial != null)
                 {
-                    if (consumed[j] || norm(A[j].text) != tn) continue;
-                    double dx = tw.xc - A[j].xc, dy = tw.yc - A[j].yc;
-                    if (Math.Abs(dx) > t.XTolerance || Math.Abs(dy) > t.YTolerance) continue;
-                    double d = dx * dx + dy * dy;
-                    if (d < bestD) { bestD = d; bestJ = j; }
+                    cur = new TextItem { Serial = serial, Content = JoinContent(line) };
+                    AddWords(cur, line);
+                    items.Add(cur);
                 }
-                if (bestJ >= 0)
+                else if (cur != null && IsContinuation(line, cur))
                 {
-                    consumed[bestJ] = true; bMatched[i] = true;
-                    var aw = A[bestJ];
-                    double move = Math.Max(Math.Abs(tw.xc - aw.xc), Math.Abs(tw.yc - aw.yc));
-                    if (move > t.MoveTolerance)
-                        items.Add(Mk(page, "text", tw, "moved", oldText: aw.text, newText: tw.text));
+                    cur.Content += " " + JoinContent(line);
+                    AddWords(cur, line);
+                }
+                else
+                {
+                    cur = new TextItem { Serial = null, Content = JoinContent(line) };
+                    AddWords(cur, line);
+                    items.Add(cur);
                 }
             }
-
-            // ----- PASS 2: positional match for still-unmatched target words -----
-            for (int i = 0; i < B.Count; i++)
-            {
-                if (bMatched[i] || !inside(B[i].x0, B[i].yc)) continue;
-                var tw = B[i];
-                double bestD = double.MaxValue; int bestJ = -1;
-                for (int j = 0; j < A.Count; j++)
-                {
-                    if (consumed[j]) continue;
-                    double dx = tw.xc - A[j].xc, dy = tw.yc - A[j].yc;
-                    if (Math.Abs(dx) > t.XTolerance || Math.Abs(dy) > t.YTolerance) continue;
-                    double d = dx * dx + dy * dy;
-                    if (d < bestD) { bestD = d; bestJ = j; }
-                }
-                if (bestJ >= 0)
-                {
-                    consumed[bestJ] = true; bMatched[i] = true;
-                    var aw = A[bestJ];
-                    items.Add(Mk(page, "text", tw, "modified", oldText: aw.text, newText: tw.text));
-                }
-            }
-
-            // ----- PASS 3: remaining target words are new-only (added → RED) -----
-            for (int i = 0; i < B.Count; i++)
-                if (!bMatched[i] && inside(B[i].x0, B[i].yc))
-                    items.Add(Mk(page, "text", B[i], "added", oldText: null, newText: B[i].text));
-
-            // ----- PASS 4: remaining base words are old-only (removed → BLUE) -----
-            for (int j = 0; j < A.Count; j++)
-                if (!consumed[j] && inside(A[j].x0, A[j].yc))
-                    items.Add(Mk(page, "text", A[j], "removed", oldText: A[j].text, newText: null));
-
-            int added = items.Count(i => i.ChangeType == "added");
-            int removed = items.Count(i => i.ChangeType == "removed");
-            int modified = items.Count(i => i.ChangeType == "modified");
-            int moved = items.Count(i => i.ChangeType == "moved");
-            Console.Error.WriteLine($"  textdiff: A={A.Count} B={B.Count} matched={A.Count - removed - moved} added={added} removed={removed} modified={modified} moved={moved}");
             return items;
         }
 
-        static DiffItem Mk(int page, string type, TextGeometry.Word w, string change, string? oldText, string? newText)
+        static string? LineSerial(List<TextGeometry.Word> line)
         {
-            return new DiffItem
+            if (line.Count == 0) return null;
+            var f = line[0].text.Trim();
+            if (RePureNum.IsMatch(f)) return f;                                  // 纯数字序号(材料表 NO 列)
+            if (ReLabelNum.IsMatch(f) && line.Count > 1 && RePureNum.IsMatch(line[1].text.Trim()))
+                return f + " " + line[1].text.Trim();                           // NOTE 1 / ITEM 2 …
+            return null;
+        }
+
+        static bool IsContinuation(List<TextGeometry.Word> line, TextItem cur)
+        {
+            double lineH = line.Average(w => w.y1 - w.y0);
+            double gap = line.Min(w => w.yc) - cur.LastYc;
+            if (gap < -lineH * 0.5 || gap > lineH * 1.4) return false;          // 必须紧接下一行
+            if (Math.Abs(line.Min(w => w.x0) - cur.X0) > Math.Max(20.0, lineH * 2)) return false; // 左对齐
+            return true;
+        }
+
+        static void AddWords(TextItem it, List<TextGeometry.Word> line)
+        {
+            foreach (var w in line)
+            {
+                bool first = it.Words.Count == 0;
+                if (first) { it.X0 = w.x0; it.Y0 = w.y0; }
+                it.X0 = Math.Min(it.X0, w.x0); it.Y0 = Math.Min(it.Y0, w.y0);
+                it.X1 = Math.Max(it.X1, w.x1); it.Y1 = Math.Max(it.Y1, w.y1);
+                it.Words.Add(w);
+            }
+            it.LastYc = line.Average(w => w.yc);
+        }
+
+        static string JoinContent(List<TextGeometry.Word> line)
+            => string.Join(" ", line.Select(w => w.text.Trim()));
+
+        // 词集合签名：忽略词序与空白，仅看"由哪些词组成"。两版导出顺序不同导致
+        // 的词序差异(同一组词)会被判定为相同内容，避免伪差异。
+        static string TokenSet(string s)
+            => string.Join(" ", (s ?? "").Split(new[] { ' ', '\t', '\n' }, StringSplitOptions.RemoveEmptyEntries).OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+
+        static Bbox BboxOf(TextItem it)
+            => new Bbox { X = Round(it.X0), Y = Round(it.Y0), Width = Round(it.X1 - it.X0), Height = Round(it.Y1 - it.Y0) };
+
+        static DiffItem MkItem(int page, TextItem it, string change)
+            => new DiffItem
             {
                 Page = page,
-                Type = type,
+                Type = "text",
                 ChangeType = change,
-                OldText = oldText,
-                NewText = newText,
+                OldText = change == "added" ? null : it.Content,
+                NewText = change == "removed" ? null : it.Content,
                 Confidence = 0.9,
-                // word is already in the target point frame → bbox directly.
-                Bbox = new Bbox { X = Round(w.x0), Y = Round(w.y0), Width = Round(w.x1 - w.x0), Height = Round(w.y1 - w.y0) },
+                Bbox = BboxOf(it),
             };
+
+        static List<DiffItem> TextDiff(List<TextGeometry.Word> wordsA, List<TextGeometry.Word> wordsB,
+            Pdf2dfConfig.TextCfg t, int page, List<Bbox> regions, Rectangle tBounds, double scale)
+        {
+            var IA = Itemize(wordsA.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList());
+            var IB = Itemize(wordsB.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList());
+            var inside = regions.Count == 0 ? (Func<double, double, bool>)((x, y) => true)
+                                           : (x, y) => regions.Any(r => x >= r.X && x <= r.X + r.Width && y >= r.Y && y <= r.Y + r.Height);
+            IA = IA.Where(it => inside(it.Xc, it.Yc)).ToList();
+            IB = IB.Where(it => inside(it.Xc, it.Yc)).ToList();
+
+            // 匹配键：有"序号"→ 以序号为键(按序号配对，再看内容是否变化)；无序号的自由
+            // 文本 → 以"内容词集合"为键。两侧存在相同词集合即视为未变(位移/重排不影响)，
+            // 仅当内容确实只在一侧出现才报新增/删除。彻底消除导出顺序/位置微调造成的伪差异。
+            string Key(TextItem it) => it.Serial != null
+                ? "S:" + it.Serial
+                : "T:" + TokenSet(TextGeometry.Norm(it.Content));
+
+            var baseByKey = new Dictionary<string, List<TextItem>>();
+            foreach (var a in IA)
+            {
+                var k = Key(a);
+                if (!baseByKey.TryGetValue(k, out var lst)) baseByKey[k] = lst = new List<TextItem>();
+                lst.Add(a);
+            }
+            var consumedA = new HashSet<TextItem>();
+            var items = new List<DiffItem>();
+
+            foreach (var b in IB)
+            {
+                var k = Key(b);
+                TextItem? a = baseByKey.TryGetValue(k, out var cand) ? cand.FirstOrDefault(x => !consumedA.Contains(x)) : null;
+                if (a != null)
+                {
+                    consumedA.Add(a);
+                    // 仅"序号配对"且内容词集合不同 → 变更(绿)；其余(位移/重排/同内容)忽略。
+                    if (b.Serial != null && TokenSet(TextGeometry.Norm(a.Content)) != TokenSet(TextGeometry.Norm(b.Content)))
+                        items.Add(new DiffItem
+                        {
+                            Page = page, Type = "text", ChangeType = "changed",
+                            OldText = a.Content, NewText = b.Content, Confidence = 0.92, Bbox = BboxOf(b),
+                        });
+                }
+                else
+                {
+                    items.Add(MkItem(page, b, "added"));
+                }
+            }
+            foreach (var a in IA)
+                if (!consumedA.Contains(a))
+                    items.Add(MkItem(page, a, "removed"));
+
+            int nAdded = items.Count(x => x.ChangeType == "added");
+            int nRemoved = items.Count(x => x.ChangeType == "removed");
+            int nChanged = items.Count(x => x.ChangeType == "changed");
+            Console.Error.WriteLine($"  textdiff(serial): IA={IA.Count} IB={IB.Count} added={nAdded} removed={nRemoved} changed={nChanged}");
+            return items;
         }
 
         // ------------------------------------------------------------------

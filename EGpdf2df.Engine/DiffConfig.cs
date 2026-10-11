@@ -58,17 +58,24 @@ namespace EGpdf2df.Engine
 
         public sealed class AnnotationCfg
         {
-            // 三个可由用户 / 前端自定义的颜色（传入色号 #RRGGBB）：
-            //   TraceColor  → 图形（管线/设备/图元）差异的描红描边（默认红）。
-            //   CircleColor → 文字 / 序号差异的圈画标记（默认蓝）。
-            //   TextColor   → 消失 / 变更文字的浅色标注（默认浅蓝）。
-            // 图形方向由线型区分：新增/变更 = 实线，删除 = 虚线（沿用"红=新、蓝=旧"语义的等价表达）。
-            public string TraceColor { get; set; } = "#FF0000";   // 描红线（图形轮廓）
-            public string CircleColor { get; set; } = "#1E66E0";  // 圆圈（文字标记）
-            public string TextColor { get; set; } = "#66B2FF";    // 文字（消失/变更标注）
+            // 标注颜色（传入色号 #RRGGBB，均可由用户 / 前端颜色选择器覆盖）：
+            //   TraceColor  → 新增 / 删除 的描红（默认红）。
+            //   ChangeColor → 变更（同序号、内容不同）的描红（默认绿）。
+            //   CircleColor → 文字 / 序号 圈画标记的边色（默认红，与新增一致）。
+            //   TextColor   → 删除 / 变更 的"旧文字"浅色标注（默认浅蓝）。
+            // 三种状态配色：新增 = 红、删除 = 红(虚线)、变更 = 绿。
+            public string TraceColor { get; set; } = "#FF0000";   // 新增 / 删除 描红
+            public string ChangeColor { get; set; } = "#16A34A";  // 变更 描红（绿）
+            public string CircleColor { get; set; } = "#FF0000";  // 圆圈边色（文字标记）
+            public string TextColor { get; set; } = "#66B2FF";    // 旧文字浅色标注
+            // 线宽（描红轮廓边线粗细，可调参数：前端数值框 / 配置文件）。亦控制填充外扩后的边线。
             public int LineWidth { get; set; } = 3;
-            // 嵌入 Unicode 字体（默认 Windows Arial，含土耳其语等字形），让"消失文字"
-            // 的浅蓝斜体真正渲染；字体文件缺失时回退内置 Helvetica（仅 ASCII）。
+            // 真描红：填充实际变更区域（半透明），而非仅描边轮廓。
+            public double FillOpacity { get; set; } = 0.40;       // 填充透明度 0~1
+            public bool Outline { get; set; } = true;             // 是否在填充外再描一条同形边线
+            public int HaloPx { get; set; } = 0;                  // 填充向外扩张像素(0=精准贴合形状)
+            // 嵌入 Unicode 字体（默认 Windows Arial，含土耳其语等字形），让"消失/变更文字"
+            // 的标注真正渲染；字体文件缺失时回退内置 Helvetica（仅 ASCII）。
             public string FontPathRegular { get; set; } = "C:/Windows/Fonts/arial.ttf";
             public string FontPathItalic { get; set; } = "C:/Windows/Fonts/ariali.ttf";
         }
@@ -91,7 +98,7 @@ namespace EGpdf2df.Engine
   ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""traceColor"": ""#FF0000"", ""circleColor"": ""#1E66E0"", ""textColor"": ""#66B2FF"", ""lineWidth"": 3, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
+  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""circleColor"": ""#FF0000"", ""textColor"": ""#66B2FF"", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
   ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 
