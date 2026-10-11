@@ -59,15 +59,18 @@ namespace EGpdf2df.Engine
         public sealed class AnnotationCfg
         {
             // 标注颜色（传入色号 #RRGGBB，均可由用户 / 前端颜色选择器覆盖）：
-            //   TraceColor  → 新增 / 删除 的描红（默认红）。
-            //   ChangeColor → 变更（同序号、内容不同）的描红（默认绿）。
-            //   CircleColor → 文字 / 序号 圈画标记的边色（默认红，与新增一致）。
-            //   TextColor   → 删除 / 变更 的"旧文字"浅色标注（默认浅蓝）。
-            // 三种状态配色：新增 = 红、删除 = 红(虚线)、变更 = 绿。
-            public string TraceColor { get; set; } = "#FF0000";   // 新增 / 删除 描红
-            public string ChangeColor { get; set; } = "#16A34A";  // 变更 描红（绿）
-            public string CircleColor { get; set; } = "#FF0000";  // 圆圈边色（文字标记）
-            public string TextColor { get; set; } = "#66B2FF";    // 旧文字浅色标注
+            //   TraceColor     → 新增 / 删除 的图形描红（默认红）。
+            //   ChangeColor    → 变更（同序号、内容不同）的图形描红（默认绿）。
+            //   TextAddedColor → 新增文字的"改色"（默认红）。文字差异不再画圈/点，
+            //                   而是直接把文字重绘成该颜色（覆盖在原黑色文字上）。
+            //   TextRemovedColor → 删除文字的"改色"（默认蓝）。被删掉的旧文字以该颜色
+            //                   在原位置重现（如同 git 的 - 行）。
+            // 三种状态配色：图形 新增=红、删除=红(虚线)、变更=绿；
+            //            文字 新增=红、删除=蓝、变更=红(新)+蓝(旧)。
+            public string TraceColor { get; set; } = "#FF0000";   // 新增 / 删除 图形描红
+            public string ChangeColor { get; set; } = "#16A34A";  // 变更 图形描红（绿）
+            public string TextAddedColor { get; set; } = "#FF0000";   // 新增文字改色（红）
+            public string TextRemovedColor { get; set; } = "#0000FF";  // 删除文字改色（蓝）
             // 线宽（描红轮廓边线粗细，可调参数：前端数值框 / 配置文件）。亦控制填充外扩后的边线。
             public int LineWidth { get; set; } = 3;
             // 真描红：填充实际变更区域（半透明），而非仅描边轮廓。
@@ -98,7 +101,7 @@ namespace EGpdf2df.Engine
   ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""circleColor"": ""#FF0000"", ""textColor"": ""#66B2FF"", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
+  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
   ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 

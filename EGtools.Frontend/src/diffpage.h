@@ -14,7 +14,7 @@ class QComboBox;
 class QGroupBox;
 
 // Dedicated "PDF 比对 / 图纸差异" page (drives EGpdf2df).
-// 红蓝差异 + 圈画文字 + 浅蓝斜体显现消失文字 + 管线号↔材料表一一对应。
+// 图形红/绿差异 + 文字直接改色(新增红/删除蓝，git +/- 风格) + 管线号↔材料表一一对应。
 // 持有 no PDF 逻辑——所有实质工作都在 CLI 内核。
 class DiffPage : public QWidget
 {
@@ -36,9 +36,9 @@ private slots:
     void onRun();
     void onBrowsePreview();
     void onPickTraceColor();
-    void onPickCircleColor();
     void onPickChangeColor();
-    void onPickTextColor();
+    void onPickTextAddedColor();
+    void onPickTextRemovedColor();
 
 private:
     QString cliExe(const QString& name) const;
@@ -56,15 +56,15 @@ private:
     QSpinBox*  m_dpiSpin = nullptr;
     QCheckBox* m_pipeChk = nullptr;
     QComboBox* m_precCombo = nullptr;            // 精细度 fine/medium/coarse
-    // 四个可自定义标注色（传给内核 options.colors）：描红/变更绿/圆圈/文字。
+    // 可自定义标注色（传给内核 options.colors）：图形描红 / 变更绿 / 新增文字(红) / 删除文字(蓝)。
     QString m_traceColor  = QStringLiteral("#FF0000");  // 描红线（新增/删除图形）
-    QString m_changeColor = QStringLiteral("#16A34A");  // 变更绿（内容改动的图形/文字）
-    QString m_circleColor = QStringLiteral("#FF0000");  // 圆圈（文字/序号标记）
-    QString m_textColor   = QStringLiteral("#66B2FF");  // 文字（消失/变更标注）
+    QString m_changeColor = QStringLiteral("#16A34A");  // 变更绿（内容改动的图形）
+    QString m_textAddedColor  = QStringLiteral("#FF0000");  // 新增文字改色（红，git +）
+    QString m_textRemovedColor = QStringLiteral("#0000FF"); // 删除文字改色（蓝，git -）
     QPushButton* m_traceColorBtn  = nullptr;
     QPushButton* m_changeColorBtn = nullptr;
-    QPushButton* m_circleColorBtn = nullptr;
-    QPushButton* m_textColorBtn   = nullptr;
+    QPushButton* m_textAddedColorBtn = nullptr;
+    QPushButton* m_textRemovedColorBtn = nullptr;
     // 描红/填充可调参数（线宽粗细、填充透明度、填充外扩像素）。
     QSpinBox*      m_lwSpin   = nullptr;   // 线宽(描边粗细) 1..10
     QDoubleSpinBox* m_opacSpin = nullptr;  // 填充透明度 0..1

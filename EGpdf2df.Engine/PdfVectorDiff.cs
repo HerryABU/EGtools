@@ -29,16 +29,16 @@ namespace EGpdf2df.Engine
 
     /// <summary>
     /// Emits the diff as a VECTOR PDF: the ORIGINAL target drawing is opened and kept
-    /// untouched (its native vector content is preserved — no rasterisation). Vector
-    /// annotation STROKES (red/blue 1:1 shape traces + text-marker rings) are inserted
-    /// BEFORE the original content stream (page.NewContentStreamBefore) so they sit
-    /// BEHIND the drawing and never cover the original characters (requirement:
-    /// 红线/黑线放在字下面). The disappeared-text labels (light-blue italic) are drawn on
-    /// a SEPARATE top layer (new PdfCanvas(page)) so they stay readable. This is what
+    /// untouched (its native vector content is preserved — no rasterisation). Graphic
+    /// differences are traced as the ACTUAL CHANGED SHAPE (1:1 polygon contour — never a
+    /// circle or simulated line) and inserted BEFORE the original content stream
+    /// (page.NewContentStreamBefore) so they sit BEHIND the drawing and never cover the
+    /// original characters (requirement: 红线放在字下面). Text differences are NOT circled:
+    /// the text itself is recoloured on a SEPARATE top layer (new PdfCanvas(page)) —
+    /// added / changed-new = RED (overlaid on the target's black text), removed /
+    /// changed-old = BLUE (git "-" line, redrawn at the original position). This is what
     /// makes the output a true vector drawing (infinite zoom, crisp lines) rather than an
-    /// image. Graphic differences are traced as the ACTUAL CHANGED SHAPE (1:1 polygon
-    /// contour — never a circle or simulated line); disappeared text is rendered in
-    /// light-blue italic directly on the page.
+    /// image.
     ///
     /// ⚠️ /Rotate compensation: MuPDF renders a page with its /Rotate applied (DISPLAY
     /// frame), so DiffEngine's pixel coordinates live in the rotated, display-oriented
@@ -59,10 +59,11 @@ namespace EGpdf2df.Engine
             // images does NOT balloon the file — the base content stays the same size.
             writer.SetSmartMode(true);
             using var pdf = new PdfDocument(new PdfReader(targetPath), writer);
-            var traceCol = ParseColor(ann.TraceColor) ?? ColorConstants.RED;   // 新增/删除 描红(红)
-            var changeCol = ParseColor(ann.ChangeColor) ?? new DeviceRgb(22, 163, 74); // 变更 描红(绿)
-            var circleCol = ParseColor(ann.CircleColor) ?? ColorConstants.RED; // 文字/序号圈画边色
-            var textCol = ParseColor(ann.TextColor) ?? new DeviceRgb(150, 200, 255); // 消失/变更文字
+            var traceCol = ParseColor(ann.TraceColor) ?? ColorConstants.RED;   // 新增/删除 图形描红(红)
+            var changeCol = ParseColor(ann.ChangeColor) ?? new DeviceRgb(22, 163, 74); // 变更 图形描红(绿)
+            // 文字差异：直接改文字颜色（不画圈/点）。新增=红，删除=蓝，变更=红(新)+蓝(旧)。
+            var textAddedCol = ParseColor(ann.TextAddedColor) ?? ColorConstants.RED;
+            var textRemovedCol = ParseColor(ann.TextRemovedColor) ?? new DeviceRgb(0, 0, 255);
             // 嵌入 Unicode 字体（默认 Arial，含土耳其语等字形），让"消失文字"的浅蓝斜体
             // 真正渲染；字体缺失时回退内置 Helvetica（仅 ASCII）。
             var unicodeFont = LoadUnicodeFont(ann.FontPathItalic) ?? LoadUnicodeFont(ann.FontPathRegular);
@@ -91,7 +92,7 @@ namespace EGpdf2df.Engine
 
                 float lw = Math.Max(1.2f, (float)ann.LineWidth);
 
-                // ---- UNDER layer: crisp outline strokes + text-marker rings ----
+                // ---- UNDER layer: crisp outline strokes of graphic differences ----
                 // Inserted BEFORE the original content stream so the original characters /
                 // linework paint on top and are never obscured by the diff outlines. This
                 // honours the "红线放在字下面" requirement for the outline edges.
@@ -104,24 +105,8 @@ namespace EGpdf2df.Engine
                     StrokePoly(underCanvas, c, scale, traceCol, lw, solid: false);
                 foreach (var c in a.ChangedContours)
                     StrokePoly(underCanvas, c, scale, changeCol, lw, solid: true);
-                foreach (var it in a.TextItems)
-                {
-                    float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
-                    float w = (float)it.Bbox.Width, h = (float)it.Bbox.Height;
-                    if (it.ChangeType == "changed")
-                    {
-                        // 变更(同序号、内容不同)：绿色椭圆圈。数量少、最需要引人注意。
-                        float rx = Math.Max(2f, w / 2 + 4f), ry = Math.Max(2f, h / 2 + 4f);
-                        DrawEllipse(underCanvas, x + w / 2, yTop + h / 2, rx, ry, changeCol, lw, solid: true);
-                    }
-                    else
-                    {
-                        // 新增 / 删除：只画一个"小圆点"定位标记，而不是给成百上千条都套大圈
-                        // ——这是此前"整页铺满圆圈、viewer 全炸"的直接原因。
-                        float r = Math.Max(2.5f, lw);
-                        DrawDot(underCanvas, x + w / 2, yTop + h / 2, r, circleCol);
-                    }
-                }
+                // ⚠️ 文字差异不再在 UNDER 层画圈/点——改为在 OVER 层直接"改文字颜色"
+                // （见下方 (b)），避免整页铺满圆圈（旧版崩溃根因）。UNDER 层只保留图形描边。
                 underCanvas.RestoreState();
 
                 // ---- OVER layer: TRUE FILL (真描红) of the changed shape + disappeared text ----
@@ -135,33 +120,32 @@ namespace EGpdf2df.Engine
                 foreach (var c in a.AddedContours) FillPoly(overCanvas, c, scale, traceCol, ann.FillOpacity);
                 foreach (var c in a.RemovedContours) FillPoly(overCanvas, c, scale, traceCol, ann.FillOpacity);
                 foreach (var c in a.ChangedContours) FillPoly(overCanvas, c, scale, changeCol, ann.FillOpacity);
-                // (b) disappeared / changed-away text (light label). changed → green, else light-blue.
+                // (b) 文字差异：直接把文字重绘成对应颜色（不画圈/点，git +/- 风格）。
+                //     新增(added) 与 变更的新内容(changed.NewText) → 红色，覆盖在目标原黑色文字之上；
+                //     删除(removed) 与 变更的旧内容(changed.OldText) → 蓝色，在原位置重现（git - 行）；
+                //     变更时旧(蓝)文字下移一行，避免与红(新)文字重叠不可读。
                 foreach (var it in a.TextItems)
                 {
-                    if (!IsOldSide(it.ChangeType) || string.IsNullOrWhiteSpace(it.OldText)) continue;
-                    var tcol = (it.ChangeType == "changed") ? changeCol : textCol;
-                    textRenders++;
-                    float x = (float)it.Bbox.X, yTop = (float)it.Bbox.Y;
-                    float h = (float)it.Bbox.Height;
-                    float fs = Math.Max(6f, h / 2 + 4f);
-                    double bx = x, by = Math.Max(1f, yTop + 1f);      // baseline in DISPLAY y-down
-                    ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
-                    overCanvas.SaveState();
-                    overCanvas.SetFillColor(tcol);
-                    overCanvas.BeginText();
-                    overCanvas.SetFontAndSize(italFont, fs);
-                    overCanvas.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
-                    overCanvas.ShowText(Escape(it.OldText!));
-                    overCanvas.EndText();
-                    overCanvas.RestoreState();
+                    if (it.ChangeType == "added" || it.ChangeType == "changed")
+                    {
+                        var tNew = it.NewText;   // added / changed 的新内容（MkItem 已置）
+                        if (!string.IsNullOrWhiteSpace(tNew))
+                            DrawColoredText(overCanvas, tNew, it.Bbox, textAddedCol, 0,
+                                tA, tB, tC, tD, mA, mB, mC, mD, mE, mF, italFont, ref textRenders);
+                    }
+                    if (it.ChangeType == "removed" || it.ChangeType == "changed")
+                    {
+                        var tOld = it.OldText;
+                        double yOff = it.ChangeType == "changed" ? Math.Max(8.0, it.Bbox.Height * 1.4) : 0;
+                        if (!string.IsNullOrWhiteSpace(tOld))
+                            DrawColoredText(overCanvas, tOld, it.Bbox, textRemovedCol, yOff,
+                                tA, tB, tC, tD, mA, mB, mC, mD, mE, mF, italFont, ref textRenders);
+                    }
                 }
             }
-            Console.Error.WriteLine($"  [font] 实际绘制消失文字 {textRenders} 处（浅蓝斜体，已嵌入 Unicode 字体）");
+            Console.Error.WriteLine($"  [font] 实际重绘文字颜色 {textRenders} 处（新增红/删除蓝，已嵌入 Unicode 字体）");
             pdf.Close();
         }
-
-        static bool IsOldSide(string? changeType)
-            => changeType == "removed" || changeType == "modified" || changeType == "changed" || changeType == "moved";
 
         // Display frame (origin top-left, y-DOWN, units pt, as rendered by MuPDF with
         // /Rotate applied) → content user space (origin bottom-left, y-UP).
@@ -243,33 +227,29 @@ namespace EGpdf2df.Engine
             c.RestoreState();
         }
 
-        // Ellipse outline via four cubic Bézier arcs (iText has no native ellipse stroke).
-        // Coordinates are in the DISPLAY frame (y-down) — the caller sets the CTM.
-        static void DrawEllipse(PdfCanvas c, float cx, float cy, float rx, float ry, Color col, float lw, bool solid)
+        // 把一段文字以指定颜色重绘在 OVER 层（DISPLAY 坐标 → 内容空间）。这是"文字改色"
+        // 的核心：新增/变更的新文字覆盖在目标原黑色文字之上（变红），删除/变更的旧文字
+        // 以蓝色在原位置重现（git - 行）。yOffDisp 为显示帧下的额外下移(pt)，用于变更时把
+        // "旧(蓝)"文字挪到"新(红)"文字下方，避免两者重叠不可读。
+        static void DrawColoredText(PdfCanvas c, string text, Bbox bbox, Color col, double yOffDisp,
+            float tA, float tB, float tC, float tD,
+            float mA, float mB, float mC, float mD, float mE, float mF,
+            PdfFont font, ref int renders)
         {
-            c.SaveState();
-            c.SetStrokeColor(col).SetLineWidth(lw);
-            if (!solid) c.SetLineDash(new float[] { 5f, 3f }, 0);
-            const float k = 0.5522847498f;
-            float ox = rx * k, oy = ry * k;
-            c.MoveTo(cx + rx, cy);
-            c.CurveTo(cx + rx, cy + oy, cx + ox, cy + ry, cx, cy + ry);
-            c.CurveTo(cx - ox, cy + ry, cx - rx, cy + oy, cx - rx, cy);
-            c.CurveTo(cx - rx, cy - oy, cx - ox, cy - ry, cx, cy - ry);
-            c.CurveTo(cx + ox, cy - ry, cx + rx, cy - oy, cx + rx, cy);
-            c.ClosePath().Stroke();
-            c.RestoreState();
-        }
-
-        // 小实心圆点 —— 新增 / 删除文本的紧凑定位标记。体量极小(半径仅几 pt)，
-        // 即使一页有成百处也不会像大椭圆圈那样铺满画面、拖垮 viewer。
-        static void DrawDot(PdfCanvas c, float cx, float cy, float r, Color col)
-        {
+            float x = (float)bbox.X, yTop = (float)bbox.Y;
+            float h = (float)bbox.Height;
+            float fs = Math.Max(6f, h / 2 + 4f);
+            double bx = x, by = Math.Max(1f, yTop + 1f + yOffDisp);   // baseline in DISPLAY y-down
+            ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
             c.SaveState();
             c.SetFillColor(col);
-            c.Circle(cx, cy, r);
-            c.Fill();
+            c.BeginText();
+            c.SetFontAndSize(font, fs);
+            c.SetTextMatrix(tA, tB, tC, tD, (float)pcx, (float)pcy);
+            c.ShowText(Escape(text));
+            c.EndText();
             c.RestoreState();
+            renders++;
         }
 
         static string Escape(string s) => s.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");

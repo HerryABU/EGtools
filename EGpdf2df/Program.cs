@@ -30,6 +30,7 @@ public static class Program
         string? configPath = null;
         string? baseline = null, target = null, output = null;
         string? pagesArg = null;
+        string? textAddedColor = null, textRemovedColor = null;
         bool readStdin = false;
         bool locateMode = false;
         for (int i = 0; i < args.Length; i++)
@@ -47,6 +48,8 @@ public static class Program
                 case "--locate": locateMode = true; break;
                 case "-o": case "--output": output = take(""); break;
                 case "-p": case "--pages": pagesArg = take(""); break;
+                case "--text-added-color": textAddedColor = take(""); break;
+                case "--text-removed-color": textRemovedColor = take(""); break;
                 default:
                     if (a.StartsWith("-")) { L($"Unknown option: {a} (use --help)"); return 2; }
                     if (baseline == null) baseline = a; else if (target == null) target = a; else L($"Ignoring extra argument: {a}");
@@ -89,14 +92,16 @@ public static class Program
             var c = req.Options.Colors;
             if (!string.IsNullOrWhiteSpace(c.Trace)) cfg.Annotation.TraceColor = c.Trace;
             if (!string.IsNullOrWhiteSpace(c.Change)) cfg.Annotation.ChangeColor = c.Change;
-            if (!string.IsNullOrWhiteSpace(c.Circle)) cfg.Annotation.CircleColor = c.Circle;
-            if (!string.IsNullOrWhiteSpace(c.Text)) cfg.Annotation.TextColor = c.Text;
+            if (!string.IsNullOrWhiteSpace(c.TextAdded)) cfg.Annotation.TextAddedColor = c.TextAdded;
+            if (!string.IsNullOrWhiteSpace(c.TextRemoved)) cfg.Annotation.TextRemovedColor = c.TextRemoved;
         }
         var o = req?.Options;
         if (o?.LineWidth != null) cfg.Annotation.LineWidth = (int)Math.Max(0.5, o.LineWidth.Value);
         if (o?.FillOpacity != null) cfg.Annotation.FillOpacity = Math.Min(1.0, Math.Max(0.0, o.FillOpacity.Value));
         if (o?.Outline != null) cfg.Annotation.Outline = o.Outline.Value;
         if (o?.HaloPx != null) cfg.Annotation.HaloPx = Math.Max(0, o.HaloPx.Value);
+        if (!string.IsNullOrWhiteSpace(textAddedColor)) cfg.Annotation.TextAddedColor = textAddedColor;
+        if (!string.IsNullOrWhiteSpace(textRemovedColor)) cfg.Annotation.TextRemovedColor = textRemovedColor;
         return DiffEngine.Run(req, cfg, L);
     }
 
@@ -199,6 +204,8 @@ public static class Program
         Console.WriteLine("  -o, --output F   差异 PDF 输出路径 (diff PDF output path)");
         Console.WriteLine("  -p, --pages L    对比页码(0基,逗号分隔) (0-based pages, comma list)");
         Console.WriteLine("  --config FILE    差异检测配置 (pdf2df config JSON)");
+        Console.WriteLine("  --text-added-color H    新增文字改色 #RRGGBB (default #FF0000 红)");
+        Console.WriteLine("  --text-removed-color H  删除文字改色 #RRGGBB (default #0000FF 蓝)");
         Console.WriteLine("  --locate FILE    定位模式：在两份 PDF 指定页查找字符串坐标 (--json 可给路径或名称)");
         Console.WriteLine("  -h, --help       显示帮助 (show help)");
         Console.WriteLine();

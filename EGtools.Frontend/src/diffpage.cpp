@@ -75,29 +75,29 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     optRow->addWidget(m_pipeChk);
     optRow->addStretch();
 
-    // ---- 颜色选择器：描红线 / 变更绿 / 圆圈 / 文字（色号传入内核 options.colors） ----
+    // ---- 颜色选择器：图形描红 / 变更绿 / 新增文字(红) / 删除文字(蓝)（色号传入内核 options.colors） ----
     auto* colRow = new QHBoxLayout();
     m_traceColorBtn  = new QPushButton();
     m_changeColorBtn = new QPushButton();
-    m_circleColorBtn = new QPushButton();
-    m_textColorBtn   = new QPushButton();
-    for (QPushButton* b : {m_traceColorBtn, m_changeColorBtn, m_circleColorBtn, m_textColorBtn}) {
+    m_textAddedColorBtn = new QPushButton();
+    m_textRemovedColorBtn = new QPushButton();
+    for (QPushButton* b : {m_traceColorBtn, m_changeColorBtn, m_textAddedColorBtn, m_textRemovedColorBtn}) {
         b->setFixedSize(56, 24);
         b->setCursor(Qt::PointingHandCursor);
     }
     paintSwatch(m_traceColorBtn,  m_traceColor);
     paintSwatch(m_changeColorBtn, m_changeColor);
-    paintSwatch(m_circleColorBtn, m_circleColor);
-    paintSwatch(m_textColorBtn,   m_textColor);
+    paintSwatch(m_textAddedColorBtn, m_textAddedColor);
+    paintSwatch(m_textRemovedColorBtn, m_textRemovedColor);
     colRow->addWidget(new QLabel(QStringLiteral("颜色:")));
-    colRow->addWidget(new QLabel(QStringLiteral("描红")));
+    colRow->addWidget(new QLabel(QStringLiteral("图形描红")));
     colRow->addWidget(m_traceColorBtn);
-    colRow->addWidget(new QLabel(QStringLiteral("变更")));
+    colRow->addWidget(new QLabel(QStringLiteral("变更(绿)")));
     colRow->addWidget(m_changeColorBtn);
-    colRow->addWidget(new QLabel(QStringLiteral("圆圈")));
-    colRow->addWidget(m_circleColorBtn);
-    colRow->addWidget(new QLabel(QStringLiteral("文字")));
-    colRow->addWidget(m_textColorBtn);
+    colRow->addWidget(new QLabel(QStringLiteral("新增文字(+)")));
+    colRow->addWidget(m_textAddedColorBtn);
+    colRow->addWidget(new QLabel(QStringLiteral("删除文字(-)")));
+    colRow->addWidget(m_textRemovedColorBtn);
     colRow->addStretch();
 
     // ---- 描红/填充可调参数：线宽粗细 / 填充透明度 / 填充外扩 ----
@@ -122,7 +122,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     parRow->addWidget(m_haloSpin);
     parRow->addStretch();
 
-    m_runBtn = new QPushButton(QStringLiteral("开始比对（红/绿填充=图形变更·圆圈=文字·浅蓝斜体=消失文字）"));
+    m_runBtn = new QPushButton(QStringLiteral("开始比对（红/绿填充=图形变更·文字直接改色：新增红(+)/删除蓝(-)）"));
     m_runBtn->setStyleSheet(QStringLiteral("QPushButton{background:#2d7d46;color:#fff;padding:6px 12px;border-radius:5px;font-weight:600;}"));
     auto* openBtn = new QPushButton(QStringLiteral("打开差异图…"));
     auto* btnRow = new QHBoxLayout();
@@ -140,8 +140,8 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
         "● <b>红填充(实线轮廓)</b> = 新增图形 — 真描红：精确填充变更区域(非描边/非方框/非圈)\n"
         "● <b>红填充(虚线轮廓)</b> = 删除图形 — 原轮廓真填充\n"
         "● <b>绿填充(实线轮廓)</b> = 变更：同序号/同位置但内容改动(绿)\n"
-        "● <b>圆圈(实/虚线)</b> = 新增 / 删除的文字或序号\n"
-        "<i>消失 / 被改掉的旧文字</i> = 浅色斜体在原位置重现\n"
+        "● <b>文字直接改色（不画圈）</b>：<font color=\"#FF0000\">新增文字 = 红色</font>（覆盖在原黑色文字上），"
+        "<font color=\"#0000FF\">删除文字 = 蓝色</font>（在原位置重现，git - 行）；变更则红(新)+蓝(旧下方)\n"
         "文字比对按<b>序号配对</b>再比内容，位置位移不影响判定；四种颜色与线宽/透明度/外扩均可自定，色号直接传给内核。")));
     legendLay->setSpacing(2);
 
@@ -203,8 +203,8 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     connect(openBtn, &QPushButton::clicked, this, &DiffPage::onBrowsePreview);
     connect(m_traceColorBtn,  &QPushButton::clicked, this, &DiffPage::onPickTraceColor);
     connect(m_changeColorBtn, &QPushButton::clicked, this, &DiffPage::onPickChangeColor);
-    connect(m_circleColorBtn, &QPushButton::clicked, this, &DiffPage::onPickCircleColor);
-    connect(m_textColorBtn,   &QPushButton::clicked, this, &DiffPage::onPickTextColor);
+    connect(m_textAddedColorBtn, &QPushButton::clicked, this, &DiffPage::onPickTextAddedColor);
+    connect(m_textRemovedColorBtn, &QPushButton::clicked, this, &DiffPage::onPickTextRemovedColor);
 }
 
 // 同步颜色按钮的色块：背景=当前颜色；深色底自动换白字，浅色底用黑字。
@@ -242,16 +242,16 @@ void DiffPage::onPickChangeColor()
         emit statusMessage(QStringLiteral("变更绿颜色 = %1").arg(m_changeColor));
 }
 
-void DiffPage::onPickCircleColor()
+void DiffPage::onPickTextAddedColor()
 {
-    if (pickColor(QStringLiteral("选择圆圈颜色（文字标记）"), m_circleColor, m_circleColorBtn))
-        emit statusMessage(QStringLiteral("圆圈颜色 = %1").arg(m_circleColor));
+    if (pickColor(QStringLiteral("选择新增文字颜色（git +，默认红）"), m_textAddedColor, m_textAddedColorBtn))
+        emit statusMessage(QStringLiteral("新增文字颜色 = %1").arg(m_textAddedColor));
 }
 
-void DiffPage::onPickTextColor()
+void DiffPage::onPickTextRemovedColor()
 {
-    if (pickColor(QStringLiteral("选择文字颜色（消失/变更标注）"), m_textColor, m_textColorBtn))
-        emit statusMessage(QStringLiteral("文字颜色 = %1").arg(m_textColor));
+    if (pickColor(QStringLiteral("选择删除文字颜色（git -，默认蓝）"), m_textRemovedColor, m_textRemovedColorBtn))
+        emit statusMessage(QStringLiteral("删除文字颜色 = %1").arg(m_textRemovedColor));
 }
 
 QString DiffPage::cliExe(const QString& name) const
@@ -326,12 +326,12 @@ void DiffPage::onRun()
     opt[QStringLiteral("lineWidth")]   = m_lwSpin->value();
     opt[QStringLiteral("fillOpacity")] = m_opacSpin->value();
     opt[QStringLiteral("haloPx")]      = m_haloSpin->value();
-    // 颜色选择器 → options.colors（描红 / 变更绿 / 圆圈 / 文字），内核据色号着色。
+    // 颜色选择器 → options.colors（图形描红 / 变更绿 / 新增文字红 / 删除文字蓝），内核据色号着色。
     QJsonObject colors;
     colors[QStringLiteral("trace")]  = m_traceColor;
     colors[QStringLiteral("change")] = m_changeColor;
-    colors[QStringLiteral("circle")] = m_circleColor;
-    colors[QStringLiteral("text")]   = m_textColor;
+    colors[QStringLiteral("textAdded")]   = m_textAddedColor;
+    colors[QStringLiteral("textRemoved")] = m_textRemovedColor;
     opt[QStringLiteral("colors")] = colors;
     QJsonObject req;
     req[QStringLiteral("baseline")] = a;
@@ -372,7 +372,7 @@ void DiffPage::onRun()
             m_preview->setPixmap(QPixmap::fromImage(img).scaled(
                 m_preview->width() - 16, m_preview->height() - 16,
                 Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            emit statusMessage(QStringLiteral("差异图已生成并预览：红/蓝圈画 + 浅蓝斜体消失文字"));
+            emit statusMessage(QStringLiteral("差异图已生成并预览：图形红/绿填充 + 文字改色(新增红/删除蓝)"));
             return;
         }
     }
