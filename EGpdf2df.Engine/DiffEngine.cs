@@ -275,7 +275,7 @@ namespace EGpdf2df.Engine
 
                     // ---- emit a VECTOR diff PDF: original target vector content + vector overlays ----
                     baseDoc?.Dispose(); tgtDoc?.Dispose();
-                    PdfVectorDiff.Write(outPath, tgtCtxPath ?? req.Target, pageAnnos, scale, cfg.Annotation);
+                    PdfVectorDiff.Write(outPath, tgtCtxPath ?? req.Target, req.Baseline, pageAnnos, scale, cfg.Annotation);
                     var json = JsonSerializer.Serialize(resp, new JsonSerializerOptions { WriteIndented = true });
                     Console.WriteLine(json);
                     L($"Done. output={outPath} graphic={resp.Summary.GraphicDiffs} text={resp.Summary.TextDiffs}");
@@ -762,10 +762,10 @@ namespace EGpdf2df.Engine
             public string? Serial;                  // 序号(匹配键)，可为 null(自由文本)
             public string Content = "";              // 该条目的拼接内容(原始)
             public List<TextGeometry.Word> Words = new();
-            // 原始行结构：每行记录 (文字, 行左基线x, 基线y(display y-down), 渲染高度, 原始字号)。
-            // 重绘时逐行用"页面实际渲染高度"反推字号(规避 CAD PDF 的 Tf 大字号+矩阵缩放) + 原位置，
-            // 保证字号与换行与原文一致。
-            public List<(string text, double x0, double baselineY, double height, double size)> Lines = new();
+            // 原始行结构：每行记录 (文字, 行左基线x, 基线y(display y-down), 渲染高度, 原始字号,
+            //   DISPLAY 帧真实墨水包围盒 x0/y0/x1/y1)。包围盒由原始 Word 几何得出，供内容流
+            // 重着色/抽取时按几何精确匹配 Tj/TJ 文本运行(避免坐标/字号猜测)。
+            public List<(string text, double x0, double baselineY, double height, double size, double bx0, double by0, double bx1, double by1)> Lines = new();
             public double X0, Y0, X1, Y1;           // 合并包围盒(目标 pt 帧)
             public double LastYc;                    // 末行中心 y(续行判断)
             public double Xc => (X0 + X1) / 2;
@@ -852,7 +852,7 @@ namespace EGpdf2df.Engine
 
         static void AddWords(TextItem it, List<TextGeometry.Word> line)
         {
-            double bx0 = double.MaxValue, by0 = double.MaxValue, by1 = double.MinValue;
+            double bx0 = double.MaxValue, by0 = double.MaxValue, bx1 = double.MinValue, by1 = double.MinValue;
             double baselineSum = 0, sizeSum = 0; int n = 0;
             foreach (var w in line)
             {
@@ -862,7 +862,7 @@ namespace EGpdf2df.Engine
                 it.X1 = Math.Max(it.X1, w.x1); it.Y1 = Math.Max(it.Y1, w.y1);
                 it.Words.Add(w);
                 bx0 = Math.Min(bx0, w.x0);
-                by0 = Math.Min(by0, w.y0); by1 = Math.Max(by1, w.y1);
+                by0 = Math.Min(by0, w.y0); bx1 = Math.Max(bx1, w.x1); by1 = Math.Max(by1, w.y1);
                 baselineSum += w.y1;   // y1 = 基线(display y-down, 字底部)
                 sizeSum += w.size;
                 n++;
@@ -870,9 +870,10 @@ namespace EGpdf2df.Engine
             if (n > 0)
             {
                 // 该行：左基线 x = min(x0)，基线 y = 平均 y1，渲染高度 = 行顶到基线(by1-by0)，
-                // 原始字号 = 平均 size(可能含 CAD 矩阵缩放，仅作参考，重绘以渲染高度为准)。
+                // 原始字号 = 平均 size；DISPLAY 帧真实墨水包围盒 = 该行所有字并集。
                 double height = Math.Max(1.0, by1 - by0);
-                it.Lines.Add((JoinContent(line), bx0, baselineSum / n, height, sizeSum / n));
+                it.Lines.Add((JoinContent(line), bx0, baselineSum / n, height, sizeSum / n,
+                              bx0, by0, bx1, by1));
             }
             it.LastYc = line.Average(w => w.yc);
         }
@@ -895,7 +896,8 @@ namespace EGpdf2df.Engine
             if (it == null || it.Lines.Count == 0) return null;
             var out_ = new List<TextLine>();
             foreach (var ln in it.Lines)
-                out_.Add(new TextLine { Text = ln.text, X = ln.x0, Baseline = ln.baselineY, Height = ln.height, Size = ln.size });
+                out_.Add(new TextLine { Text = ln.text, X = ln.x0, Baseline = ln.baselineY, Height = ln.height, Size = ln.size,
+                                        X0 = ln.bx0, Y0 = ln.by0, X1 = ln.bx1, Y1 = ln.by1 });
             return out_;
         }
 

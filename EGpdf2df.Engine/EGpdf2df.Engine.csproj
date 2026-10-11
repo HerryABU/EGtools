@@ -27,6 +27,9 @@
          vector content, then append a vector annotation layer). AGPL-3.0 — same license
          family as this project, so the combined work stays AGPL-3.0. -->
     <PackageReference Include="itext7" Version="9.8.0" />
+    <!-- BouncyCastle adapter: iText 9.x 跨文档对象拷贝(CopyTo, 用于把基准页字体原样
+         深拷贝进目标页)走 smart-mode 序列化器，需要加密哈希 → 必须显式引用非 FIPS 适配器。 -->
+    <PackageReference Include="itext.bouncy-castle-adapter" Version="9.8.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- Externalizable diff config (DPI, thresholds, registration, annotation). -->

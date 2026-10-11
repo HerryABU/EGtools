@@ -143,5 +143,11 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("baseline")] public double Baseline { get; set; } // 基线 y(≈ 字底部)
         [JsonPropertyName("height")] public double Height { get; set; } // 页面实际渲染高度(pt，含缩放)
         [JsonPropertyName("size")] public double Size { get; set; }    // 原始 Tf 字号(pt，可能含矩阵缩放，仅参考)
+        // 该行在 DISPLAY 帧下的真实墨水包围盒(原点左上, y-down)，由原始 Word 几何得出，
+        // 供内容流重着色/抽取时按几何精确匹配 Tj/TJ 文本运行(避免坐标/字号猜测)。
+        [JsonPropertyName("x0")] public double X0 { get; set; }
+        [JsonPropertyName("y0")] public double Y0 { get; set; }
+        [JsonPropertyName("x1")] public double X1 { get; set; }
+        [JsonPropertyName("y1")] public double Y1 { get; set; }
     }
 }
