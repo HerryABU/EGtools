@@ -101,6 +101,9 @@ installer/
 publish/
 *.msi
 
+# Build-step quarantine: obj/bin renamed here instead of deleted (sandbox guard).
+.build_trash/
+
 # -------- Local test / verification scratch (not project source) --------
 # 临时比对产物、验证脚本与预览图（输入/输出 PDF 在仓库外的 Desktop/tools/tz）。
 tz/

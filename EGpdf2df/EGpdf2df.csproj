@@ -26,4 +26,37 @@
     <PackageReference Include="itext7" Version="9.8.0" />
   </ItemGroup>
 
+  <!--
+    Self-contained publish resolves file-name conflicts between NuGet packages and the
+    .NET 9 shared framework IN FAVOUR OF THE FRAMEWORK. iText / OpenCvSharp pull the
+    framework-provided packages below at 10.0.2, i.e. ABOVE the framework's 9.0.x, so
+    `dotnet publish` silently swapped them for the 9.0 copies while EGpdf2df.deps.json
+    kept demanding 10.0.0.0. At run time that produced:
+      Could not load file or assembly 'System.Text.Json, Version=10.0.0.0'
+    Only the `dotnet build` output was correct, so the bug stayed invisible until the
+    packaged DIST folder was actually executed.
+    Fix: overwrite the published copies with the package-resolved ones from the build
+    output (exactly what deps.json expects). IF A FUTURE PACKAGE BUMP RAISES ANOTHER
+    FRAMEWORK-PROVIDED ASSEMBLY ABOVE THE FRAMEWORK VERSION, ADD IT TO THIS LIST.
+  -->
+  <ItemGroup>
+    <FrameworkProvidedPackageAssembly Include="System.Text.Json.dll" />
+    <FrameworkProvidedPackageAssembly Include="System.Text.Encodings.Web.dll" />
+    <FrameworkProvidedPackageAssembly Include="System.IO.Pipelines.dll" />
+  </ItemGroup>
+
+  <Target Name="RestorePackageResolvedFrameworkAssembliesOnPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_FrameworkProvidedPackageSrc Include="@(FrameworkProvidedPackageAssembly->'$(OutDir)%(Identity)')"
+                                    Condition="Exists('$(OutDir)%(Identity)')" />
+      <_FrameworkProvidedPackageMissing Include="@(FrameworkProvidedPackageAssembly->'$(OutDir)%(Identity)')"
+                                        Condition="!Exists('$(OutDir)%(Identity)')" />
+    </ItemGroup>
+    <Warning Condition="'@(_FrameworkProvidedPackageMissing)' != ''"
+             Text="No package-resolved copy of @(_FrameworkProvidedPackageMissing) in the build output; publish may ship a mismatched framework assembly." />
+    <Copy SourceFiles="@(_FrameworkProvidedPackageSrc)"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

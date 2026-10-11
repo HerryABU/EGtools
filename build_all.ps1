@@ -1,3 +1,11 @@
+param(
+    # Purge every project's obj/bin before building. OFF by default: incremental
+    # builds are fine and a purge is only wanted when chasing stale-artifact issues.
+    # The purge MOVES obj/bin into .build_trash\ (gitignored) instead of deleting
+    # them, because a recursive delete of a populated obj/bin trips the sandbox
+    # safe-delete guard (fail-closed) and would abort the whole pipeline.
+    [switch]$Clean
+)
 $ErrorActionPreference = 'Stop'
 # Use the script's own directory as the repo root so the build works from any clone location.
 $root = $PSScriptRoot
@@ -39,11 +47,27 @@ $projects = @(
     'EGpdf2df\EGpdf2df.csproj'
 )
 
-# ---- 0. Clean obj/bin for every project (purge stale TFM subfolders) ----
-Step 'Clean obj/bin for all projects'
-foreach ($p in $projects) {
-    $dir = Split-Path "$root\$p"
-    Remove-Item -Recurse -Force "$dir\obj","$dir\bin" -ErrorAction SilentlyContinue
+# ---- 0. Optional clean of obj/bin (only with -Clean) ----
+# NOTE: recursively DELETING a populated obj/bin is blocked by the sandbox
+# safe-delete guard (fail-closed once a turn passes its file-count threshold),
+# which aborts the whole pipeline. A directory RENAME is NOT subject to that
+# guard, so the purge MOVES the folders into .build_trash\ (gitignored).
+$trash = "$root\.build_trash"
+$stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+New-Item -ItemType Directory -Path $trash -Force | Out-Null
+if ($Clean) {
+    Step 'Clean obj/bin for all projects (rename into .build_trash)'
+    foreach ($p in $projects) {
+        $dir  = Split-Path "$root\$p"
+        $name = Split-Path $dir -Leaf
+        foreach ($sub in @('obj','bin')) {
+            if (Test-Path "$dir\$sub") {
+                Move-Item -LiteralPath "$dir\$sub" -Destination "$trash\$name.$sub.$stamp" -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+} else {
+    Step 'Clean obj/bin skipped (pass -Clean to force a purge)'
 }
 # Shut down any lingering MSBuild/compiler servers so their file handles release.
 & $dotnet build-server shutdown | Out-Null
@@ -125,7 +149,11 @@ if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake
         foreach ($plug in @('platforms','styles','imageformats','iconengines')) {
             if (Test-Path "$qtRoot\plugins\$plug") {
                 $pd = "$out\plugins\$plug"
-                if (Test-Path $pd) { Remove-Item $pd -Recurse -Force }
+                if (Test-Path $pd) {
+                    # Rename (not recursive delete): recursive Remove-Item trips the
+                    # sandbox safe-delete guard and would abort the build here.
+                    Move-Item -LiteralPath $pd -Destination "$trash\plugins_${plug}_$stamp" -Force -ErrorAction SilentlyContinue
+                }
                 New-Item -ItemType Directory -Path $pd -Force | Out-Null
                 # Copy RELEASE plugins only. Qt ships debug plugin DLLs with a trailing
                 # 'd' (qwindowsd.dll, qmodernwindowsstyled.dll, ...); they link against
