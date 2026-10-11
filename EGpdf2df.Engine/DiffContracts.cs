@@ -67,6 +67,9 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("vectorAngleTolDeg")] public double? VectorAngleTolDeg { get; set; }
         // 页面配对最小线画相似度。默认 0.85。
         [JsonPropertyName("pageMatchMinSim")] public double? PageMatchMinSim { get; set; }
+        // 第三态"变更"识别半径(pt)：未匹配线画若在此半径内存在方向相近的对侧未匹配线画，
+        // 判为变更(绿) 而非 删一根+加一根(红)。0=关闭第三态，只报新增/删除两态。
+        [JsonPropertyName("changeRadiusPt")] public double? ChangeRadiusPt { get; set; }
         // 报告粒度：cluster(按差异区域汇总，默认) / run(逐条变更折线)。
         [JsonPropertyName("reportMode")] public string? ReportMode { get; set; }
         // 丢弃总长小于此值(pt)的变更折线（碎屑噪声）。
@@ -85,6 +88,14 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("textBoxPadPt")] public double? TextBoxPadPt { get; set; }
         // 序号匹配宽严：loose(含材料表行首纯数字) / strict(只认管段号与 NOTE n)。
         [JsonPropertyName("textSerialMatchMode")] public string? TextSerialMatchMode { get; set; }
+
+        // ---- 图号配对参数 ----
+        // 图号字段所处的页面右侧起点比例（按文本范围，默认 0.85）。标题栏布局不同时调它。
+        [JsonPropertyName("sheetNoRegionX")] public double? SheetNoRegionX { get; set; }
+        // 图号字段所处的页面下方起点比例（默认 0.78）。
+        [JsonPropertyName("sheetNoRegionY")] public double? SheetNoRegionY { get; set; }
+        // 单页"管段号种类数"上限（默认 25）：超过即视为总图/封面，不认其图号。
+        [JsonPropertyName("sheetNoMaxDistinct")] public int? SheetNoMaxDistinct { get; set; }
     }
 
     // 前端可选传入的标注颜色（缺省则使用配置文件默认）。

@@ -76,22 +76,45 @@ namespace EGpdf2df.Engine
                         pagePairs = req.Pages.Where(p => p >= 0 && p < Math.Min(nBase, nTgt))
                                               .Select(p => (p, p, "")).ToList();
                     }
-                    else if (useVectorGraphic && nBase > 0 && nTgt > 0)
-                    {
-                        var bFp = new List<double[]>(nBase);
-                        for (int i = 0; i < nBase; i++)
-                            bFp.Add(VectorGeomDiff.Fingerprint(VectorLinework.Extract(baseSrc, i)));
-                        var tFp = new List<double[]>(nTgt);
-                        for (int j = 0; j < nTgt; j++)
-                            tFp.Add(VectorGeomDiff.Fingerprint(VectorLinework.Extract(tgtSrc, j)));
-                        var (pr, ad, rm) = VectorGeomDiff.MatchPagesByLinework(bFp, tFp, cfg.GraphicDiff.PageMatchMinSim, L);
-                        pagePairs = pr.Select(x => (x.b, x.t, "linework")).ToList();
-                        addedPages = ad.Select(j => (j, "linework")).ToList();
-                        removedPages = rm.Select(i => (i, "linework")).ToList();
-                    }
                     else
                     {
-                        (pagePairs, addedPages, removedPages) = MatchPages(baseDoc, nBase, tgtDoc, nTgt, L);
+                        // ① 图号优先配对（同图号才比；图号只在一侧的页直接判新增/删除，不比对）。
+                        var (dn, dnAdd, dnRem, bNoNo, tNoNo) = MatchPagesByDrawingNo(
+                            baseDoc, nBase, tgtDoc, nTgt, cfg.SheetNoRegionX, cfg.SheetNoRegionY, cfg.SheetNoMaxDistinct, L);
+                        pagePairs = dn.Select(x => (x.b, x.t, x.no)).ToList();
+                        addedPages = dnAdd.ToList();
+                        removedPages = dnRem.ToList();
+
+                        // ② 无图号的页（封面/总图）：用线画指纹在其中兜底 1:1。
+                        //    仅当两版都还剩无图号页、且走矢量路径时才做；否则按页序。
+                        if (bNoNo.Count > 0 && tNoNo.Count > 0)
+                        {
+                            if (useVectorGraphic)
+                            {
+                                var bFp = bNoNo.Select(i => VectorGeomDiff.Fingerprint(VectorLinework.Extract(baseSrc, i))).ToList();
+                                var tFp = tNoNo.Select(j => VectorGeomDiff.Fingerprint(VectorLinework.Extract(tgtSrc, j))).ToList();
+                                var (fp, fAdd, fRem) = VectorGeomDiff.MatchPagesByLinework(bFp, tFp, cfg.GraphicDiff.PageMatchMinSim, L);
+                                foreach (var x in fp) pagePairs.Add((bNoNo[x.b], tNoNo[x.t], "(指纹)"));
+                                foreach (var j in fAdd) addedPages.Add((tNoNo[j], "(指纹)"));
+                                foreach (var i in fRem) removedPages.Add((bNoNo[i], "(指纹)"));
+                            }
+                            else
+                            {
+                                int n = Math.Min(bNoNo.Count, tNoNo.Count);
+                                for (int k = 0; k < n; k++) pagePairs.Add((bNoNo[k], tNoNo[k], "(无图号)"));
+                                for (int k = n; k < tNoNo.Count; k++) addedPages.Add((tNoNo[k], "(无图号)"));
+                                for (int k = n; k < bNoNo.Count; k++) removedPages.Add((bNoNo[k], "(无图号)"));
+                            }
+                        }
+                        else
+                        {
+                            foreach (var i in bNoNo) removedPages.Add((i, "(无图号·目标缺失)"));
+                            foreach (var j in tNoNo) addedPages.Add((j, "(无图号·基准缺失)"));
+                        }
+                        pagePairs.Sort((a, b) => a.basePno.CompareTo(b.basePno));
+                        addedPages.Sort((a, b) => a.page.CompareTo(b.page));
+                        removedPages.Sort((a, b) => a.page.CompareTo(b.page));
+                        L($"  最终配对: 比对 {pagePairs.Count} 对, 新增 {addedPages.Count} 页, 删除 {removedPages.Count} 页");
                     }
 
                     var resp = new DiffResponse { Output = outPath };
@@ -222,7 +245,7 @@ namespace EGpdf2df.Engine
                             };
                             var vr = VectorGeomDiff.Compare(bLine, tLine,
                                 cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, L,
-                                filter: vfilter);
+                                filter: vfilter, changeRadius: cfg.GraphicDiff.ChangeRadiusPt);
                             pageAnno.Strokes.AddRange(vr.Runs);
                             int rotT = tgtSrc.Rotation(tgtPno);
                             float WcT = tBounds.X1 - tBounds.X0, HcT = tBounds.Y1 - tBounds.Y0;
@@ -265,7 +288,8 @@ namespace EGpdf2df.Engine
                                 });
                             }
                             L($"  [vec] 线画差异: 变更折线 {vr.Runs.Count} 条 " +
-                              $"(新增 {vr.Runs.Count(r => r.Dir == "added")} / 删除 {vr.Runs.Count(r => r.Dir == "removed")})" +
+                              $"(新增 {vr.Runs.Count(r => r.Dir == "added")} / 删除 {vr.Runs.Count(r => r.Dir == "removed")}" +
+                              $" / 变更 {vr.Runs.Count(r => r.Dir == "changed")})" +
                               $"，差异区域 {vr.Clusters.Count} 个（报告粒度={(byCluster ? "区域" : "逐条")}）");
                         }
                         else if (cfg.GraphicDiff.Enabled)
@@ -1088,20 +1112,115 @@ namespace EGpdf2df.Engine
         }
 
         // ------------------------------------------------------------------
-        //  Drawing-number (图纸号) based page pairing
+        //  图号 (per-sheet drawing number) based page pairing
         // ------------------------------------------------------------------
-        static string? DrawingNoOfPage(MuPDFDocument doc, int pno)
+        /// <summary>
+        /// 页面**图号**（每页唯一）。
+        ///
+        /// ⚠️ 不能取 `408-101-051` 那种"项目号"：它每页标题栏都印同一个，用它分组会退化成
+        /// **按页序配对**——新版插入/删除一页后，其后全体错位，逐页比对两张不同图纸，
+        /// 产生上千条假差异（实测这就是"误判率极高"的头号原因）。
+        /// 真正的每页图号是【标题栏右下角那个管段号】，实测为 `408.101.P02 / P03 / ...`，
+        /// 顺序连续且基本唯一。取不到（封面/总图）返回 null，交给线画指纹兜底。
+        /// </summary>
+        static string? DrawingNoOfPage(MuPDFDocument doc, int pno, double rx, double ry, int maxDistinct)
+            => SheetNoOf(doc, pno, rx, ry, maxDistinct);
+
+        /// <summary>公开版：供 CLI 诊断（--sheetnos）列出每页图号，核对配对是否合理。</summary>
+        public static string? SheetNoOf(MuPDFDocument doc, int pno, double rx, double ry, int maxDistinct = 25)
         {
             using var st = doc.GetStructuredTextPage(pno, false, StructuredTextFlags.None);
             double H = doc.Pages[pno].Bounds.Y1 - doc.Pages[pno].Bounds.Y0;
             var words = TextGeometry.GetWords(st, H, 0.18);
-            return TextGeometry.ExtractDrawingNo(words, null);
+            if (words.Count == 0) return null;
+
+            // ⚠️ 不要用页宽/页高比例来框区域：/Rotate≠0 的页上，结构化文本的坐标系与
+            // 页框（display）坐标系不一致，实测会把图内的管线号误认成图号（例如把 P138
+            // 安到一张根本没有图号的封面页上，进而把两张毫不相干的图纸配成一对）。
+            // 改为：**用这些词自身的包围盒**求右下角，坐标系无关，旋转页同样成立。
+            double minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue, maxY = double.MinValue;
+            foreach (var w in words)
+            {
+                if (w.x0 < minX) minX = w.x0; if (w.x1 > maxX) maxX = w.x1;
+                if (w.y0 < minY) minY = w.y0; if (w.y1 > maxY) maxY = w.y1;
+            }
+            double spanX = Math.Max(1e-6, maxX - minX), spanY = Math.Max(1e-6, maxY - minY);
+            double xCut = maxX - (1 - rx) * spanX;   // 右侧 rx 以右
+            double yCut = maxY - (1 - ry) * spanY;   // 下方 ry 以下
+
+            var cnt = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var distinctAll = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var w in words)
+            {
+                var t = (w.text ?? "").Trim();
+                if (t.Length < 6) continue;
+                if (!TextGeometry.LooksLikeLineNo(t)) continue;
+                distinctAll.Add(t);
+                if (w.x0 < xCut || w.y0 < yCut) continue;      // 图号字段位于标题栏右下角
+                cnt.TryGetValue(t, out int c); cnt[t] = c + 1;
+            }
+            // 整页管段号种类过多 ⇒ 这是总图/封面（布满上百个管线号），不认图号。
+            if (distinctAll.Count > maxDistinct) return null;
+            if (cnt.Count > 0)
+                return cnt.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key.Length).First().Key.ToUpperInvariant();
+            return null;
         }
 
-        // Pair every baseline page with a target page that carries the SAME drawing
-        // number (图纸号), 1:1 within each number group (k-th base sheet ↔ k-th target
-        // sheet). Pages whose number exists only in the target are reported as added
-        // (new drawings/sheets); pages only in the baseline as removed.
+        /// <summary>
+        /// **图号优先**配对：同图号 1:1（组内按页序 k↔k）。图号只在一侧的 → 直接判为新增/删除，
+        /// **不参与比对**（这正是"图号不一样就不比"的要求）。无图号的页返回给调用方，
+        /// 由线画指纹兜底配对。
+        /// </summary>
+        static (List<(int b, int t, string no)> pairs,
+                List<(int page, string no)> addedTgt,
+                List<(int page, string no)> removedBase,
+                List<int> baseNoNo, List<int> tgtNoNo)
+            MatchPagesByDrawingNo(MuPDFDocument baseDoc, int nBase, MuPDFDocument tgtDoc, int nTgt,
+                                  double rx, double ry, int maxDistinct, Action<string> L)
+        {
+            var bNo = new string?[nBase];
+            var tNo = new string?[nTgt];
+            for (int p = 0; p < nBase; p++) bNo[p] = DrawingNoOfPage(baseDoc, p, rx, ry, maxDistinct);
+            for (int p = 0; p < nTgt; p++) tNo[p] = DrawingNoOfPage(tgtDoc, p, rx, ry, maxDistinct);
+
+            var bG = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+            var tG = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+            for (int p = 0; p < nBase; p++) if (bNo[p] != null)
+                { var k = bNo[p]!; if (!bG.TryGetValue(k, out var l)) bG[k] = l = new(); l.Add(p); }
+            for (int p = 0; p < nTgt; p++) if (tNo[p] != null)
+                { var k = tNo[p]!; if (!tG.TryGetValue(k, out var l)) tG[k] = l = new(); l.Add(p); }
+
+            var pairs = new List<(int, int, string)>();
+            var added = new List<(int, string)>();
+            var removed = new List<(int, string)>();
+            foreach (var kv in bG)
+            {
+                var bl = kv.Value.OrderBy(x => x).ToList();
+                if (tG.TryGetValue(kv.Key, out var tlRaw))
+                {
+                    var tl = tlRaw.OrderBy(x => x).ToList();
+                    int n = Math.Min(bl.Count, tl.Count);
+                    for (int k = 0; k < n; k++) pairs.Add((bl[k], tl[k], kv.Key));
+                    // 同图号多出来的页（图号重复的多页图纸）：多出的按新增/删除报。
+                    for (int k = n; k < tl.Count; k++) added.Add((tl[k], kv.Key));
+                    for (int k = n; k < bl.Count; k++) removed.Add((bl[k], kv.Key));
+                }
+                else foreach (var p in bl) removed.Add((p, kv.Key));
+            }
+            foreach (var kv in tG)
+                if (!bG.ContainsKey(kv.Key)) foreach (var p in kv.Value) added.Add((p, kv.Key));
+
+            var baseNoNo = Enumerable.Range(0, nBase).Where(p => bNo[p] == null).ToList();
+            var tgtNoNo = Enumerable.Range(0, nTgt).Where(p => tNo[p] == null).ToList();
+            pairs.Sort((a, b) => a.Item1.CompareTo(b.Item1));
+            added.Sort((a, b) => a.Item1.CompareTo(b.Item1));
+            removed.Sort((a, b) => a.Item1.CompareTo(b.Item1));
+            L($"  图号配对: 有图号 基准 {nBase - baseNoNo.Count} 页 / 目标 {nTgt - tgtNoNo.Count} 页；" +
+              $"同图号配对 {pairs.Count} 对，目标独有 {added.Count}，基准独有 {removed.Count}；" +
+              $"无图号 基准 {baseNoNo.Count} / 目标 {tgtNoNo.Count} 页待兜底");
+            return (pairs, added, removed, baseNoNo, tgtNoNo);
+        }
+
         static (List<(int basePno, int tgtPno, string no)> pairs,
                 List<(int page, string no)> addedTgt,
                 List<(int page, string no)> removedBase)
@@ -1109,8 +1228,8 @@ namespace EGpdf2df.Engine
         {
             var baseNo = new Dictionary<int, string>();
             var tgtNo = new Dictionary<int, string>();
-            for (int p = 0; p < nBase; p++) baseNo[p] = DrawingNoOfPage(baseDoc, p) ?? "?";
-            for (int p = 0; p < nTgt; p++) tgtNo[p] = DrawingNoOfPage(tgtDoc, p) ?? "?";
+            for (int p = 0; p < nBase; p++) baseNo[p] = DrawingNoOfPage(baseDoc, p, 0.85, 0.78, 25) ?? "?";
+            for (int p = 0; p < nTgt; p++) tgtNo[p] = DrawingNoOfPage(tgtDoc, p, 0.85, 0.78, 25) ?? "?";
             var baseGroups = baseNo.GroupBy(kv => kv.Value).ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).OrderBy(x => x).ToList());
             var tgtGroups = tgtNo.GroupBy(kv => kv.Value).ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).OrderBy(x => x).ToList());
 

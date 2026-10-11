@@ -39,6 +39,7 @@ public static class Program
         bool locateMode = false;
         bool vecDiag = false;
         bool vecScan = false;
+        bool sheetNos = false;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -54,6 +55,7 @@ public static class Program
                 case "--locate": locateMode = true; break;
                 case "--vecdiag": vecDiag = true; break;
                 case "--vecscan": vecScan = true; break;
+                case "--sheetnos": sheetNos = true; break;
                 case "-o": case "--output": output = take(""); break;
                 case "-p": case "--pages": pagesArg = take(""); break;
                 case "--text-added-color": textAddedColor = take(""); break;
@@ -78,7 +80,25 @@ public static class Program
         if (locateMode)
             return RunLocate(jsonFile, readStdin, L);
 
-        // ---- vecdiag mode: 矢量线画提取诊断（有几条线段、标定与匹配率多少）----
+        // ---- sheetnos mode: 列出每页提取到的图号（核对配对是否合理）----
+        if (sheetNos)
+        {
+            if (target == null) { L("[error] --sheetnos needs <pdf> [<pdf2>]"); return 2; }
+            var cfg0 = Pdf2dfConfig.Load(null);
+            using var ctx0 = new MuPDFContext(512u * 1024 * 1024);
+            using var d1 = new MuPDFDocument(ctx0, baseline!);
+            L($"== {Path.GetFileName(baseline!)} ({d1.Pages.Count} 页) ==");
+            for (int i = 0; i < d1.Pages.Count; i++)
+                L($"   {i,4}: {DiffEngine.SheetNoOf(d1, i, cfg0.SheetNoRegionX, cfg0.SheetNoRegionY, cfg0.SheetNoMaxDistinct) ?? "(无)"}");
+            if (target != null)
+            {
+                using var d2 = new MuPDFDocument(ctx0, target);
+                L($"== {Path.GetFileName(target)} ({d2.Pages.Count} 页) ==");
+                for (int i = 0; i < d2.Pages.Count; i++)
+                    L($"   {i,4}: {DiffEngine.SheetNoOf(d2, i, cfg0.SheetNoRegionX, cfg0.SheetNoRegionY, cfg0.SheetNoMaxDistinct) ?? "(无)"}");
+            }
+            return 0;
+        }
         if (vecDiag)
         {
             if (baseline == null || target == null) { L("[error] --vecdiag needs <baseline> <target> [-p page]"); return 2; }
@@ -146,6 +166,7 @@ public static class Program
         if (vectorTol != null) cfg.GraphicDiff.VectorTolPt = Math.Max(0.1, vectorTol.Value);
         if (o?.VectorAngleTolDeg != null) cfg.GraphicDiff.VectorAngleTolDeg = Math.Clamp(o.VectorAngleTolDeg.Value, 1, 60);
         if (o?.PageMatchMinSim != null) cfg.GraphicDiff.PageMatchMinSim = Math.Clamp(o.PageMatchMinSim.Value, 0.1, 0.999);
+        if (o?.ChangeRadiusPt != null) cfg.GraphicDiff.ChangeRadiusPt = Math.Max(0, o.ChangeRadiusPt.Value);
         if (!string.IsNullOrWhiteSpace(o?.ReportMode)) cfg.GraphicDiff.ReportMode = o!.ReportMode!;
         if (!string.IsNullOrWhiteSpace(reportMode)) cfg.GraphicDiff.ReportMode = reportMode;
         if (o?.MinRunLengthPt != null) cfg.GraphicDiff.MinRunLengthPt = Math.Max(0, o.MinRunLengthPt.Value);
@@ -156,6 +177,10 @@ public static class Program
         if (!string.IsNullOrWhiteSpace(o?.TextBoxMode)) cfg.Annotation.TextBoxMode = o!.TextBoxMode!;
         if (o?.TextBoxPadPt != null) cfg.Annotation.TextBoxPadPt = Math.Max(0, o.TextBoxPadPt.Value);
         if (!string.IsNullOrWhiteSpace(o?.TextSerialMatchMode)) cfg.Annotation.TextSerialMatchMode = o!.TextSerialMatchMode!;
+        // ---- 图号配对参数 ----
+        if (o?.SheetNoRegionX != null) cfg.SheetNoRegionX = Math.Clamp(o.SheetNoRegionX.Value, 0.0, 1.0);
+        if (o?.SheetNoRegionY != null) cfg.SheetNoRegionY = Math.Clamp(o.SheetNoRegionY.Value, 0.0, 1.0);
+        if (o?.SheetNoMaxDistinct != null) cfg.SheetNoMaxDistinct = Math.Max(1, o.SheetNoMaxDistinct.Value);
         return DiffEngine.Run(req, cfg, L);
     }
 

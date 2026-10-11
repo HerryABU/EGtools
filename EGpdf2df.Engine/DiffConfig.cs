@@ -23,6 +23,15 @@ namespace EGpdf2df.Engine
         public RegistrationCfg Registration { get; set; } = new();
         public AnnotationCfg Annotation { get; set; } = new();
         public PipeMatchCfg PipeMatch { get; set; } = new();
+        // 页面**图号**（标题栏右下角那个每页唯一的管段号）的提取区域，按页宽/页高比例。
+        // 实测图号字段在 x≈0.90W, y≈0.83H（显示帧，y 向下）；取 0.85/0.78 有足够裕度，
+        // 同时把散落在图内的管线号排除掉。若你的标题栏布局不同，调这两个值即可。
+        public double SheetNoRegionX { get; set; } = 0.85;
+        public double SheetNoRegionY { get; set; } = 0.78;
+        // 单页"管段号种类数"上限：超过它说明这页是**总图/封面**（布满上百个管线号），
+        // 不是单张图纸，此时不认它的图号（返回 null，交给线画指纹兜底）。
+        // 实测真图纸 ≤10 种、总图 33/124/127 种，25 有很宽裕度。
+        public int SheetNoMaxDistinct { get; set; } = 25;
 
         public sealed class GraphicCfg
         {
@@ -45,6 +54,10 @@ namespace EGpdf2df.Engine
             // 页面配对（按线画指纹）的最小余弦相似度：低于此值视为"不同图纸"，不配对。
             // 实测同图纸≈0.99+、不同图纸≈0.3~0.6，0.85 有很宽的裕度。
             public double PageMatchMinSim { get; set; } = 0.85;
+            // 第三态"变更"识别半径(pt)：未匹配的线画若在此半径内存在**方向相近**的对侧未匹配线画，
+            // 判为"变更"(同位置形状改了, 绿) 而不是"删一根+加一根"(红)。
+            // 0 = 关闭第三态（全部按 added/removed 两态报）。
+            public double ChangeRadiusPt { get; set; } = 20.0;
             // ---- 差异密度过滤与报告粒度（都可调；默认弱过滤，避免误杀真实改动）----
             // 报表粒度：run=逐条变更折线（信息最全，但大改页可达十几万条）；cluster=按区域汇总
             // （默认，数量降两个数量级，贴合"这一片图面改了"的语义）。
@@ -153,10 +166,11 @@ namespace EGpdf2df.Engine
 {
   ""precision"": ""medium"",
   ""renderDpi"": 200,
-  ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""graphicMethod"": ""vector"", ""vectorTolPt"": 3.0, ""vectorAngleTolDeg"": 12.0, ""pageMatchMinSim"": 0.85, ""reportMode"": ""cluster"", ""minRunLengthPt"": 1.0, ""clusterRadiusPt"": 24.0, ""minClusterLengthPt"": 0.0, ""minClusterRuns"": 0, ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
+  ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""graphicMethod"": ""vector"", ""vectorTolPt"": 3.0, ""vectorAngleTolDeg"": 12.0, ""pageMatchMinSim"": 0.85, ""changeRadiusPt"": 20.0, ""reportMode"": ""cluster"", ""minRunLengthPt"": 1.0, ""clusterRadiusPt"": 24.0, ""minClusterLengthPt"": 0.0, ""minClusterRuns"": 0, ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
   ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""textBoxMode"": ""word"", ""textBoxPadPt"": 2.0, ""markStyle"": ""semi"", ""markStrokeColor"": """", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
+  ""sheetNoRegionX"": 0.85, ""sheetNoRegionY"": 0.78, ""sheetNoMaxDistinct"": 25,
   ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 

@@ -282,6 +282,35 @@ namespace EGpdf2df.Engine
                 return bd;
             }
 
+            /// <summary>
+            /// 最近且**方向相近**的线段距离（cap 为搜索上限）。用于"第三态变更"配对：
+            /// 只有同向的邻居才算"同一根线被改了"，避免拿一根垂直交叉的线来配对。
+            /// </summary>
+            public double NearestDir(double x, double y, double ux, double uy, double cap, double cosMin)
+            {
+                double ul = Math.Sqrt(ux * ux + uy * uy);
+                double bd = cap;
+                if (ul < 1e-12) return bd;
+                ux /= ul; uy /= ul;
+                // 搜索半径 cap 对应的圈数（cap ≤ 几格时 1 圈足够）
+                long bx = (long)Math.Floor(x / _cell), by = (long)Math.Floor(y / _cell);
+                for (long gx = bx - 1; gx <= bx + 1; gx++)
+                    for (long gy = by - 1; gy <= by + 1; gy++)
+                    {
+                        if (!_grid.TryGetValue((gx + 0x4000000L) * 0x8000000L + (gy + 0x4000000L), out var l)) continue;
+                        foreach (int ci in l)
+                        {
+                            var c = _chunks[ci];
+                            double vx = c[2] - c[0], vy = c[3] - c[1];
+                            double vl = Math.Sqrt(vx * vx + vy * vy);
+                            if (vl > 1e-12 && Math.Abs((ux * vx + uy * vy) / vl) < cosMin) continue;
+                            double d = DistPointSeg(x, y, c[0], c[1], c[2], c[3]);
+                            if (d < bd) bd = d;
+                        }
+                    }
+                return bd;
+            }
+
             static double DistPointSeg(double px, double py, double ax, double ay, double bx, double by)
             {
                 double vx = bx - ax, vy = by - ay;
@@ -373,7 +402,7 @@ namespace EGpdf2df.Engine
         /// </summary>
         public static Result Compare(List<VectorLinework.Seg> bsegs, List<VectorLinework.Seg> tsegs,
                                  double tol, double angTolDeg, Action<string>? log = null, bool quick = false,
-                                 FilterCfg? filter = null)
+                                 FilterCfg? filter = null, double changeRadius = 0)
         {
             var res = new Result { BaseSegs = bsegs.Count, TgtSegs = tsegs.Count };
             if (bsegs.Count == 0 || tsegs.Count == 0)
@@ -433,11 +462,49 @@ namespace EGpdf2df.Engine
                             $"p90={Near(0.90):F2} (tol={tol:F1}) — p50≈tol 说明容差偏紧，p50≫tol 才是真差异");
             }
 
-            // 成链：未匹配线段按端点连通性合并成极大折线
-            res.Runs.AddRange(Chain(tUnmatched, "added", tol));
-            res.Runs.AddRange(Chain(bUnmatched, "removed", tol));
-            for (int i = 0; i < res.Runs.Count; i++) res.Runs[i].Index = i;
+            // 第三态识别：把"同一位置、形状改了"的线段从 added/removed 里分出来。
+            // 否则一根线稍微挪动/改形状，会同时报"这里删了一根 + 这里加了一根"（红），
+            // 而实际语义是"这根线改了"（绿）。
+            // 判据：一条未匹配目标段，在其半径内**存在方向相近的未匹配基准段** → 判为变更；
+            //       反向同理。两侧各自独立判定，再分别成链。
+            int nChangedT = 0, nChangedB = 0;
+            if (changeRadius > 0 && tUnmatched.Count > 0 && bUnmatched.Count > 0)
+            {
+                var tIdx = new LineIndex(tUnmatched, Math.Max(1.0, changeRadius));
+                var bIdx = new LineIndex(bUnmatched, Math.Max(1.0, changeRadius));
 
+                var tChanged = new List<VectorLinework.Seg>();
+                var tStill = new List<VectorLinework.Seg>();
+                foreach (var g in tUnmatched)
+                {
+                    double mx = (g.X0 + g.X1) * 0.5, my = (g.Y0 + g.Y1) * 0.5;
+                    double d = bIdx.NearestDir(mx, my, g.X1 - g.X0, g.Y1 - g.Y0, changeRadius, cosMin);
+                    if (d < changeRadius) tChanged.Add(g); else tStill.Add(g);
+                }
+                var bChanged = new List<VectorLinework.Seg>();
+                var bStill = new List<VectorLinework.Seg>();
+                foreach (var g in bUnmatched)
+                {
+                    double mx = (g.X0 + g.X1) * 0.5, my = (g.Y0 + g.Y1) * 0.5;
+                    double d = tIdx.NearestDir(mx, my, g.X1 - g.X0, g.Y1 - g.Y0, changeRadius, cosMin);
+                    if (d < changeRadius) bChanged.Add(g); else bStill.Add(g);
+                }
+                nChangedT = tChanged.Count; nChangedB = bChanged.Count;
+
+                // 变更只画【目标侧】的新形状（绿色）——语义是"这根线现在长这样"。
+                // 基准侧的旧形状不再单独出图，避免与绿色重叠造成"又红又绿"的视觉噪音。
+                res.Runs.AddRange(Chain(tChanged, "changed", tol));
+                res.Runs.AddRange(Chain(tStill, "added", tol));
+                res.Runs.AddRange(Chain(bStill, "removed", tol));
+                log?.Invoke($"  [vec] 第三态变更: 目标侧 {nChangedT}/{tUnmatched.Count} 段、基准侧 {nChangedB}/{bUnmatched.Count} 段" +
+                            $" 与其对侧同向邻近 → 判为变更(r={changeRadius:F1}pt)");
+            }
+            else
+            {
+                res.Runs.AddRange(Chain(tUnmatched, "added", tol));
+                res.Runs.AddRange(Chain(bUnmatched, "removed", tol));
+            }
+            for (int i = 0; i < res.Runs.Count; i++) res.Runs[i].Index = i;
             // 密度过滤 + 区域聚类（都可调；参数为 0/false 时保持逐条原样）
             ApplyFilterAndCluster(res, filter, log);
             return res;
@@ -573,6 +640,7 @@ namespace EGpdf2df.Engine
             }
 
             var groups = new Dictionary<int, Cluster>();
+            var dirCount = new Dictionary<int, Dictionary<string, int>>();
             for (int i = 0; i < n; i++)
             {
                 int root = Find(i);
@@ -580,12 +648,29 @@ namespace EGpdf2df.Engine
                 {
                     c = new Cluster { X0 = double.MaxValue, Y0 = double.MaxValue, X1 = double.MinValue, Y1 = double.MinValue };
                     groups[root] = c;
+                    dirCount[root] = new Dictionary<string, int>();
                 }
                 c.Runs.Add(i);
                 c.Length += runs[i].Length;
                 c.X0 = Math.Min(c.X0, bb[i][0]); c.X1 = Math.Max(c.X1, bb[i][2]);
                 c.Y0 = Math.Min(c.Y0, bb[i][1]); c.Y1 = Math.Max(c.Y1, bb[i][3]);
-                if (runs[i].Dir == "removed") c.Dir = "removed";
+                var dc = dirCount[root];
+                dc.TryGetValue(runs[i].Dir, out int cnt); dc[runs[i].Dir] = cnt + 1;
+            }
+            // 区域方向 = 区域内折线的多数方向。⚠️ 必须显式支持 changed：
+            // 否则第三态识别出来的绿色"变更"在聚类后会被吞掉（区域永远只报 added/removed）。
+            // 同数时优先级 changed > removed > added（changed 语义最强，最不该被降级）。
+            var prio = new Dictionary<string, int> { ["changed"] = 2, ["removed"] = 1, ["added"] = 0 };
+            foreach (var kv in groups)
+            {
+                var dc = dirCount[kv.Key];
+                string best = "added"; int bestN = -1;
+                foreach (var d in dc)
+                {
+                    if (d.Value > bestN || (d.Value == bestN && prio.GetValueOrDefault(d.Key) > prio.GetValueOrDefault(best)))
+                    { best = d.Key; bestN = d.Value; }
+                }
+                kv.Value.Dir = best;
             }
             var outp = new List<Cluster>(groups.Values);
             outp.Sort((a, b) => b.Length.CompareTo(a.Length));   // 大改动排前

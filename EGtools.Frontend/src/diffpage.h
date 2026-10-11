@@ -78,9 +78,14 @@ private:
     QComboBox* m_reportModeCombo = nullptr;  // cluster(按区域) / run(逐条)
     QDoubleSpinBox* m_clusterRadiusSpin = nullptr;  // 聚类半径(pt)
     QDoubleSpinBox* m_minClusterLenSpin = nullptr;  // 丢弃小于此总长(pt)的区域
+    QDoubleSpinBox* m_changeRadiusSpin = nullptr;   // 第三态"变更"识别半径(pt)
     // ---- 文字差异参数 ----
     QComboBox* m_textBoxModeCombo = nullptr; // word(逐词框,更精确) / line(整行框)
     QComboBox* m_textSerialCombo = nullptr;  // loose(含行首纯数字) / strict(只认管段号/NOTE n)
+    // ---- 图号配对参数（标题栏图号 = 每页唯一号，同图号才比对）----
+    QDoubleSpinBox* m_sheetNoXSpin = nullptr;   // 图号区 右侧起点比例
+    QDoubleSpinBox* m_sheetNoYSpin = nullptr;   // 图号区 下方起点比例
+    QSpinBox* m_sheetNoMaxSpin = nullptr;       // 总图判定：单页管段号种类数上限
     // 描红/填充可调参数（线宽粗细、填充透明度、填充外扩像素）。
     QSpinBox*      m_lwSpin   = nullptr;   // 线宽(描边粗细) 1..10
     QDoubleSpinBox* m_opacSpin = nullptr;  // 填充透明度 0..1

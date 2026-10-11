@@ -10,6 +10,7 @@
     "vectorTolPt": 3.0,
     "vectorAngleTolDeg": 12.0,
     "pageMatchMinSim": 0.85,
+    "changeRadiusPt": 20.0,
     "reportMode": "cluster",
     "minRunLengthPt": 1.0,
     "clusterRadiusPt": 24.0,
@@ -59,6 +60,8 @@
     "fontPathRegular": "C:/Windows/Fonts/arial.ttf",
     "fontPathItalic": "C:/Windows/Fonts/ariali.ttf"
   },
+  "sheetNoRegionX": 0.85,
+  "sheetNoRegionY": 0.78,
   "pipeMatch": {
     "comment": "图中管线号 ↔ 材料表 一一对应核对；材料表判定阈值为页高比例。",
     "enabled": true,

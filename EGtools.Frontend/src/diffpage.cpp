@@ -163,12 +163,18 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     m_minClusterLenSpin->setRange(0.0, 2000.0); m_minClusterLenSpin->setSingleStep(5.0);
     m_minClusterLenSpin->setValue(0.0); m_minClusterLenSpin->setSuffix(QStringLiteral(" pt"));
     m_minClusterLenSpin->setToolTip(QStringLiteral("丢弃总长小于此值的差异区域（把零散微调整体忽略）。0=不过滤。"));
+    m_changeRadiusSpin = new QDoubleSpinBox();
+    m_changeRadiusSpin->setRange(0.0, 500.0); m_changeRadiusSpin->setSingleStep(2.0);
+    m_changeRadiusSpin->setValue(20.0); m_changeRadiusSpin->setSuffix(QStringLiteral(" pt"));
+    m_changeRadiusSpin->setToolTip(QStringLiteral("第三态\"变更\"识别半径：未匹配线画若在此半径内有方向相近的对侧线画，\n判为\"变更\"(绿) 而非\"删一根+加一根\"(红)。0=关闭第三态。"));
     repRow->addWidget(new QLabel(QStringLiteral("图形报告:")));
     repRow->addWidget(m_reportModeCombo);
     repRow->addWidget(new QLabel(QStringLiteral("聚类半径:")));
     repRow->addWidget(m_clusterRadiusSpin);
     repRow->addWidget(new QLabel(QStringLiteral("忽略小区域<:")));
     repRow->addWidget(m_minClusterLenSpin);
+    repRow->addWidget(new QLabel(QStringLiteral("变更识别半径:")));
+    repRow->addWidget(m_changeRadiusSpin);
     repRow->addStretch();
 
     // ---- 文字差异参数（框粒度 / 序号匹配宽严） ----
@@ -188,6 +194,27 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     txtRow->addWidget(new QLabel(QStringLiteral("序号匹配:")));
     txtRow->addWidget(m_textSerialCombo);
     txtRow->addStretch();
+
+    // ---- 图号配对（标题栏图号 = 每页唯一号；同图号才比对） ----
+    auto* shRow = new QHBoxLayout();
+    m_sheetNoXSpin = new QDoubleSpinBox();
+    m_sheetNoXSpin->setRange(0.0, 1.0); m_sheetNoXSpin->setSingleStep(0.01); m_sheetNoXSpin->setDecimals(2);
+    m_sheetNoXSpin->setValue(0.85);
+    m_sheetNoXSpin->setToolTip(QStringLiteral("图号字段所处的页面右侧区域起点（按文本范围比例）。\n标题栏布局不同时调这里。"));
+    m_sheetNoYSpin = new QDoubleSpinBox();
+    m_sheetNoYSpin->setRange(0.0, 1.0); m_sheetNoYSpin->setSingleStep(0.01); m_sheetNoYSpin->setDecimals(2);
+    m_sheetNoYSpin->setValue(0.78);
+    m_sheetNoYSpin->setToolTip(QStringLiteral("图号字段所处的页面下方区域起点（按文本范围比例）。"));
+    m_sheetNoMaxSpin = new QSpinBox();
+    m_sheetNoMaxSpin->setRange(1, 9999); m_sheetNoMaxSpin->setValue(25);
+    m_sheetNoMaxSpin->setToolTip(QStringLiteral("单页\"管段号种类数\"上限：超过即视为总图/封面，不认其图号（改由线画指纹兜底）。\n实测真图纸 ≤10 种、总图 33~127 种。"));
+    shRow->addWidget(new QLabel(QStringLiteral("图号区 右≥:")));
+    shRow->addWidget(m_sheetNoXSpin);
+    shRow->addWidget(new QLabel(QStringLiteral("下≥:")));
+    shRow->addWidget(m_sheetNoYSpin);
+    shRow->addWidget(new QLabel(QStringLiteral("总图判定(种类数>):")));
+    shRow->addWidget(m_sheetNoMaxSpin);
+    shRow->addStretch();
 
     // ---- 描红/填充可调参数：线宽粗细 / 填充透明度 / 填充外扩 ----
     auto* parRow = new QHBoxLayout();
@@ -228,10 +255,12 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     legendLay->addWidget(new QLabel(QStringLiteral(
         "● <b>图形标记形式</b>（可切换）：<b>semi</b> 半透明填充+深色描边（默认，底图仍可读）／"
         "<b>solid</b> 实心填充（标记最强）／<b>outline</b> 仅描边（最不遮挡）\n"
-        "● <b>红(实线轮廓)</b> = 新增图形　<b>红(虚线轮廓)</b> = 删除图形　<b>绿</b> = 变更：同序号但内容改动\n"
+        "● <b>红(实线)</b> = 新增图形　<b>红(虚线)</b> = 删除图形　<b>绿</b> = 变更（同位置形状改了）\n"
+        "● <b>页面配对</b>：先按【图号】（标题栏右下角的每页唯一号，如 408.101.P02）1:1 配对，"
+        "图号只在一侧的页直接判为新增/删除、<b>不参与比对</b>；无图号的页（封面/总图）用线画指纹兜底\n"
         "● <b>文字直接改色（不画圈）</b>：<font color=\"#FF0000\">新增文字 = 红色</font>（覆盖在原黑色文字上，改原字色），"
         "<font color=\"#0000FF\">删除文字 = 蓝色</font>（插入到原文本框，git - 行）；变更则红(新,改原字色)+蓝(旧,按方向插入)\n"
-        "标记色/描边色/线宽/透明度/外扩/标记形式/变更旧字方向均可自定，色号直接传给内核。")));
+        "标记色/描边色/线宽/透明度/外扩/标记形式/检测方法/容差/报告粒度/文字框粒度均可自定，色号直接传给内核。")));
     legendLay->setSpacing(2);
 
     // ---- 管线号↔材料表一一对应结果 ----
@@ -255,6 +284,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     ctrlLay->addLayout(vecRow);
     ctrlLay->addLayout(repRow);
     ctrlLay->addLayout(txtRow);
+    ctrlLay->addLayout(shRow);
     ctrlLay->addLayout(parRow);
     ctrlLay->addLayout(btnRow);
     ctrlLay->addWidget(m_status);
@@ -449,9 +479,14 @@ void DiffPage::onRun()
     opt[QStringLiteral("reportMode")] = m_reportModeCombo->currentData().toString();
     opt[QStringLiteral("clusterRadiusPt")] = m_clusterRadiusSpin->value();
     opt[QStringLiteral("minClusterLengthPt")] = m_minClusterLenSpin->value();
+    opt[QStringLiteral("changeRadiusPt")] = m_changeRadiusSpin->value();
     // ---- 文字差异参数 ----
     opt[QStringLiteral("textBoxMode")] = m_textBoxModeCombo->currentData().toString();
     opt[QStringLiteral("textSerialMatchMode")] = m_textSerialCombo->currentData().toString();
+    // ---- 图号配对参数 ----
+    opt[QStringLiteral("sheetNoRegionX")] = m_sheetNoXSpin->value();
+    opt[QStringLiteral("sheetNoRegionY")] = m_sheetNoYSpin->value();
+    opt[QStringLiteral("sheetNoMaxDistinct")] = m_sheetNoMaxSpin->value();
     // 变更旧(蓝)文字插入方向（down/up/right/left），蓝字按方向插入到"新(红)"文字文本框附近。
     if (m_textDirCombo)
         opt[QStringLiteral("textInsertDirection")] = m_textDirCombo->currentData().toString();
