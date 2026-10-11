@@ -159,7 +159,9 @@ void PdfCanvas::paint(QPainter& g, const QRect& widgetRect)
     }
 
     // 内核返回的词盒：绿色=矢量文本，橙色=OCR 补位。
+    // 只画属于当前页的（叠加层现在收录所有页，供连续视图按页绘制）。
     for (const WordBox& w : m_words) {
+        if (w.page != m_page) continue;
         const QRectF px = ptToPx(w.rectPt);
         g.setPen(QPen(w.source == QLatin1String("ocr") ? QColor(230, 120, 0)
                                                        : QColor(20, 150, 80), 1));

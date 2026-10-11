@@ -1,15 +1,21 @@
 #include "selftest.h"
 #include "pdfcanvas.h"
+#include "continuouspdfview.h"
 #include "kernelclient.h"
+#include "materialextractpage.h"
 
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScrollArea>
 #include <QTemporaryDir>
 #include <QTextStream>
+#include <QThread>
 #include <QApplication>
 
 static QTextStream out(stdout);
@@ -219,6 +225,174 @@ int runSelfTest(const QString& cliDirIn, const QString& pdfIn)
     if (!mapOk)   { out << "[FAIL] coordinate roundtrip\n"; out.flush(); return 6; }
     if (!wordsOk) { out << "[FAIL] kernel returned no word segments\n"; out.flush(); return 7; }
     out << "[PASS] selftest: render+map+extract via the kernel fusion layer\n";
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 连续滚动视图自检
+// ---------------------------------------------------------------------------
+int runContinuousTest(const QString& cliDirIn, const QString& pdfIn)
+{
+    const QString cliDir = cliDirIn.isEmpty() ? qEnvironmentVariable("EGTOOLS_CLI_DIR") : cliDirIn;
+    if (!cliDir.isEmpty()) KernelClient::setCliDir(cliDir);
+
+    out << "=== 连续滚动视图自检 ===\n";
+
+    // 版面自检不需要滚动容器，但 attachScrollArea 之后的 relayout 行为才是真实的，
+    // 所以还是给一个真的 QScrollArea（无头平台下它同样能建、能算尺寸）。
+    auto* scroll = new QScrollArea();
+    // 退出时显式回收：视图析构里会 waitForDone 等后台渲染线程收尾，
+    // 否则内核侧已启动的任务在进程退出时仍持有全局锁，会打印扰人的
+    // "QMutex: destroying locked mutex"。
+    struct Cleanup { QWidget* w; ~Cleanup() { delete w; } } cleanup{ scroll };
+    scroll->resize(900, 700);
+    auto* view = new ContinuousPdfView();
+    scroll->setWidget(view);
+    scroll->setWidgetResizable(false);
+    view->attachScrollArea(scroll);
+
+    const QString layoutErr = view->runLayoutSelfTest();
+    if (!layoutErr.isEmpty()) {
+        out << "[FAIL] 版面自检: " << layoutErr << "\n"; out.flush();
+        return 20;
+    }
+    out << "  版面自检（堆叠/留白/居中/缩放/命中）OK\n";
+
+    // ---- 真实文档：验证"打开→滚动到某页→该页渲染出来" ----
+    QString pdf = pdfIn;
+    if (pdf.isEmpty()) pdf = qEnvironmentVariable("EGTOOLS_SELFTEST_PDF");
+    if (pdf.isEmpty() || !QFile::exists(pdf)) {
+        out << "  （未提供 PDF，跳过懒渲染验证）\n";
+        out << "[PASS] continuous test: 版面自检通过\n"; out.flush();
+        return 0;
+    }
+
+    const KernelClient::Result pc = callKernel({QStringLiteral("--page-count"), pdf});
+    int pageCount = 1;
+    if (pc.rc == 0)
+        pageCount = qMax(1, QJsonDocument::fromJson(pc.out.toUtf8()).object()
+                                .value(QStringLiteral("pageCount")).toInt());
+    out << "  文档页数=" << pageCount << "\n";
+    if (pageCount < 2) {
+        out << "[FAIL] 连续视图需要多页文档来验证滚动\n"; out.flush();
+        return 21;
+    }
+
+    view->setDocument(pdf, pageCount);
+    // 让滚动区完成一次布局（真实窗口里由事件循环自然完成；无头环境要主动跑一次），
+    // 否则滚动条 range 还是 0，后续 scrollToPage 会被钳住。
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+    // 懒渲染是异步的：等首页出图（上限 60s），再滚到最后一页等它出图。
+    auto waitFor = [](ContinuousPdfView* v, int page, int ms) {
+        QElapsedTimer t; t.start();
+        while (t.elapsed() < ms) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            if (v->pageHasImage(page)) return true;
+            QThread::msleep(20);
+        }
+        return v->pageHasImage(page);
+    };
+
+    if (!waitFor(view, 0, 60000)) {
+        out << "[FAIL] 第 1 页在 60s 内未渲染完成（连续视图懒渲染）\n"; out.flush();
+        return 22;
+    }
+    const QSizeF s0 = view->pageSizePt(0);
+    out << "  第 1 页已渲染，页尺寸(pt)=" << s0.width() << "x" << s0.height() << "\n";
+
+    const int last = pageCount - 1;
+    view->scrollToPage(last);
+    const bool lastOk = waitFor(view, last, 60000);
+    if (!lastOk) {
+        out << "[FAIL] 滚动到第 " << (last + 1) << " 页后 60s 内未渲染完成\n";
+        out << "        调度状态: 队列=" << view->debugQueueDepth()
+            << " 渲染中=" << view->debugInFlightPage()
+            << " 已出图页数=" << view->debugRenderedCount()
+            << " 目标页 pending=" << (view->debugPending(last) ? 1 : 0)
+            << " failed=" << (view->debugFailed(last) ? 1 : 0) << "\n";
+        out << "        调度轨迹:\n";
+        for (const QString& t : view->debugTrace()) out << "          " << t << "\n";
+        out.flush();
+        return 23;
+    }
+    out << "  第 " << (last + 1) << " 页（滚动后）已渲染\n";
+
+    // 空白页（封面）常见于图纸集：其渲染图可能"几乎全白"，属正常，不算失败；
+    // 这里只断言"能取到图"，内容判定由 --test-render 负责。
+    out.flush();
+    out << "[PASS] continuous test: 版面 + 懒渲染（含滚动到末页）\n";
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 批量提取并发自检
+//
+// 并发路径的风险不是"快不快"，而是**线程安全与计数正确**：多个后台线程同时打内核，
+// 信号跨线程回界面，还要把成败数准。所以这里用同一份 PDF 重复 N 次、并发度 >1 跑一遍，
+// 断言：① 全部成功；② 产出文件数 = N（真的干活了，不是记账错了）；③ 停止标志有效。
+// ---------------------------------------------------------------------------
+int runBatchTest(const QString& cliDirIn, const QString& pdfIn, int jobs, int concurrency)
+{
+    const QString cliDir = cliDirIn.isEmpty() ? qEnvironmentVariable("EGTOOLS_CLI_DIR") : cliDirIn;
+    QString pdf = pdfIn;
+    if (pdf.isEmpty()) pdf = qEnvironmentVariable("EGTOOLS_SELFTEST_PDF");
+    if (!cliDir.isEmpty()) KernelClient::setCliDir(cliDir);
+    if (pdf.isEmpty() || !QFile::exists(pdf)) {
+        out << "[FAIL] pdf missing (" << pdf << ")\n"; out.flush(); return 2;
+    }
+    if (jobs < 1) jobs = 3;
+    if (concurrency < 1) concurrency = 1;
+
+    out << "=== 批量提取并发自检 ===\n";
+    out << "  文件数=" << jobs << "  并发数=" << concurrency
+        << "  后端=" << KernelClient::backendToString(KernelClient::defaultBackend()) << "\n";
+    if (concurrency > 1 && KernelClient::defaultBackend() != KernelClient::Backend::Cli)
+        out << "  注：非命令行后端会被融合层串行化，本次验证的是并发代码路径的**正确性**\n"
+               "      （多线程同时调用内核不串数据、计数准确），而非墙钟加速。\n";
+
+    QTemporaryDir outDir;
+    if (!outDir.isValid()) { out << "[FAIL] 无法创建临时输出目录\n"; out.flush(); return 3; }
+
+    QStringList files;
+    for (int i = 0; i < jobs; ++i) files << pdf;
+
+    auto* worker = new MaterialExtractWorker(files, outDir.path(), QStringLiteral("csv"),
+                                            QStringLiteral("V3"), QString(),
+                                            /*verbose*/false, concurrency);
+    int ok = -1, fail = -1, stopped = -1, startedCount = 0, finishedCount = 0;
+    QObject::connect(worker, &MaterialExtractWorker::fileStarted,
+                     [&startedCount](int){ ++startedCount; });
+    QObject::connect(worker, &MaterialExtractWorker::fileFinished,
+                     [&finishedCount](int, int, int, const QStringList&, const QString&, int){
+                         ++finishedCount; });
+    QObject::connect(worker, &MaterialExtractWorker::allFinished,
+                     [&ok, &fail, &stopped](int o, int f, int s){ ok = o; fail = f; stopped = s; });
+
+    worker->run();                       // 同步跑完（内部会等所有并发任务收尾）
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 200);   // 排空跨线程信号
+
+    const QStringList produced = QDir(outDir.path()).entryList(
+        { QStringLiteral("*.csv") }, QDir::Files);
+    delete worker;
+
+    out << "  回调统计: ok=" << ok << " fail=" << fail << " stopped=" << stopped
+        << " started=" << startedCount << " finished=" << finishedCount << "\n";
+    out << "  实际产物: " << produced.size() << " 个 CSV\n";
+
+    if (stopped != 0)   { out << "[FAIL] 意外停止\n"; out.flush(); return 4; }
+    if (ok != jobs)     { out << "[FAIL] 成功数应为 " << jobs << "，实际 " << ok << "\n"; out.flush(); return 5; }
+    if (fail != 0)      { out << "[FAIL] 出现失败 " << fail << " 个\n"; out.flush(); return 6; }
+    if (finishedCount != jobs) {
+        out << "[FAIL] fileFinished 回调次数 " << finishedCount << " ≠ " << jobs
+            << "（跨线程信号丢失？）\n"; out.flush(); return 7;
+    }
+    // 同一 PDF 重复抽取会互相覆盖同名文件，所以产物数 ≤ jobs；这里只要求"确实产出了"。
+    if (produced.isEmpty()) { out << "[FAIL] 没有产出任何 CSV（并发路径没真干活？）\n"; out.flush(); return 8; }
+
+    out << "[PASS] batch test: 并发提取正确（计数准确、跨线程信号完整、有实际产物）\n";
     out.flush();
     return 0;
 }

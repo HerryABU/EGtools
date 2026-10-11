@@ -8,6 +8,7 @@
 #include <QString>
 #include <QVector>
 
+#include "iregioncanvas.h"
 #include "types.h"
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@
 //   widgetPx = imagePx * zoom           （zoom 是界面缩放，默认 1.0）
 //   ⇒ pt = widgetPx / (renderScale * zoom)
 // ---------------------------------------------------------------------------
-class PdfCanvas : public QObject
+class PdfCanvas : public QObject, public IRegionCanvas
 {
     Q_OBJECT
 public:
@@ -44,24 +45,26 @@ public:
     void clearRenderFailed() { m_renderFailed = false; m_failReason.clear(); }
 
     // ---- 语义 / 框选 ----
-    void setKind(const QString& kind) { m_kind = kind; }
-    QString kind() const { return m_kind; }
-    void addRegion(const Region& r) { m_regions.push_back(r); emit repaintNeeded(); }
-    void clearRegions() { m_regions.clear(); m_words.clear(); emit repaintNeeded(); }
-    QVector<Region> regions() const { return m_regions; }
+    void setKind(const QString& kind) override { m_kind = kind; }
+    QString kind() const override { return m_kind; }
+    void addRegion(const Region& r) override { m_regions.push_back(r); emit repaintNeeded(); }
+    void clearRegions() override { m_regions.clear(); m_words.clear(); emit repaintNeeded(); }
+    QVector<Region> regions() const override { return m_regions; }
+    // 跳页 = 单页视图里切换当前显示页（连续视图则由滚动实现）。
+    void showPage(int page) override { setPageIndex(page); }
 
-    void setWordBoxes(const QVector<WordBox>& w) { m_words = w; emit repaintNeeded(); }
-    void clearWordBoxes() { m_words.clear(); emit repaintNeeded(); }
+    void setWordBoxes(const QVector<WordBox>& w) override { m_words = w; emit repaintNeeded(); }
+    void clearWordBoxes() override { m_words.clear(); emit repaintNeeded(); }
     void setPageWords(const QVector<WordBox>& w);
     QVector<WordBox> pageWords() const { return m_pageWords; }
 
     // ---- 缩放（GPU 路径下平滑缩放几乎零成本，光栅路径用平滑变换仍可用）----
-    double zoom() const { return m_zoom; }
-    void setZoom(double z);
-    void zoomIn()  { setZoom(m_zoom * 1.25); }
-    void zoomOut() { setZoom(m_zoom / 1.25); }
+    double zoom() const override { return m_zoom; }
+    void setZoom(double z) override;
+    void zoomIn() override  { setZoom(m_zoom * 1.25); }
+    void zoomOut() override { setZoom(m_zoom / 1.25); }
     // 自适应宽度：把整页缩放到给定视口宽度（用于"适合宽度"按钮）。
-    void fitToWidth(int viewportWidthPx);
+    void fitToWidth(int viewportWidthPx) override;
     // 画布应有尺寸（供宿主控件 setFixedSize）。
     QSize canvasSize() const;
 

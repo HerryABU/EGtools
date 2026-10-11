@@ -24,4 +24,6 @@ struct WordBox
     // (recovered by OCR for image-only regions). Empty if the kernel did not
     // report it (older responses / vector-only paths).
     QString source;
+    // 所属页（0 基）。单页视图里恒为当前页；连续滚动视图靠它把词盒画到正确的页上。
+    int page = 0;
 };

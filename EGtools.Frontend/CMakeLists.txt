@@ -17,6 +17,11 @@ add_executable(EGtoolsFrontend
     src/pdfview.cpp
     src/pdfcanvas.h
     src/pdfcanvas.cpp
+    src/pagerender.h
+    src/pagerender.cpp
+    src/iregioncanvas.h
+    src/continuouspdfview.h
+    src/continuouspdfview.cpp
     src/clirunner.h
     src/clirunner.cpp
     src/kernelclient.h

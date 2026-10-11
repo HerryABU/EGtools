@@ -13,6 +13,7 @@ class QLineEdit;
 class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
+class QSpinBox;
 class QTableWidget;
 class QThread;
 
@@ -33,28 +34,35 @@ class MaterialExtractWorker : public QObject
 public:
     MaterialExtractWorker(const QStringList& files, const QString& outDir,
                           const QString& format, const QString& tag,
-                          const QString& backend, bool verbose,
+                          const QString& backend, bool verbose, int concurrency,
                           QObject* parent = nullptr);
 
-    // 线程安全：置停止标志。当前文件跑完后再退出（内核调用本身不可中断）。
+    // 线程安全：置停止标志。已启动的文件会跑完（内核调用不可中断），未启动的不再开始。
     void requestStop() { m_stop.storeRelaxed(1); }
 
 signals:
     void fileStarted(int index);
-    void fileFinished(int index, int rc, int rows, const QStringList& outputs, const QString& logText);
+    void fileFinished(int index, int rc, int rows, const QStringList& outputs,
+                      const QString& logText, int elapsedMs);
     void allFinished(int okCount, int failCount, int stopped);
 
 public slots:
     void run();
 
 private:
+    // 单个文件的处理（可被多个线程并发调用；KernelClient/CLI 都是线程安全的）。
+    void processOne(int index);
+
     QStringList m_files;
     QString     m_outDir;
     QString     m_format;
     QString     m_tag;
     QString     m_backend;
     bool        m_verbose = true;
+    int         m_concurrency = 1;
     QAtomicInt  m_stop{0};
+    QAtomicInt  m_okCount{0};      // 成功数（多线程累加）
+    QAtomicInt  m_failCount{0};    // 失败数
 };
 
 // ---------------------------------------------------------------------------
@@ -73,7 +81,8 @@ public:
 
     void setCliDir(const QString& dir);
     // 内核调用方式（auto / embedded / cli），由 MainWindow 下发。
-    void setKernelBackend(const QString& mode) { m_kernelBackend = mode; }
+    // 并发能否真正生效取决于它：cli 可并行，embedded 会被融合层串行化。
+    void setKernelBackend(const QString& mode) { m_kernelBackend = mode; setCliDir(m_cliDir); }
 
     // 外部批量导入入口（例如首页直接带入文件）。
     void addFiles(const QStringList& paths);
@@ -95,7 +104,8 @@ private slots:
     void onStop();
     void onOpenOutputDir();
     void onFileStarted(int index);
-    void onFileFinished(int index, int rc, int rows, const QStringList& outputs, const QString& logText);
+    void onFileFinished(int index, int rc, int rows, const QStringList& outputs,
+                        const QString& logText, int elapsedMs);
     void onAllFinished(int okCount, int failCount, int stopped);
 
 private:
@@ -122,6 +132,8 @@ private:
     QComboBox*      m_fmtCombo  = nullptr;
     QLineEdit*      m_tagEdit   = nullptr;
     QCheckBox*      m_verboseCb = nullptr;
+    QSpinBox*       m_concSpin  = nullptr;   // 并发数（多文件并行处理）
+    QLabel*         m_concHint  = nullptr;   // 并发能力提示（内嵌后端会串行）
     QPushButton*    m_startBtn  = nullptr;
     QPushButton*    m_stopBtn   = nullptr;
     QPushButton*    m_openBtn   = nullptr;

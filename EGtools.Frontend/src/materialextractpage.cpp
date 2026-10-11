@@ -7,6 +7,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
@@ -22,11 +23,15 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QThread>
+#include <QThreadPool>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrentRun>
+#include <QFutureSynchronizer>
 
 namespace {
 
@@ -91,44 +96,78 @@ void parseExtractLog(const QString& logText, int* rows, QStringList* outputs)
 // ===========================================================================
 MaterialExtractWorker::MaterialExtractWorker(const QStringList& files, const QString& outDir,
                                              const QString& format, const QString& tag,
-                                             const QString& backend, bool verbose, QObject* parent)
+                                             const QString& backend, bool verbose, int concurrency,
+                                             QObject* parent)
     : QObject(parent), m_files(files), m_outDir(outDir), m_format(format),
-      m_tag(tag), m_backend(backend), m_verbose(verbose)
+      m_tag(tag), m_backend(backend), m_verbose(verbose),
+      m_concurrency(concurrency < 1 ? 1 : concurrency)
 {
+}
+
+// 处理单个文件（可在多个线程里并发执行 —— KernelClient 与 CliRunner 都是线程安全的：
+// 内嵌后端由融合层内部全局串行化，命令行后端每次调用都是独立 QProcess）。
+void MaterialExtractWorker::processOne(int index)
+{
+    if (index < 0 || index >= m_files.size()) return;
+    emit fileStarted(index);
+
+    QElapsedTimer timer;
+    timer.start();
+
+    QStringList args{ m_files.at(index) };
+    if (!m_outDir.isEmpty()) args << QStringLiteral("-o") << m_outDir;
+    if (!m_format.isEmpty()) args << QStringLiteral("-f") << m_format;
+    if (!m_tag.isEmpty())    args << QStringLiteral("--tag") << m_tag;
+    if (m_verbose)           args << QStringLiteral("-v");
+
+    // 融合层：按用户选择的调用方式（内嵌调库 / 命令行），两者吃同一份内核。
+    const KernelClient::Result r = KernelClient::run(
+        QStringLiteral("EGpdf2excel"), args, QString(),
+        KernelClient::backendFromString(m_backend));
+
+    int rows = 0;
+    QStringList outputs;
+    // 内嵌后端把内核日志放在 err；命令行后端 stderr 同样落在 err。两条路一致。
+    const QString logText = r.err.trimmed().isEmpty() ? r.out : r.err;
+    parseExtractLog(logText, &rows, &outputs);
+
+    if (r.rc == 0) m_okCount.fetchAndAddRelaxed(1);
+    else           m_failCount.fetchAndAddRelaxed(1);
+
+    emit fileFinished(index, r.rc, rows, outputs, logText, static_cast<int>(timer.elapsed()));
 }
 
 void MaterialExtractWorker::run()
 {
-    int ok = 0, fail = 0;
-    for (int i = 0; i < m_files.size(); ++i) {
-        if (m_stop.loadRelaxed()) {
-            emit allFinished(ok, fail, 1);
-            return;
+    // ---- 串行（并发数 = 1）：逐个处理，进度严格递增（也是"最省内存"的档位）----
+    if (m_concurrency <= 1) {
+        for (int i = 0; i < m_files.size(); ++i) {
+            if (m_stop.loadRelaxed()) {
+                emit allFinished(m_okCount.loadRelaxed(), m_failCount.loadRelaxed(), 1);
+                return;
+            }
+            processOne(i);
         }
-
-        emit fileStarted(i);
-
-        QStringList args{ m_files.at(i) };
-        if (!m_outDir.isEmpty()) args << QStringLiteral("-o") << m_outDir;
-        if (!m_format.isEmpty()) args << QStringLiteral("-f") << m_format;
-        if (!m_tag.isEmpty())    args << QStringLiteral("--tag") << m_tag;
-        if (m_verbose)           args << QStringLiteral("-v");
-
-        // 融合层：按用户选择的调用方式（内嵌调库 / 命令行），两者吃同一份内核。
-        const KernelClient::Result r = KernelClient::run(
-            QStringLiteral("EGpdf2excel"), args, QString(),
-            KernelClient::backendFromString(m_backend));
-
-        int rows = 0;
-        QStringList outputs;
-        // 内嵌后端把内核日志放在 err；命令行后端 stderr 同样落在 err。两条路一致。
-        const QString logText = r.err.trimmed().isEmpty() ? r.out : r.err;
-        parseExtractLog(logText, &rows, &outputs);
-
-        if (r.rc == 0) ++ok; else ++fail;
-        emit fileFinished(i, r.rc, rows, outputs, logText);
+        emit allFinished(m_okCount.loadRelaxed(), m_failCount.loadRelaxed(), 0);
+        return;
     }
-    emit allFinished(ok, fail, 0);
+
+    // ---- 并发（并发数 > 1）：多文件同时处理 ----
+    // 每个文件的处理都是独立的（独立的 QProcess / 独立的内核调用），互不共享状态；
+    // 信号从工作线程发出，到界面是队列连接，界面更新依然安全、串行。
+    // 单个文件内部**不**并行（内核解析本身是单线程的），所以并行度 = 同时处理的文件数。
+    QThreadPool pool;
+    pool.setMaxThreadCount(m_concurrency);
+    {
+        QFutureSynchronizer<void> sync;
+        for (int i = 0; i < m_files.size(); ++i) {
+            if (m_stop.loadRelaxed()) break;
+            sync.addFuture(QtConcurrent::run(&pool, [this, i]{ processOne(i); }));
+        }
+        sync.waitForFinished();   // 等这一批全部收尾（含正在跑的，内核调用不可中断）
+    }
+    emit allFinished(m_okCount.loadRelaxed(), m_failCount.loadRelaxed(),
+                     m_stop.loadRelaxed() ? 1 : 0);
 }
 
 // ===========================================================================
@@ -170,7 +209,8 @@ MaterialExtractPage::MaterialExtractPage(QWidget* parent) : QWidget(parent)
     m_table->horizontalHeader()->setSectionResizeMode(ColFile, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColSize, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(ColStatus, QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(ColResult, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(ColResult, QHeaderView::Interactive);
+    m_table->setColumnWidth(ColResult, 320);
     m_table->setMinimumHeight(160);
 
     auto* inputBox = new QGroupBox(QStringLiteral("输入 PDF（批量：多选文件 / 整个文件夹 / 拖拽到此处）"));
@@ -210,11 +250,33 @@ MaterialExtractPage::MaterialExtractPage(QWidget* parent) : QWidget(parent)
     m_verboseCb = new QCheckBox(QStringLiteral("详细日志（逐页进度，便于排查）"));
     m_verboseCb->setChecked(true);
 
+    // 并发数：多文件并行处理。默认按 CPU 核数（上限 8）—— 再高收益有限，
+    // 却会让内存与磁盘 I/O 成为瓶颈（每个内核实例都要解析一个 PDF）。
+    m_concSpin = new QSpinBox();
+    const int hw = qMax(1, QThread::idealThreadCount());
+    m_concSpin->setRange(1, 16);
+    m_concSpin->setValue(qBound(1, qMin(hw, 8), 16));
+    m_concSpin->setToolTip(QStringLiteral(
+        "同时处理几个文件。1 = 逐个处理（进度严格递增、内存占用最低）。\n"
+        "并发只对「命令行」后端真正提速；「内嵌」后端的 .NET 运行时是进程级单例，\n"
+        "融合层会把它串行化，所以内嵌时并发数不起作用。"));
+    auto* concRow = new QHBoxLayout();
+    concRow->addWidget(new QLabel(QStringLiteral("并发数:")));
+    concRow->addWidget(m_concSpin);
+    concRow->addWidget(new QLabel(QStringLiteral("个文件同时处理")));
+    concRow->addStretch();
+
+    m_concHint = new QLabel();
+    m_concHint->setWordWrap(true);
+    m_concHint->setObjectName(QStringLiteral("mutedHint"));
+
     auto* optBox = new QGroupBox(QStringLiteral("输出与选项"));
     auto* optLay = new QVBoxLayout(optBox);
     optLay->addLayout(outRow);
     optLay->addWidget(m_sameDirCb);
     optLay->addLayout(fmtRow);
+    optLay->addLayout(concRow);
+    optLay->addWidget(m_concHint);
     optLay->addWidget(m_verboseCb);
     optLay->addStretch();
 
@@ -335,6 +397,15 @@ void MaterialExtractPage::setCliDir(const QString& dir)
         : QStringLiteral("未找到 EGpdf2excel 内核 — 请在顶部设置 CLI 目录"));
     m_backendLbl->setStyleSheet(have ? QStringLiteral("QLabel{color:#5a6472;}")
                                      : QStringLiteral("QLabel{color:#c0392b;}"));
+    // 并发能力提示：内嵌后端的 .NET 运行时是进程级单例，融合层会串行化调用，
+    // 所以并发数只对命令行后端真正提速 —— 这一点必须明说，否则用户会以为没生效。
+    if (m_concHint)
+        m_concHint->setText(m_kernelBackend == QLatin1String("cli")
+            ? QStringLiteral("当前后端：命令行 → 并发数生效（每个文件一个独立内核进程）。")
+            : QStringLiteral("当前后端：%1 → 多文件并发会被融合层串行化，"
+                             "并发数不起作用；如需真正并行请在顶部把「内核调用」切到「命令行」。")
+                  .arg(m_kernelBackend == QLatin1String("embedded") ? QStringLiteral("内嵌")
+                                                                    : QStringLiteral("自动(内嵌优先)")));
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +567,7 @@ void MaterialExtractPage::setRunning(bool running)
     m_tagEdit->setEnabled(!running);
     m_verboseCb->setEnabled(!running);
     m_sameDirCb->setEnabled(!running);
+    if (m_concSpin) m_concSpin->setEnabled(!running);
     if (!running) {
         const bool have = KernelClient::embeddedAvailable(QStringLiteral("EGpdf2excel"))
                           || QFileInfo::exists(KernelClient::findKernelFile(
@@ -536,17 +608,19 @@ void MaterialExtractPage::onStart()
     m_progress->setValue(0);
     m_log->clear();
     setRunning(true);
-    appendLog(QStringLiteral("开始批量提取：%1 个文件，输出目录：%2，格式：%3，后端：%4")
+    const int conc = m_concSpin ? m_concSpin->value() : 1;
+    appendLog(QStringLiteral("开始批量提取：%1 个文件，输出目录：%2，格式：%3，后端：%4，并发=%5")
                   .arg(files.size())
                   .arg(outDir.isEmpty() ? QStringLiteral("（与源文件同目录）") : outDir)
                   .arg(m_fmtCombo->currentData().toString())
-                  .arg(m_kernelBackend));
+                  .arg(m_kernelBackend)
+                  .arg(conc));
     emit statusMessage(QStringLiteral("开始批量提取 %1 个 PDF…").arg(files.size()));
 
     m_thread = new QThread(this);
     m_worker = new MaterialExtractWorker(files, outDir, m_fmtCombo->currentData().toString(),
                                          m_tagEdit->text().trimmed(), m_kernelBackend,
-                                         m_verboseCb->isChecked());
+                                         m_verboseCb->isChecked(), conc);
     m_worker->moveToThread(m_thread);
 
     connect(m_thread, &QThread::started,  m_worker, &MaterialExtractWorker::run);
@@ -577,16 +651,18 @@ void MaterialExtractPage::onFileStarted(int index)
 }
 
 void MaterialExtractPage::onFileFinished(int index, int rc, int rows,
-                                         const QStringList& outputs, const QString& logText)
+                                         const QStringList& outputs, const QString& logText,
+                                         int elapsedMs)
 {
     if (index >= 0 && index < m_table->rowCount()) {
         if (rc == 0) {
             m_table->item(index, ColStatus)->setText(QStringLiteral("完成"));
-            QString res = QStringLiteral("%1 行").arg(rows);
+            QString res = QStringLiteral("%1 行 · %2s").arg(rows).arg(elapsedMs / 1000.0, 0, 'f', 1);
             if (!outputs.isEmpty()) res += QStringLiteral(" → ") + outputs.join(QStringLiteral(" / "));
             m_table->item(index, ColResult)->setText(res);
         } else {
-            m_table->item(index, ColStatus)->setText(QStringLiteral("失败 (rc=%1)").arg(rc));
+            m_table->item(index, ColStatus)->setText(
+                QStringLiteral("失败 (rc=%1, %2s)").arg(rc).arg(elapsedMs / 1000.0, 0, 'f', 1));
             // 失败时把最后一条有信息量的日志塞进结果列，便于一眼看出原因。
             const QStringList lines = logText.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
             m_table->item(index, ColResult)->setText(lines.isEmpty() ? QString()

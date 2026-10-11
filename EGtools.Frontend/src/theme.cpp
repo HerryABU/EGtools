@@ -150,21 +150,33 @@ QSplitter::handle:hover { background: %(accent)s; }
 QToolTip { background: %(panelBg)s; color: %(text)s; border: 1px solid %(border)s; padding: 4px; }
 
 QScrollArea { border: none; }
+
+/* ---- 工作区专用（按 objectName 生效，随主题自动变色）----
+   注意：凡是被这两个主题覆盖的控件，都不要再在代码里 setStyleSheet 写死颜色，
+   否则切换主题时会"花脸"（这是之前浅色/深色切换不彻底的原因）。 */
+QWidget#cmdBar { background: %(panelBg)s; border: 1px solid %(border)s; border-radius: 6px; }
+QLabel#cmdGroup { color: %(textMuted)s; }
+QFrame#cmdSep { background: %(border)s; border: none; }
+QLabel#recogBar { background: %(headerBg)s; border: 1px solid %(warning)s;
+                  border-radius: 4px; padding: 4px 8px; color: %(text)s; }
+QLabel#sectionTitle { color: %(accent)s; font-weight: 600; }
+QLabel#mutedHint { color: %(textMuted)s; }
+QLabel#pageBadge { color: %(text)s; font-weight: 600; }
 )")
-        .replace(QStringLiteral("%(text)"), QLatin1String(p.text))
-        .replace(QStringLiteral("%(windowBg)"), QLatin1String(p.windowBg))
-        .replace(QStringLiteral("%(panelBg)"), QLatin1String(p.panelBg))
-        .replace(QStringLiteral("%(canvasBg)"), QLatin1String(p.canvasBg))
-        .replace(QStringLiteral("%(textMuted)"), QLatin1String(p.textMuted))
-        .replace(QStringLiteral("%(accent)"), QLatin1String(p.accent))
-        .replace(QStringLiteral("%(accentHover)"), QLatin1String(p.accentHover))
-        .replace(QStringLiteral("%(border)"), QLatin1String(p.border))
-        .replace(QStringLiteral("%(success)"), QLatin1String(p.success))
-        .replace(QStringLiteral("%(danger)"), QLatin1String(p.danger))
-        .replace(QStringLiteral("%(warning)"), QLatin1String(p.warning))
-        .replace(QStringLiteral("%(inputBg)"), QLatin1String(p.inputBg))
-        .replace(QStringLiteral("%(headerBg)"), QLatin1String(p.headerBg))
-        .replace(QStringLiteral("%(selBg)"), QLatin1String(p.selBg))
+        .replace(QStringLiteral("%(text)s"), QLatin1String(p.text))
+        .replace(QStringLiteral("%(windowBg)s"), QLatin1String(p.windowBg))
+        .replace(QStringLiteral("%(panelBg)s"), QLatin1String(p.panelBg))
+        .replace(QStringLiteral("%(canvasBg)s"), QLatin1String(p.canvasBg))
+        .replace(QStringLiteral("%(textMuted)s"), QLatin1String(p.textMuted))
+        .replace(QStringLiteral("%(accent)s"), QLatin1String(p.accent))
+        .replace(QStringLiteral("%(accentHover)s"), QLatin1String(p.accentHover))
+        .replace(QStringLiteral("%(border)s"), QLatin1String(p.border))
+        .replace(QStringLiteral("%(success)s"), QLatin1String(p.success))
+        .replace(QStringLiteral("%(danger)s"), QLatin1String(p.danger))
+        .replace(QStringLiteral("%(warning)s"), QLatin1String(p.warning))
+        .replace(QStringLiteral("%(inputBg)s"), QLatin1String(p.inputBg))
+        .replace(QStringLiteral("%(headerBg)s"), QLatin1String(p.headerBg))
+        .replace(QStringLiteral("%(selBg)s"), QLatin1String(p.selBg))
         + (dark ? QStringLiteral("QWidget { background: %1; }").arg(QLatin1String(p.windowBg))
                 : QString());
 }

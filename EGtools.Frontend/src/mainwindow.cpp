@@ -10,6 +10,7 @@
 #include "excelcomparepage.h"
 #include "materialextractpage.h"
 #include "pagenavpanel.h"
+#include "continuouspdfview.h"
 #include "theme.h"
 #include "charsegmentpanel.h"
 
@@ -143,21 +144,46 @@ void MainWindow::buildUi()
     mOps->addSeparator();
     mOps->addAction(diffA);
 
-    // 视图菜单：缩放 + 主题（浅色/深色），都是全局观感开关。
+    // 视图菜单：视图模式 + 缩放 + 主题（都是全局观感开关）。
     auto* mView = menuBar()->addMenu(QStringLiteral("视图(&V)"));
     {
+        // ---- 视图模式：单页精看 / 连续滚动（Adobe 式）----
+        auto* viewGroup = new QActionGroup(this);
+        viewGroup->setExclusive(true);
+        auto* singleA = mView->addAction(QStringLiteral("单页视图(&S)"));
+        singleA->setCheckable(true);
+        singleA->setChecked(true);
+        singleA->setShortcut(QKeySequence(QStringLiteral("Ctrl+1")));
+        auto* contA = mView->addAction(QStringLiteral("连续滚动视图(&C)"));
+        contA->setCheckable(true);
+        contA->setShortcut(QKeySequence(QStringLiteral("Ctrl+2")));
+        viewGroup->addAction(singleA);
+        viewGroup->addAction(contA);
+        connect(singleA, &QAction::triggered, this, [this]{ setContinuousMode(false); });
+        connect(contA,   &QAction::triggered, this, [this]{ setContinuousMode(true);  });
+
+        mView->addSeparator();
         auto* zi = mView->addAction(QStringLiteral("放大"));
         zi->setShortcut(QKeySequence::ZoomIn);
-        connect(zi, &QAction::triggered, this, [this]{ m_view.canvas->zoomIn(); });
+        connect(zi, &QAction::triggered, this, [this]{ activeCanvas()->zoomIn(); });
         auto* zo = mView->addAction(QStringLiteral("缩小"));
         zo->setShortcut(QKeySequence::ZoomOut);
-        connect(zo, &QAction::triggered, this, [this]{ m_view.canvas->zoomOut(); });
+        connect(zo, &QAction::triggered, this, [this]{ activeCanvas()->zoomOut(); });
         auto* z1 = mView->addAction(QStringLiteral("实际大小 (100%)"));
-        connect(z1, &QAction::triggered, this, [this]{ m_view.canvas->setZoom(1.0); });
+        connect(z1, &QAction::triggered, this, [this]{ activeCanvas()->setZoom(1.0); });
         auto* zf = mView->addAction(QStringLiteral("适合宽度"));
         connect(zf, &QAction::triggered, this, [this]{
-            if (m_scroll) m_view.canvas->fitToWidth(m_scroll->viewport()->width());
+            QScrollArea* sa = activeScroll();
+            if (sa) activeCanvas()->fitToWidth(sa->viewport()->width());
         });
+        auto* zp = mView->addAction(QStringLiteral("适合页面"));
+        connect(zp, &QAction::triggered, this, [this]{
+            QScrollArea* sa = activeScroll();
+            if (!sa) return;
+            if (m_continuousMode) m_contView->fitToPageHeight(sa->viewport()->height());
+            else                  activeCanvas()->setZoom(1.0);
+        });
+
         mView->addSeparator();
         auto* themeGroup = new QActionGroup(this);
         themeGroup->setExclusive(true);
@@ -174,16 +200,14 @@ void MainWindow::buildUi()
             const Theme::Mode mode = t.mode;
             connect(a, &QAction::triggered, this, [this, mode]{
                 Theme::setCurrent(mode);
-                // 画布是自绘的，不跟着 QSS 走，需要主动重绘换底色。
-                if (m_view.widget) m_view.widget->update();
+                refreshTheme();          // 画布视口底色等 QSS 覆盖不到的地方
                 log(QStringLiteral("主题已切换为%1")
                         .arg(mode == Theme::Dark ? QStringLiteral("深色") : QStringLiteral("浅色")));
             });
         }
     }
 
-    auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
-    auto* manualA = mHelp->addAction(QStringLiteral("使用说明书(&M)"));
+    auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));    auto* manualA = mHelp->addAction(QStringLiteral("使用说明书(&M)"));
     manualA->setShortcut(QKeySequence::HelpContents); // F1
     connect(manualA, &QAction::triggered, this, &MainWindow::onManual);
     mHelp->addSeparator();
@@ -194,7 +218,7 @@ void MainWindow::buildUi()
     // 画布走工厂：探测到可用的硬件 OpenGL 就用 GPU 壳，否则用 CPU 光栅壳 —— GPU
     // 是"加分项"，探测失败绝不会变成黑屏。
     m_view = createPdfViewHost();
-    m_view.canvas->setKind(QStringLiteral("detail_table"));
+    activeCanvas()->setKind(QStringLiteral("detail_table"));
     connect(m_view.canvas, &PdfCanvas::regionSelected, this, &MainWindow::onRegionSelected);
     connect(m_view.canvas, &PdfCanvas::textPreview, this, &MainWindow::onTextPreview);
     connect(m_view.canvas, &PdfCanvas::zoomChanged, this, [this](double z){
@@ -207,6 +231,36 @@ void MainWindow::buildUi()
     scroll->setWidgetResizable(false);
     scroll->setAlignment(Qt::AlignCenter);
     scroll->viewport()->setStyleSheet(QStringLiteral("background:#3a3e44;"));
+
+    // 连续滚动视图（Adobe 式）：一屏多页 + 懒渲染 + 任意页框选。
+    m_contView = new ContinuousPdfView();
+    m_contView->setCliDir(m_cliDir);
+    m_contView->setKernelBackend(KernelClient::backendToString(KernelClient::defaultBackend()));
+    connect(m_contView, &ContinuousPdfView::regionSelected, this, &MainWindow::onRegionSelected);
+    connect(m_contView, &ContinuousPdfView::textPreview,    this, &MainWindow::onTextPreview);
+    connect(m_contView, &ContinuousPdfView::statusMessage,  this, &MainWindow::log);
+    connect(m_contView, &ContinuousPdfView::zoomChanged, this, [this](double z){
+        if (m_zoomLabel) m_zoomLabel->setText(QStringLiteral("缩放 %1%").arg(qRound(z * 100)));
+    });
+    connect(m_contView, &ContinuousPdfView::currentPageChanged, this, [this](int page){
+        if (page < 0) return;
+        m_pageIndex = page;
+        if (m_pageLabel) m_pageLabel->setText(QStringLiteral("%1 / %2").arg(page + 1).arg(m_pageCount));
+        if (m_pageNav) m_pageNav->setCurrentPage(page);
+    });
+
+    m_contScroll = new QScrollArea();
+    m_contScroll->setWidget(m_contView);
+    m_contScroll->setWidgetResizable(false);
+    m_contScroll->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+    m_contScroll->viewport()->setStyleSheet(QStringLiteral("background:#16191d;"));
+    m_contView->attachScrollArea(m_contScroll);
+
+    // 两种视图叠在同一个位置，靠 QStackedWidget 切换 —— 其余界面（缩放/框选/结果面板）
+    // 完全共用，所以"换视图"不影响任何既有功能。
+    m_viewStack = new QStackedWidget();
+    m_viewStack->addWidget(scroll);        // 0 = 单页精看
+    m_viewStack->addWidget(m_contScroll);  // 1 = 连续滚动
 
     m_modeCombo = new QComboBox();
     m_modeCombo->addItem(QStringLiteral("全域表 (global_table)"), QStringLiteral("global_table"));
@@ -224,59 +278,89 @@ void MainWindow::buildUi()
     zoomInBtn->setMaximumWidth(28);
     zoomOutBtn->setToolTip(QStringLiteral("缩小（也可 Ctrl+滚轮）"));
     zoomInBtn->setToolTip(QStringLiteral("放大（也可 Ctrl+滚轮）"));
-    connect(zoomOutBtn, &QPushButton::clicked, this, [this]{ m_view.canvas->zoomOut(); });
-    connect(zoomInBtn,  &QPushButton::clicked, this, [this]{ m_view.canvas->zoomIn(); });
-    connect(zoom1Btn,   &QPushButton::clicked, this, [this]{ m_view.canvas->setZoom(1.0); });
+    connect(zoomOutBtn, &QPushButton::clicked, this, [this]{ activeCanvas()->zoomOut(); });
+    connect(zoomInBtn,  &QPushButton::clicked, this, [this]{ activeCanvas()->zoomIn(); });
+    connect(zoom1Btn,   &QPushButton::clicked, this, [this]{ activeCanvas()->setZoom(1.0); });
     connect(zoomFitBtn, &QPushButton::clicked, this, [this]{
-        if (m_scroll) m_view.canvas->fitToWidth(m_scroll->viewport()->width());
+        QScrollArea* sa = activeScroll();
+        if (sa) activeCanvas()->fitToWidth(sa->viewport()->width());
     });
-    auto* topRow = new QHBoxLayout();
-    topRow->addWidget(new QLabel(QStringLiteral("框选模式:")));
+    // 连续视图里再给一个"适合页面"（整页可见），这是浏览图纸集最常用的档位。
+    auto* zoomPageBtn = new QPushButton(QStringLiteral("适合页面"));
+    connect(zoomPageBtn, &QPushButton::clicked, this, [this]{
+        if (!m_continuousMode) { activeCanvas()->setZoom(1.0); return; }
+        QScrollArea* sa = activeScroll();
+        if (sa) m_contView->fitToPageHeight(sa->viewport()->height());
+    });
+    // ---------------- 命令条（固定高度，控件不拉伸） ----------------
+    // 分组：[框选模式] | [缩放] | [页码]。所有按钮 Fixed 尺寸、下拉 Preferred，
+    // 中间放 stretch —— 这样无论窗口怎么拉，控件都不会被拉变形或挤成一团。
+    auto mkSep = []{
+        auto* f = new QFrame();
+        f->setObjectName(QStringLiteral("cmdSep"));   // 颜色交给主题 QSS
+        f->setFrameShape(QFrame::VLine);
+        f->setFixedWidth(1);
+        return f;
+    };
+    auto mkGroupLabel = [](const QString& t){
+        auto* l = new QLabel(t);
+        l->setObjectName(QStringLiteral("cmdGroup")); // 颜色交给主题 QSS
+        return l;
+    };
+    for (QPushButton* b : { zoomOutBtn, zoomInBtn, zoom1Btn, zoomFitBtn, zoomPageBtn })
+        b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    zoomOutBtn->setFixedWidth(30);
+    zoomInBtn->setFixedWidth(30);
+    m_modeCombo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_zoomLabel->setMinimumWidth(74);
+    m_pageLabel->setMinimumWidth(56);
+    m_pageLabel->setAlignment(Qt::AlignCenter);
+    m_pageLabel->setObjectName(QStringLiteral("pageBadge"));
+
+    auto* cmdBarWidget = new QWidget();
+    cmdBarWidget->setObjectName(QStringLiteral("cmdBar"));
+    auto* topRow = new QHBoxLayout(cmdBarWidget);
+    topRow->setContentsMargins(6, 4, 6, 4);
+    topRow->setSpacing(6);
+    topRow->addWidget(mkGroupLabel(QStringLiteral("框选模式")));
     topRow->addWidget(m_modeCombo);
-    topRow->addSpacing(10);
+    topRow->addSpacing(4);
+    topRow->addWidget(mkSep());
+    topRow->addSpacing(4);
+    topRow->addWidget(mkGroupLabel(QStringLiteral("缩放")));
     topRow->addWidget(zoomOutBtn);
     topRow->addWidget(zoomInBtn);
     topRow->addWidget(zoom1Btn);
     topRow->addWidget(zoomFitBtn);
+    topRow->addWidget(zoomPageBtn);
     topRow->addWidget(m_zoomLabel);
-    topRow->addStretch();
-    topRow->addWidget(new QLabel(QStringLiteral("页码:")));
+    topRow->addStretch(1);
+    topRow->addWidget(mkGroupLabel(QStringLiteral("页码")));
     topRow->addWidget(m_pageLabel);
 
     // 字符段（导出列集）面板：查看 / 编辑 / 恢复默认。
     m_charPanel = new CharSegmentPanel();
     connect(m_charPanel, &CharSegmentPanel::statusMessage, this, &MainWindow::log);
-    auto* charBox = new QGroupBox(QStringLiteral("字符段（导出列集）"));
-    auto* charLay = new QVBoxLayout(charBox);
-    charLay->addWidget(m_charPanel);
-    charBox->setMaximumHeight(230);
 
+    // ---------------- 左侧工作区：命令条 + 识别条 + 画布 ----------------
+    // 画布是主角：给 stretch=1 吃掉全部剩余高度；其余按内容定高。
+    // （旧版把「字符段」「OCR」两个固定高度面板也塞在这一列，画布被压扁，
+    //   窗口一拉长就"排版崩溃"——现在它们移到右侧标签页，画布不再被挤。）
     auto* leftPane = new QWidget();
     auto* leftLay = new QVBoxLayout(leftPane);
-    leftLay->setContentsMargins(4, 4, 4, 4);
-    leftLay->addLayout(topRow);
+    leftLay->setContentsMargins(6, 6, 4, 6);
+    leftLay->setSpacing(6);
+    leftLay->addWidget(cmdBarWidget);
+
     m_recogLabel = new QLabel(QStringLiteral("框选识别：在图上拖拽框选，松手前实时显示范围内文字"));
+    m_recogLabel->setObjectName(QStringLiteral("recogBar"));
     m_recogLabel->setWordWrap(true);
-    m_recogLabel->setStyleSheet(QStringLiteral("QLabel{background:#fff7e0;border:1px solid #e0c060;padding:3px 6px;border-radius:4px;color:#5a4500;}"));
     leftLay->addWidget(m_recogLabel);
 
-    // OCR enhancement toggle: when on, the kernel runs OCR alongside the vector
-    // layer and tags each word's provenance (green = vector, orange = OCR fill).
-    m_ocrAlwaysCb = new QCheckBox(QStringLiteral("OCR 增强：始终用 OCR 补位图像区（矢量优先）"));
-    m_ocrAlwaysCb->setToolTip(QStringLiteral("勾选后，内核在矢量文本之外额外运行 OCR，自动补回被栅格化为图像的文字（橙色标注）；矢量文字（绿色）始终优先。"));
-    connect(m_ocrAlwaysCb, &QCheckBox::toggled, this, &MainWindow::onOcrAlwaysToggled);
-    auto* ocrLegend = new QLabel(QStringLiteral("图例：<span style='color:#149650;'>■ 矢量文字</span>　<span style='color:#e67800;'>■ OCR 补位</span>"));
-    ocrLegend->setStyleSheet(QStringLiteral("QLabel{font-size:11px;color:#555;}"));
-    auto* ocrBox = new QGroupBox(QStringLiteral("OCR 增强"));
-    auto* ocrLay = new QVBoxLayout(ocrBox);
-    ocrLay->addWidget(m_ocrAlwaysCb);
-    ocrLay->addWidget(ocrLegend);
-    leftLay->addWidget(ocrBox);
-
-    leftLay->addWidget(scroll, 1);
-    leftLay->addWidget(charBox);
+    leftLay->addWidget(m_viewStack, 1);
 
     m_tabs = new QTabWidget();
+    m_tabs->setMinimumWidth(300);
     m_table = new QTableWidget();
     m_pipes = new QListWidget();
     m_jsonView = new QTextEdit();
@@ -288,6 +372,41 @@ void MainWindow::buildUi()
     m_tabs->addTab(m_pipes,  QStringLiteral("管线号"));
     m_tabs->addTab(m_jsonView, QStringLiteral("区域 JSON"));
     m_tabs->addTab(m_logView,  QStringLiteral("内核日志"));
+
+    // OCR 增强与「导出列集」放在右侧标签里：它们都是"设置/参考"性质，
+    // 不该占用画布的高度（旧版把画布压扁的根因）。
+    {
+        auto* ocrPage = new QWidget();
+        auto* ocrLay = new QVBoxLayout(ocrPage);
+        ocrLay->setContentsMargins(10, 10, 10, 10);
+        ocrLay->setSpacing(8);
+        m_ocrAlwaysCb = new QCheckBox(QStringLiteral("始终用 OCR 补位图像区（矢量优先）"));
+        m_ocrAlwaysCb->setToolTip(QStringLiteral(
+            "勾选后，内核在矢量文本之外额外运行 OCR，自动补回被栅格化为图像的文字；\n"
+            "矢量文字始终优先（不会被 OCR 覆盖）。"));
+        connect(m_ocrAlwaysCb, &QCheckBox::toggled, this, &MainWindow::onOcrAlwaysToggled);
+        auto* ocrLegend = new QLabel(QStringLiteral(
+            "图例：<span style='color:#149650;'>■ 矢量文字</span>　"
+            "<span style='color:#e67800;'>■ OCR 补位</span>"));
+        ocrLegend->setWordWrap(true);
+        ocrLegend->setStyleSheet(QStringLiteral("QLabel{color:%1;}").arg(Theme::color(Theme::TextMuted)));
+        auto* ocrHint = new QLabel(QStringLiteral(
+            "说明：等轴测图纸通常含可提取的矢量文字，OCR 只在文字被栅格化时才需要。\n"
+            "开启后会增加单页处理时间，但不会影响矢量结果的准确性。"));
+        ocrHint->setWordWrap(true);
+        ocrHint->setStyleSheet(QStringLiteral("QLabel{color:%1;}").arg(Theme::color(Theme::TextMuted)));
+        ocrLay->addWidget(m_ocrAlwaysCb);
+        ocrLay->addWidget(ocrLegend);
+        ocrLay->addWidget(ocrHint);
+        ocrLay->addStretch();
+        m_tabs->addTab(ocrPage, QStringLiteral("OCR 增强"));
+
+        auto* colPage = new QWidget();
+        auto* colLay = new QVBoxLayout(colPage);
+        colLay->setContentsMargins(0, 0, 0, 0);
+        colLay->addWidget(m_charPanel);
+        m_tabs->addTab(colPage, QStringLiteral("导出列集"));
+    }
 
     m_cliEdit = new QLineEdit(m_cliDir);
     m_cliEdit->setPlaceholderText(QStringLiteral("CLI 内核目录（含 EGpdf2excel.exe / EGpdf2df.exe）"));
@@ -325,7 +444,8 @@ void MainWindow::buildUi()
 
     auto* rightPane = new QWidget();
     auto* rightLay = new QVBoxLayout(rightPane);
-    rightLay->setContentsMargins(4, 4, 4, 4);
+    rightLay->setContentsMargins(4, 6, 6, 6);
+    rightLay->setSpacing(6);
     rightLay->addLayout(cliRow);
     rightLay->addWidget(m_tabs, 1);
 
@@ -429,6 +549,7 @@ void MainWindow::buildUi()
     connect(m_home, &HomePage::manualRequested,      this, &MainWindow::onManual);
     connect(m_home, &HomePage::aboutRequested,       this, &MainWindow::onAbout);
 
+    refreshTheme();      // 视口底色按当前主题初始化
     statusBar()->showMessage(QStringLiteral("就绪 — 从首页开始，或左侧选择功能"));
     refreshKernelStatus();
 }
@@ -507,6 +628,8 @@ void MainWindow::setCliDir(const QString& d)
     if (m_cliEdit) m_cliEdit->setText(d);
     KernelClient::setCliDir(d);          // 融合层也要知道内核目录
     if (m_materialPage) m_materialPage->setCliDir(d);
+    if (m_pageNav)      m_pageNav->setCliDir(d);
+    if (m_contView)     m_contView->setCliDir(d);
     refreshKernelStatus();
     log(QStringLiteral("CLI 目录 = %1").arg(d.isEmpty() ? QStringLiteral("<自动探测>") : d));
 }
@@ -529,6 +652,7 @@ void MainWindow::setKernelBackend(const QString& mode)
     if (m_excelPage) m_excelPage->setKernelBackend(KernelClient::backendToString(b));
     if (m_charPanel) m_charPanel->setKernelBackend(KernelClient::backendToString(b));
     if (m_materialPage) m_materialPage->setKernelBackend(KernelClient::backendToString(b));
+    if (m_contView)     m_contView->setKernelBackend(KernelClient::backendToString(b));
     log(QStringLiteral("内核调用方式 = %1（%2）")
             .arg(KernelClient::backendToString(b), KernelClient::describe()));
 }
@@ -659,7 +783,7 @@ bool MainWindow::openPdf(const QString& path)
     m_pdfPath = path;
     m_pageIndex = 0;
     m_cache = PageCache{};          // 换文档 ⇒ 预取缓存必须作废
-    m_view.canvas->clearRegions();
+    clearRegionsAll();
 
     // Page count: render page 0 to learn geometry, then probe via kernel render
     // loop is overkill; instead ask the kernel by rendering page 0 and reading
@@ -687,10 +811,13 @@ bool MainWindow::openPdf(const QString& path)
         log(QStringLiteral("页码探测失败，默认按 1 页处理: %1").arg(pcRes.err.trimmed()));
     }
 
+    // 单页视图用这一次渲染出图；连续视图只需要页尺寸信息（它会自己懒渲染）。
     m_view.canvas->setPage(img, scale, 0);
     m_view.canvas->setPageIndex(0);
     m_pwPt = pw; m_phPt = ph; m_scale = scale;
     loadPageWords(0);
+    // 连续视图：整本文档交给它，滚动到哪渲染哪。
+    if (m_contView) m_contView->setDocument(path, m_pageCount);
     m_pageLabel->setText(QStringLiteral("%1 / %2").arg(1).arg(m_pageCount));
     // 缩略图栏：一次性告知文档与页数，后台逐页补缩略图。
     if (m_pageNav) { m_pageNav->setDocument(path, m_pageCount); m_pageNav->setCurrentPage(0); }
@@ -699,10 +826,72 @@ bool MainWindow::openPdf(const QString& path)
     return true;
 }
 
+// ---------------------------------------------------------------- 视图分派
+//
+// 单页精看（PdfCanvas，GPU 或光栅壳）与连续滚动（ContinuousPdfView）都实现
+// IRegionCanvas，所以业务代码只调 activeCanvas()，切换视图不用改任何逻辑。
+
+IRegionCanvas* MainWindow::activeCanvas() const
+{
+    if (m_continuousMode && m_contView) return m_contView;
+    return m_view.canvas;
+}
+
+QScrollArea* MainWindow::activeScroll() const
+{
+    if (m_continuousMode && m_contScroll) return m_contScroll;
+    return m_scroll;
+}
+
+void MainWindow::setContinuousMode(bool continuous)
+{
+    if (m_continuousMode == continuous) return;
+    m_continuousMode = continuous;
+    if (m_viewStack) m_viewStack->setCurrentIndex(continuous ? 1 : 0);
+    refreshTheme();
+
+    // 已打开文档时，把"当前页"在两个视图之间搬过去，切换不丢位置。
+    if (!m_pdfPath.isEmpty()) {
+        if (continuous) {
+            if (m_contView && !m_contView->hasDocument())
+                m_contView->setDocument(m_pdfPath, m_pageCount);
+            if (m_contView) m_contView->scrollToPage(m_pageIndex);
+        } else {
+            onRenderPage();
+        }
+    }
+    // 缩放百分比标签与"适合页面"等按钮的语义随视图走，刷新一下显示。
+    const double z = activeCanvas() ? activeCanvas()->zoom() : 1.0;
+    if (m_zoomLabel) m_zoomLabel->setText(QStringLiteral("缩放 %1%").arg(qRound(z * 100)));
+    log(continuous ? QStringLiteral("已切换到「连续滚动视图」（一屏多页，滚动即按需渲染）")
+                   : QStringLiteral("已切换到「单页视图」"));
+}
+
+void MainWindow::refreshTheme()
+{
+    // 画布周围一圈底色是自绘/视口级样式，QSS 覆盖不到，只能显式刷。
+    const QString canvasBg = Theme::color(Theme::CanvasBg);
+    if (m_scroll)     m_scroll->viewport()->setStyleSheet(QStringLiteral("background:%1;").arg(canvasBg));
+    if (m_contScroll) m_contScroll->viewport()->setStyleSheet(QStringLiteral("background:%1;").arg(canvasBg));
+    if (m_view.widget) m_view.widget->update();
+    if (m_contView)    m_contView->update();
+}
+
+void MainWindow::addRegionAll(const Region& r)
+{
+    if (m_view.canvas) m_view.canvas->addRegion(r);
+    if (m_contView)    m_contView->addRegion(r);
+}
+
+void MainWindow::clearRegionsAll()
+{
+    if (m_view.canvas) m_view.canvas->clearRegions();
+    if (m_contView)    m_contView->clearRegions();
+}
+
 bool MainWindow::renderPage(int page, QImage& img, double& scale, double& pwPt, double& phPt)
 {
     if (m_pdfPath.isEmpty()) { log(QStringLiteral("未打开 PDF")); return false; }
-
     // 命中后台预取缓存 ⇒ 立即出图（翻页体感的关键）。
     if (m_cache.ok && m_cache.page == page) {
         img = m_cache.img;
@@ -751,6 +940,15 @@ void MainWindow::onWholePageExtract()
 void MainWindow::onRenderPage()
 {
     if (m_pdfPath.isEmpty()) return;
+
+    // 连续视图里"翻到某页"= 滚动到该页（它自己按可视区懒渲染），不需要预渲染单页图。
+    if (m_continuousMode) {
+        if (m_contView) m_contView->scrollToPage(m_pageIndex);
+        m_pageLabel->setText(QStringLiteral("%1 / %2").arg(m_pageIndex + 1).arg(m_pageCount));
+        if (m_pageNav) m_pageNav->setCurrentPage(m_pageIndex);
+        return;
+    }
+
     QImage img; double scale = 1, pw = 0, ph = 0;
     if (renderPage(m_pageIndex, img, scale, pw, ph)) {
         m_view.canvas->setPage(img, scale, m_pageIndex);
@@ -763,7 +961,9 @@ void MainWindow::onRenderPage()
         prefetchPage(m_pageIndex + 1);
     } else if (m_view.canvas) {
         // 渲染失败时把原因推到画布上，界面给出可读提示而不是一块深灰（"黑屏"）。
-        m_view.canvas->setRenderFailed(QStringLiteral("见「内核日志」页"));
+        // setRenderFailed 是单页画布专有的（连续视图自己画"渲染失败"占位），故动态转换。
+        if (auto* pc = dynamic_cast<PdfCanvas*>(m_view.canvas))
+            pc->setRenderFailed(QStringLiteral("见「内核日志」页"));
     }
 }
 
@@ -772,7 +972,7 @@ void MainWindow::onNextPage() { if (m_pageIndex + 1 < m_pageCount) { ++m_pageInd
 
 void MainWindow::onModeChanged(int)
 {
-    m_view.canvas->setKind(m_modeCombo->currentData().toString());
+    activeCanvas()->setKind(m_modeCombo->currentData().toString());
 }
 
 void MainWindow::onRegionSelected(int page, const QString& kind, const QRectF& rectPt)
@@ -799,7 +999,7 @@ void MainWindow::onRegionSelected(int page, const QString& kind, const QRectF& r
     }
 
     Region r; r.page = page; r.kind = kind; r.rectPt = rectPt;
-    m_view.canvas->addRegion(r);
+    addRegionAll(r);
     refreshJsonPreview();
     log(QStringLiteral("框选: 页%1 %2 [x=%3 y=%4 w=%5 h=%6]")
             .arg(page + 1).arg(kind).arg(rectPt.x(), 0, 'f', 1).arg(rectPt.y(), 0, 'f', 1)
@@ -808,7 +1008,7 @@ void MainWindow::onRegionSelected(int page, const QString& kind, const QRectF& r
 
 void MainWindow::onClearRegions()
 {
-    m_view.canvas->clearRegions();
+    clearRegionsAll();
     m_table->clear(); m_table->setRowCount(0); m_table->setColumnCount(0);
     m_pipes->clear();
     m_jsonView->clear();
@@ -859,6 +1059,7 @@ void MainWindow::loadPageWords(int page)
                            w.value(QStringLiteral("x1")).toDouble() - w.value(QStringLiteral("x0")).toDouble(),
                            w.value(QStringLiteral("y1")).toDouble() - w.value(QStringLiteral("y0")).toDouble());
         wb.text = w.value(QStringLiteral("text")).toString();
+        wb.page = page;
         words.append(wb);
     }
     m_view.canvas->setPageWords(words);
@@ -870,7 +1071,7 @@ void MainWindow::loadPageWords(int page)
 QJsonObject MainWindow::buildRequest() const
 {
     QJsonArray regions;
-    for (const Region& r : m_view.canvas->regions()) {
+    for (const Region& r : activeCanvas()->regions()) {
         QJsonObject bbox;
         bbox.insert(QStringLiteral("x"),      r.rectPt.x());
         bbox.insert(QStringLiteral("y"),      r.rectPt.y());
@@ -887,7 +1088,7 @@ QJsonObject MainWindow::buildRequest() const
     if (!m_pdfPath.isEmpty()) {
         QJsonArray pages;
         // Only the pages that actually carry a selection.
-        QSet<int> used; for (const Region& r : m_view.canvas->regions()) used.insert(r.page);
+        QSet<int> used; for (const Region& r : activeCanvas()->regions()) used.insert(r.page);
         QList<int> sorted(used.begin(), used.end()); std::sort(sorted.begin(), sorted.end());
         for (int p : sorted) pages.append(p);
         req.insert(QStringLiteral("pages"), pages);
@@ -910,7 +1111,7 @@ void MainWindow::refreshJsonPreview()
 
 void MainWindow::onExportJson()
 {
-    if (m_view.canvas->regions().isEmpty()) { log(QStringLiteral("没有框选可导出")); return; }
+    if (activeCanvas()->regions().isEmpty()) { log(QStringLiteral("没有框选可导出")); return; }
     QString p = QFileDialog::getSaveFileName(this, QStringLiteral("导出区域 JSON"),
                                              QStringLiteral("regions.json"),
                                              QStringLiteral("JSON (*.json)"));
@@ -926,7 +1127,7 @@ void MainWindow::onExportJson()
 
 void MainWindow::onExtract()
 {
-    if (m_view.canvas->regions().isEmpty()) { log(QStringLiteral("请先框选区域")); return; }
+    if (activeCanvas()->regions().isEmpty()) { log(QStringLiteral("请先框选区域")); return; }
     refreshJsonPreview();
 
     // 走融合层（可选内嵌调库 / 命令行）。JSON 契约直接交给内核，不落临时文件。
@@ -960,14 +1161,11 @@ void MainWindow::showRegionResponse(const QJsonObject& resp)
     QVector<WordBox> overlay;
 
     QJsonArray regions = resp.value(QStringLiteral("regions")).toArray();
-    // Build overlay of all word segments (in the current page's coordinate space).
+    // 叠加层收录**所有页**的词盒（每条带 page）：单页视图只画当前页，连续视图按页画。
+    // 表格/管线号等"结果面板"仍只取当前页，避免翻页时内容重复堆积。
     for (const QJsonValue& rv : regions) {
         QJsonObject r = rv.toObject();
         int page = r.value(QStringLiteral("page")).toInt();
-        if (page != m_pageIndex) continue;
-        if (r.value(QStringLiteral("ocrUsed")).toBool())
-            log(QStringLiteral("注意: 该区域使用了 OCR 兜底"));
-
         QJsonArray words = r.value(QStringLiteral("words")).toArray();
         for (const QJsonValue& wv : words) {
             QJsonObject w = wv.toObject();
@@ -977,8 +1175,12 @@ void MainWindow::showRegionResponse(const QJsonObject& resp)
                                w.value(QStringLiteral("y1")).toDouble() - w.value(QStringLiteral("y0")).toDouble());
             wb.text = w.value(QStringLiteral("text")).toString();
             wb.source = w.value(QStringLiteral("source")).toString();
+            wb.page = page;
             overlay.push_back(wb);
         }
+        if (page != m_pageIndex) continue;
+        if (r.value(QStringLiteral("ocrUsed")).toBool())
+            log(QStringLiteral("注意: 该区域使用了 OCR 兜底"));
 
         // Pipe numbers -> pipe tab.
         for (const QJsonValue& pv : r.value(QStringLiteral("pipeNumbers")).toArray())
@@ -1007,7 +1209,7 @@ void MainWindow::showRegionResponse(const QJsonObject& resp)
             log(QStringLiteral("材料表列：前 %1 列对应 %2%3").arg(cols).arg(hdr.mid(0, cols).join(QStringLiteral(" / "))).arg(present));
         }
     }
-    m_view.canvas->setWordBoxes(overlay);
+    activeCanvas()->setWordBoxes(overlay);
     log(QStringLiteral("提取完成：%1 个区域，字框叠加 %2 个").arg(regions.size()).arg(overlay.size()));
 }
 
@@ -1043,7 +1245,7 @@ QVector<RegionSpec> MainWindow::canvasRegions() const
 {
     QVector<RegionSpec> out;
     if (!m_view.canvas) return out;
-    for (const Region& r : m_view.canvas->regions()) {
+    for (const Region& r : activeCanvas()->regions()) {
         RegionSpec g;
         g.page = r.page;
         g.kind = r.kind;
@@ -1083,25 +1285,25 @@ void MainWindow::onReuseScheme(const QString& schemeId)
 void MainWindow::applySchemeToCanvas(const Scheme& s)
 {
     if (!m_view.canvas) return;
-    m_view.canvas->clearRegions();
+    clearRegionsAll();
     for (const RegionSpec& g : s.regions) {
         Region r;
         r.page = g.page;
         r.kind = g.kind;
         r.rectPt = QRectF(g.x, g.y, g.w, g.h);
-        m_view.canvas->addRegion(r);
+        addRegionAll(r);
     }
     // Jump to the first page that carries a box so the user sees them.
     if (!s.regions.isEmpty()) {
         m_pageIndex = s.regions.first().page;
         onRenderPage();
-        m_view.canvas->clearRegions();
+        clearRegionsAll();
         for (const RegionSpec& g : s.regions) {
             Region r;
             r.page = g.page;
             r.kind = g.kind;
             r.rectPt = QRectF(g.x, g.y, g.w, g.h);
-            m_view.canvas->addRegion(r);
+            addRegionAll(r);
         }
     }
     refreshJsonPreview();
@@ -1119,13 +1321,13 @@ void MainWindow::onRewriteRegion(const QString& schemeId, int regionIndex)
     m_pageIndex = s->regions[regionIndex].page;
     showPage(1);
     onRenderPage();
-    m_view.canvas->clearRegions();
+    clearRegionsAll();
     Region r;
     r.page = s->regions[regionIndex].page;
     r.kind = s->regions[regionIndex].kind;
     r.rectPt = QRectF(s->regions[regionIndex].x, s->regions[regionIndex].y,
                       s->regions[regionIndex].w, s->regions[regionIndex].h);
-    m_view.canvas->addRegion(r);
+    addRegionAll(r);
 
     log(QStringLiteral("重写模式：在画布上拖拽以重画该区域（完成后自动保存到方案「%1」）").arg(s->name));
     statusBar()->showMessage(QStringLiteral("重写模式 — 在画布上拖拽重画区域"));

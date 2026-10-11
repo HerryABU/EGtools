@@ -8,6 +8,7 @@
 #include <memory>
 #include "pdfview.h"
 #include "schemes.h"
+#include "types.h"
 
 class QComboBox;
 class QLabel;
@@ -30,6 +31,8 @@ class ExcelComparePage;
 class CharSegmentPanel;
 class MaterialExtractPage;
 class PageNavPanel;
+class ContinuousPdfView;
+class IRegionCanvas;
 
 // The Qt shell. It owns NO PDF processing logic: it displays pages rendered by
 // the CLI, captures rubber-band selections, exports the region JSON contract for
@@ -80,6 +83,18 @@ private:
     bool renderPage(int page, QImage& img, double& scale, double& pwPt, double& phPt);
     // 后台预取相邻页（并行/异步渲染），使用户翻页近乎瞬时。
     void prefetchPage(int page);
+    // 当前生效的画布（单页精看 或 连续滚动）—— 两者都实现 IRegionCanvas，
+    // 于是框选/语义/缩放/叠加层这些操作对视图类型无感。
+    IRegionCanvas* activeCanvas() const;
+    QScrollArea*   activeScroll() const;
+    // 切换视图模式：true = 连续滚动（Adobe 式），false = 单页精看。
+    void setContinuousMode(bool continuous);
+    // 主题切换后需要手动刷新的少数几处（画布视口底色等自绘/局部样式）。
+    void refreshTheme();
+    // 框选是"文档级"的：两个视图各自保存一份，变更时镜像过去 —— 这样切换视图
+    // 不会丢框选，导出 JSON / 提取用的也始终是同一份内容。
+    void addRegionAll(const Region& r);
+    void clearRegionsAll();
     QJsonObject buildRequest() const;
     void refreshJsonPreview();
     void showRegionResponse(const QJsonObject& resp);
@@ -115,6 +130,11 @@ private:
     ExcelComparePage* m_excelPage = nullptr;
     MaterialExtractPage* m_materialPage = nullptr;
     PageNavPanel* m_pageNav = nullptr;    // Adobe 风格页面缩略图导航栏
+    // 视图：0 = 单页精看（m_view），1 = 连续滚动（m_contView）。
+    QStackedWidget*    m_viewStack = nullptr;
+    ContinuousPdfView* m_contView  = nullptr;
+    QScrollArea*       m_contScroll = nullptr;
+    bool               m_continuousMode = false;
     CharSegmentPanel* m_charPanel = nullptr;
     QTreeWidget* m_nav = nullptr;
     QCheckBox*   m_ocrAlwaysCb = nullptr;

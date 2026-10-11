@@ -15,11 +15,14 @@ int main(int argc, char** argv)
 {
     // Pre-scan argv: the headless self-test must force the offscreen platform
     // BEFORE QApplication is constructed (the platform plugin loads in the ctor).
-    bool wantSelfTest = false, wantMathTest = false, wantRenderTest = false;
+    bool wantSelfTest = false, wantMathTest = false, wantRenderTest = false,
+         wantContTest = false, wantBatchTest = false;
     for (int i = 1; i < argc; ++i) {
         if (qstrcmp(argv[i], "--selftest") == 0) wantSelfTest = true;
         else if (qstrcmp(argv[i], "--test-math") == 0) wantMathTest = true;
         else if (qstrcmp(argv[i], "--test-render") == 0) wantRenderTest = true;
+        else if (qstrcmp(argv[i], "--test-continuous") == 0) wantContTest = true;
+        else if (qstrcmp(argv[i], "--test-batch") == 0) wantBatchTest = true;
     }
     // The front-end is built as a console subsystem so --selftest / --test-math can
     // print PASS/FAIL to stdout. For the normal GUI we DETACH that console
@@ -30,11 +33,12 @@ int main(int argc, char** argv)
     // kernels are spawned with CREATE_NO_WINDOW (see CliRunner), so they never
     // show a console of their own either.
 #ifdef EGTOOLS_WIN32
-    if (!wantSelfTest && !wantMathTest && !wantRenderTest) {
+    if (!wantSelfTest && !wantMathTest && !wantRenderTest && !wantContTest && !wantBatchTest) {
         if (GetConsoleWindow()) FreeConsole();
     }
 #endif
-    if ((wantSelfTest || wantRenderTest) && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
+    if ((wantSelfTest || wantRenderTest || wantContTest || wantBatchTest)
+        && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
         qputenv("QT_QPA_PLATFORM", "offscreen");
 
     // GPU 相关的进程级设置必须在 QApplication 构造之前生效：共享 GL 上下文是 Qt 对
@@ -65,6 +69,14 @@ int main(int argc, char** argv)
         QStringLiteral("Run the pure coordinate-mapping test (no child processes)."));
     QCommandLineOption optRender(QStringLiteral("test-render"),
         QStringLiteral("Render one page and report image size/format/luminance (black-page diagnosis)."));
+    QCommandLineOption optCont(QStringLiteral("test-continuous"),
+        QStringLiteral("Self-test the continuous multi-page view (layout, hit-test, lazy render)."));
+    QCommandLineOption optBatch(QStringLiteral("test-batch"),
+        QStringLiteral("Self-test concurrent batch extraction (thread safety + accurate counts)."));
+    QCommandLineOption optJobs(QStringLiteral("jobs"),
+        QStringLiteral("How many files for --test-batch (default 3)."), QStringLiteral("n"), QStringLiteral("3"));
+    QCommandLineOption optConc(QStringLiteral("concurrency"),
+        QStringLiteral("Concurrency for --test-batch (default 3)."), QStringLiteral("n"), QStringLiteral("3"));
     QCommandLineOption optPage(QStringLiteral("page"),
         QStringLiteral("Page index for --test-render (default 0)."), QStringLiteral("n"), QStringLiteral("0"));
     parser.addOption(optSelf);
@@ -72,6 +84,10 @@ int main(int argc, char** argv)
     parser.addOption(optPdf);
     parser.addOption(optMath);
     parser.addOption(optRender);
+    parser.addOption(optCont);
+    parser.addOption(optBatch);
+    parser.addOption(optJobs);
+    parser.addOption(optConc);
     parser.addOption(optPage);
     parser.process(app);
 
@@ -84,6 +100,17 @@ int main(int argc, char** argv)
         qputenv("QT_QPA_PLATFORM", "offscreen");
         return runRenderTest(parser.value(optCli), parser.value(optPdf),
                              parser.value(optPage).toInt());
+    }
+
+    if (parser.isSet(optCont)) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        return runContinuousTest(parser.value(optCli), parser.value(optPdf));
+    }
+
+    if (parser.isSet(optBatch)) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        return runBatchTest(parser.value(optCli), parser.value(optPdf),
+                            parser.value(optJobs).toInt(), parser.value(optConc).toInt());
     }
 
     if (parser.isSet(optSelf)) {
