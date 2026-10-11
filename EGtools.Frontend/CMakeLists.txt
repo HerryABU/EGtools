@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent)
 
 # Console subsystem (no WIN32 flag) on purpose: the app drives CLI child
 # processes and offers a --selftest mode whose stdout is used for headless QA.
@@ -15,6 +15,8 @@ add_executable(EGtoolsFrontend
     src/mainwindow.cpp
     src/pdfview.h
     src/pdfview.cpp
+    src/pdfcanvas.h
+    src/pdfcanvas.cpp
     src/clirunner.h
     src/clirunner.cpp
     src/kernelclient.h
@@ -33,6 +35,12 @@ add_executable(EGtoolsFrontend
     src/diffpage.cpp
     src/excelcomparepage.h
     src/excelcomparepage.cpp
+    src/materialextractpage.h
+    src/materialextractpage.cpp
+    src/pagenavpanel.h
+    src/pagenavpanel.cpp
+    src/theme.h
+    src/theme.cpp
     src/charsegmentpanel.h
     src/charsegmentpanel.cpp
     src/types.h
@@ -49,7 +57,7 @@ qt_add_resources(EGtoolsFrontend "appres"
           res/app_icon.png
 )
 
-target_link_libraries(EGtoolsFrontend PRIVATE Qt6::Widgets)
+target_link_libraries(EGtoolsFrontend PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Concurrent)
 
 # ---------------------------------------------------------------------------
 # 宿主自己的 .NET 运行时配置（内嵌调用用）。

@@ -143,7 +143,11 @@ if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake
         # For a Qt Widgets app the needed set is exactly: Qt6Core/Gui/Widgets + the
         # qwindows platform plugin (+ styles/imageformats) + the MSVC runtime.
         Step 'Deploy Qt runtime (DLLs + qwindows plugin + MSVC runtime)'
-        foreach ($dll in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll')) {
+        # ⚠️ 清单必须覆盖链接期用到的**全部** Qt 模块：Core/Gui/Widgets 之外，
+        # 页面画布走 GPU 需要 Qt6OpenGLWidgets + Qt6OpenGL，预取/缩略图并发用到
+        # Qt6Concurrent。少拷一个的表现是启动即报"找不到 Qt6Xxx.dll"。
+        foreach ($dll in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll',
+                           'Qt6OpenGL.dll','Qt6OpenGLWidgets.dll','Qt6Concurrent.dll')) {
             Copy-Item "$qtRoot\bin\$dll" $out -Force -EA SilentlyContinue
         }
         foreach ($plug in @('platforms','styles','imageformats','iconengines')) {

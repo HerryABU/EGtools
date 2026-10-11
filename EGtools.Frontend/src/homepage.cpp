@@ -133,9 +133,10 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
         {0, 0, "\xF0\x9D\x97", "区域框选提取",
             "在图纸上框选任意区域，三种语义：全域表 / 细表 / 材料编号区。导出 RegionRequest JSON 交给内核，零硬编码坐标。",
             "进入工作区"},
-        {0, 1, "\xE0\xB4\x9E", "整页材料表抽取",
-            "无需框选，整页自动定位材料表并导出 CSV / XLSX（等价于命令行 EGpdf2excel）。",
-            "选择 PDF 批量抽取"},
+        {0, 1, "\xE0\xB4\x9E", "整页材料表抽取（批量）",
+            "无需框选，整页自动定位材料表并导出 CSV / XLSX。支持批量导入多个 PDF 或整个文件夹，"
+            "逐文件显示进度、行数与输出文件，某个文件出错不影响其余。",
+            "进入批量提取"},
         {1, 0, "\xE8\xB7\xAF", "图纸差异对比（PDF）",
             "新旧两张图纸 PDF 对比：图形差异（排除文字干扰）与文字差异分两步独立处理，输出红标注 PDF。",
             "选择基准图 / 目标图"},
@@ -155,7 +156,7 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
                               QString::fromUtf8(e.desc), QString::fromUtf8(e.cta), &btn);
         grid->addWidget(card, e.r, e.c);
         const QString kind = QString::fromUtf8(e.title);
-        if (kind == QStringLiteral("整页材料表抽取"))            connect(btn, &QPushButton::clicked, this, &HomePage::wholePageExtract);
+        if (kind == QStringLiteral("整页材料表抽取（批量）"))      connect(btn, &QPushButton::clicked, this, &HomePage::materialExtractRequested);
         else if (kind == QStringLiteral("图纸差异对比（PDF）"))   connect(btn, &QPushButton::clicked, this, &HomePage::diffRequested);
         else if (kind == QStringLiteral("Excel 图纸对比"))        connect(btn, &QPushButton::clicked, this, &HomePage::excelCompareRequested);
         else if (kind.startsWith(QStringLiteral("框选方案")))connect(btn, &QPushButton::clicked, this, &HomePage::schemesRequested);

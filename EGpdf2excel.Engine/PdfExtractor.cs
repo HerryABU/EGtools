@@ -1440,21 +1440,26 @@ namespace EGpdf2excel.Engine
 
     /// <summary>
     /// Entry point used by both the CLI and the GUI. When `log` is provided,
-    /// all engine output (Console.Out / Console.Error) is forwarded to it, so
-    /// the back-end stays completely decoupled from any front-end.
+    /// engine **diagnostics** (Console.Error) are forwarded to it, so the
+    /// back-end stays decoupled from any front-end.
+    ///
+    /// ⚠️ 绝不能把 Console.Out 也转发给 log：stdout 是**机器可读的结果通道**
+    /// （--render / --page-count / --words / region 模式都往 stdout 打 JSON）。
+    /// 内嵌调用正是靠"捕获 stdout 后经 outBuf 回传"把结果交给宿主的；一旦把
+    /// stdout 重定向进日志转发器，所有 JSON 结果都会被当成日志吞掉 —— 表现为
+    /// 宿主拿到 out 为空、页码恒为 1、文字框为空、几何回退。历史 bug，勿退回。
     /// </summary>
     public static int Run(string[] args, Action<string>? log = null)
     {
-        TextWriter? prevErr = Console.Error, prevOut = Console.Out;
+        TextWriter? prevErr = Console.Error;
         ForwardingWriter? fw = null;
         if (log != null)
         {
             fw = new ForwardingWriter(log);
-            Console.SetError(fw);
-            Console.SetOut(fw);
+            Console.SetError(fw);          // 只转发诊断日志；stdout 保持为结果通道
         }
         try { return MainCore(args); }
-        finally { fw?.Flush(); Console.SetError(prevErr); Console.SetOut(prevOut); }
+        finally { fw?.Flush(); Console.SetError(prevErr); }
     }
     }
 }

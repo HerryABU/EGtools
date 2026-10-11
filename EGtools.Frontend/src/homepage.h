@@ -23,6 +23,7 @@ signals:
     void startExtract();        // go to the PDF workspace
     void openPdfRequested();
     void wholePageExtract();    // EGpdf2excel full-page table extraction
+    void materialExtractRequested(); // batch PDF → material tables page
     void diffRequested();       // EGpdf2df drawing diff
     void excelCompareRequested(); // EGexcel2df Excel comparison
     void schemesRequested();      // reusable box-selection schemes

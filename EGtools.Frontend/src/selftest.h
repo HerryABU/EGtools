@@ -11,3 +11,8 @@ int runSelfTest(const QString& cliDir, const QString& pdfPath);
 // "no hard-coded coordinates" guarantee) WITHOUT spawning any child process,
 // so it runs even where QProcess is restricted.
 int runMathTest();
+
+// Render diagnosis: renders one page through the kernel fusion layer and reports
+// image size / format / luminance histogram, so a "black page" can be pinned to
+// either the render step or the display step instead of being guessed at.
+int runRenderTest(const QString& cliDir, const QString& pdfPath, int page);

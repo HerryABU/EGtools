@@ -4,6 +4,8 @@
 #include <QString>
 #include <QImage>
 #include <QVector>
+#include <QThreadPool>
+#include <memory>
 #include "pdfview.h"
 #include "schemes.h"
 
@@ -18,12 +20,16 @@ class QTabWidget;
 class QLineEdit;
 class QCheckBox;
 class QStackedWidget;
+class QScrollArea;
+class QActionGroup;
 class HomePage;
 class SchemePage;
 class SchemeStore;
 class DiffPage;
 class ExcelComparePage;
 class CharSegmentPanel;
+class MaterialExtractPage;
+class PageNavPanel;
 
 // The Qt shell. It owns NO PDF processing logic: it displays pages rendered by
 // the CLI, captures rubber-band selections, exports the region JSON contract for
@@ -72,6 +78,8 @@ private:
 
     // Render one page via the CLI; returns the loaded image + geometry.
     bool renderPage(int page, QImage& img, double& scale, double& pwPt, double& phPt);
+    // 后台预取相邻页（并行/异步渲染），使用户翻页近乎瞬时。
+    void prefetchPage(int page);
     QJsonObject buildRequest() const;
     void refreshJsonPreview();
     void showRegionResponse(const QJsonObject& resp);
@@ -84,7 +92,8 @@ private:
     static QStringList materialHeaders();
 
     // Stacked page indices (the left sidebar switches between these).
-    enum PageIdx { PageHome = 0, PagePdf = 1, PageDiff = 2, PageExcel = 3, PageScheme = 4 };
+    enum PageIdx { PageHome = 0, PagePdf = 1, PageDiff = 2, PageExcel = 3, PageScheme = 4,
+                   PageMaterials = 5 };
     void navTo(int index);
     // Load every vector word of a page (kernel --words) into the canvas so the
     // rubber band can recognise text live as the user drags.
@@ -97,13 +106,15 @@ private:
     int     m_pageIndex = 0;
     double  m_scale = 1.0, m_pwPt = 0, m_phPt = 0;
 
-    PdfView*     m_view = nullptr;
+    PdfViewHost  m_view;      // 画布宿主（GPU 或 CPU 光栅，取决于探测结果）
     QStackedWidget* m_stack = nullptr;
     HomePage*    m_home = nullptr;
     SchemePage*  m_schemes = nullptr;
     SchemeStore* m_schemeStore = nullptr;
     DiffPage*    m_diffPage = nullptr;
     ExcelComparePage* m_excelPage = nullptr;
+    MaterialExtractPage* m_materialPage = nullptr;
+    PageNavPanel* m_pageNav = nullptr;    // Adobe 风格页面缩略图导航栏
     CharSegmentPanel* m_charPanel = nullptr;
     QTreeWidget* m_nav = nullptr;
     QCheckBox*   m_ocrAlwaysCb = nullptr;
@@ -111,6 +122,14 @@ private:
     int          m_rewriteRow = -1;
     QComboBox*   m_modeCombo = nullptr;
     QLabel*      m_pageLabel = nullptr;
+    QLabel*      m_zoomLabel = nullptr;   // 当前缩放百分比（Ctrl+滚轮 / 适合宽度）
+    QScrollArea* m_scroll    = nullptr;   // 画布滚动容器（"适合宽度"需要视口宽度）
+    // 预取缓存与后台池（maxThreadCount=1：只在空闲时占一个线程，不抢 CPU）。
+    struct PageCache { int page = -1; bool ok = false; QImage img;
+                       double scale = 1.0, pwPt = 0, phPt = 0; };
+    PageCache m_cache;
+    bool m_prefetchBusy = false;
+    std::shared_ptr<QThreadPool> m_prefetchPool;
     QLabel*      m_recogLabel = nullptr;  // live in-canvas text recognition readout
     QTabWidget*  m_tabs = nullptr;
     QTableWidget* m_table = nullptr;

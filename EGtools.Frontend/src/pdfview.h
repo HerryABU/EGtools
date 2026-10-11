@@ -1,72 +1,67 @@
 #pragma once
 
+#include <QOpenGLWidget>
 #include <QWidget>
-#include <QImage>
-#include <QPoint>
-#include <QVector>
-#include "types.h"
 
-// Displays one rendered PDF page (a QImage produced by the CLI --render mode)
-// and lets the user rubber-band boxes on it. This is the coordinate hub of the
-// front-end: it owns the ONLY px<->pt mapping in the app, derived purely from
-// the render scale the kernel reports — nothing is hard-coded.
+class PdfCanvas;
+
+// ---------------------------------------------------------------------------
+// 两种"壳"，承载同一个 PdfCanvas：
+//   PdfView    —— 普通 QWidget：CPU 光栅合成，任何机器都能用（保底路径）。
+//   GpuPdfView —— QOpenGLWidget：页面位图作为纹理交由 GPU 合成，缩放用纹理过滤，
+//                 滚动/缩放不占 CPU（大图浏览收益明显）。
+// 二者只能靠继承区分（QOpenGLWidget 本身就是 QWidget），所以逻辑都在 PdfCanvas，
+// 这里只做事件转发 + 绘制调用。
+// ---------------------------------------------------------------------------
 class PdfView : public QWidget
 {
     Q_OBJECT
 public:
     explicit PdfView(QWidget* parent = nullptr);
-
-    void setPage(const QImage& img, double renderScale, int pageIndex);
-    void setPageIndex(int p) { m_page = p; update(); }
-    int  pageIndex() const { return m_page; }
-
-    void setKind(const QString& kind) { m_kind = kind; }
-    QString kind() const { return m_kind; }
-
-    void addRegion(const Region& r) { m_regions.push_back(r); update(); }
-    void clearRegions() { m_regions.clear(); m_words.clear(); update(); }
-    QVector<Region> regions() const { return m_regions; }
-
-    void setWordBoxes(const QVector<WordBox>& w) { m_words = w; update(); }
-    void clearWordBoxes() { m_words.clear(); update(); }
-
-    // All vector-text words of the current page (from the kernel --words mode),
-    // used for live in-canvas text recognition during rubber-band selection.
-    void setPageWords(const QVector<WordBox>& w) { m_pageWords = w; update(); }
-    QVector<WordBox> pageWords() const { return m_pageWords; }
-
-    // renderScale == image pixels per PDF point (as reported by the kernel).
-    double renderScale() const { return m_scale; }
-
-    // The single source of truth for the coordinate mapping.
-    QRectF pxToPt(const QRectF& r) const;
-    QRectF ptToPx(const QRectF& r) const;
-
-signals:
-    void regionSelected(int page, const QString& kind, const QRectF& rectPt);
-    // Emitted on every rubber-band move: the text of the vector words currently
-    // inside the selection box (live OCR / text detection, no raster scan).
-    void textPreview(int page, const QString& text);
+    PdfCanvas* canvas() const { return m_c; }
 
 protected:
     void paintEvent(QPaintEvent*) override;
     void mousePressEvent(QMouseEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
     void mouseReleaseEvent(QMouseEvent*) override;
+    void wheelEvent(QWheelEvent*) override;
 
 private:
-    static QColor colorForKind(const QString& kind);
-
-    QImage  m_img;
-    double  m_scale = 1.0;     // image px per PDF pt
-    int     m_page  = 0;
-    QString m_kind  = QStringLiteral("detail_table");
-    QVector<Region> m_regions;
-    QVector<WordBox> m_words;       // extraction overlay (post-extract)
-    QVector<WordBox> m_pageWords;   // all vector words of the page (for live recog)
-    QVector<WordBox> m_previewWords;// words inside the current rubber band
-
-    bool    m_dragging = false;
-    QPoint  m_pressPt;
-    QPoint  m_curPt;
+    PdfCanvas* m_c = nullptr;
 };
+
+class GpuPdfView : public QOpenGLWidget
+{
+    Q_OBJECT
+public:
+    explicit GpuPdfView(QWidget* parent = nullptr);
+    PdfCanvas* canvas() const { return m_c; }
+
+protected:
+    void paintEvent(QPaintEvent*) override;   // QOpenGLWidget 里 QPainter 走 GL 引擎
+    void mousePressEvent(QMouseEvent*) override;
+    void mouseMoveEvent(QMouseEvent*) override;
+    void mouseReleaseEvent(QMouseEvent*) override;
+    void wheelEvent(QWheelEvent*) override;
+
+private:
+    PdfCanvas* m_c = nullptr;
+};
+
+// 画布宿主：实际的控件 + 其画布逻辑 + 是否启用了 GPU。
+struct PdfViewHost
+{
+    QWidget*   widget = nullptr;
+    PdfCanvas* canvas = nullptr;
+    bool       gpu    = false;
+};
+
+// 探测 OpenGL 是否真的可用（结果缓存；EGTOOLS_NO_GPU=1 可强制关闭）。
+bool gpuRenderingAvailable();
+
+// 实际渲染路径的一行描述（写进日志，便于用户确认到底走没走 GPU）。
+QString gpuBackendDescription();
+
+// 按探测结果选择壳：可用则 GPU，否则光栅。
+PdfViewHost createPdfViewHost(QWidget* parent = nullptr);

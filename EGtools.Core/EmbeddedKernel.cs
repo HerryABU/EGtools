@@ -144,18 +144,19 @@ namespace EGtools.Core
                 var args = argv ?? Array.Empty<string>();
                 if (jsonInline != null)
                 {
-                    if (supportsStdin)
-                    {
-                        Console.SetIn(new StringReader(jsonInline));
-                    }
-                    else
-                    {
-                        tmp = Path.Combine(Path.GetTempPath(),
-                                           "egtools_embed_" + Guid.NewGuid().ToString("N") + ".json");
-                        File.WriteAllText(tmp, jsonInline, new UTF8Encoding(false));
-                        var list = new System.Collections.Generic.List<string>(args) { "--json", tmp };
-                        args = list.ToArray();
-                    }
+                    // ⚠️ 一律走「临时文件 + --json <file>」，**不要**用 Console.SetIn 喂 stdin：
+                    //    内核（如 RegionExtractor）读的是 Console.OpenStandardInput()，
+                    //    它绕过 Console.SetIn 直接打开真实 stdin ⇒ 内嵌时读到空内容，
+                    //    报 "invalid JSON: The input does not contain any JSON tokens"。
+                    //    三个内核的 CLI 都支持 --json FILE，走文件与命令行行为也完全一致。
+                    //    （--stdin 仍保留给真正的管道用法，只是内嵌路径不依赖它。）
+                    tmp = Path.Combine(Path.GetTempPath(),
+                                       "egtools_embed_" + Guid.NewGuid().ToString("N") + ".json");
+                    File.WriteAllText(tmp, jsonInline, new UTF8Encoding(false));
+                    var list = new System.Collections.Generic.List<string>(args);
+                    if (!list.Contains("--json") && !list.Contains("--stdin"))
+                        list.AddRange(new[] { "--json", tmp });
+                    args = list.ToArray();
                 }
 
                 int rc = run(args, EmbeddedKernel.Log);

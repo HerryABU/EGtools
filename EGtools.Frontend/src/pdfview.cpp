@@ -1,142 +1,207 @@
 #include "pdfview.h"
-#include <QPainter>
-#include <QMouseEvent>
-#include <algorithm>
 
+#include "pdfcanvas.h"
+
+#include <QGuiApplication>
+#include <QMouseEvent>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
+#include <QPainter>
+#include <QSurfaceFormat>
+#include <QWheelEvent>
+
+// ---------------------------------------------------------------------------
+// 光栅壳
+// ---------------------------------------------------------------------------
 PdfView::PdfView(QWidget* parent) : QWidget(parent)
 {
+    m_c = new PdfCanvas(this);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAutoFillBackground(true);
-    QPalette pal = palette();
-    pal.setColor(QPalette::Window, Qt::gray);
-    setPalette(pal);
-}
 
-void PdfView::setPage(const QImage& img, double renderScale, int pageIndex)
-{
-    m_img   = img;
-    m_scale = (renderScale > 0.0) ? renderScale : 1.0;
-    m_page  = pageIndex;
-    m_dragging = false;
-    m_pageWords.clear();     // a new page => words are reloaded by the caller
-    m_previewWords.clear();
-    // Display the rendered image 1:1 (scroll area handles overflow). Because the
-    // widget is exactly the image size, widget px == image px, and pt = px/scale.
-    setFixedSize(img.width(), img.height());
-    update();
-}
-
-QRectF PdfView::pxToPt(const QRectF& r) const
-{
-    if (m_scale <= 0.0) return r;
-    return QRectF(r.left() / m_scale, r.top() / m_scale,
-                  r.width() / m_scale, r.height() / m_scale);
-}
-
-QRectF PdfView::ptToPx(const QRectF& r) const
-{
-    return QRectF(r.left() * m_scale, r.top() * m_scale,
-                  r.width() * m_scale, r.height() * m_scale);
-}
-
-QColor PdfView::colorForKind(const QString& kind)
-{
-    if (kind == QLatin1String("global_table"))       return QColor(30, 120, 220);
-    if (kind == QLatin1String("material_no_region")) return QColor(220, 120, 20);
-    return QColor(30, 160, 90);                      // detail_table
+    // 画布尺寸 = 图像尺寸 * 缩放；滚动交给外层 QScrollArea。
+    connect(m_c, &PdfCanvas::canvasResized, this, [this](const QSize& s){ setFixedSize(s); });
+    connect(m_c, &PdfCanvas::repaintNeeded, this, qOverload<>(&QWidget::update));
 }
 
 void PdfView::paintEvent(QPaintEvent*)
 {
     QPainter g(this);
-    g.fillRect(rect(), QColor(90, 90, 90));
-    if (!m_img.isNull())
-        g.drawImage(0, 0, m_img);
-
-    // Existing selections (drawn in pt -> px).
-    for (const Region& r : m_regions) {
-        if (r.page != m_page) continue;
-        QColor c = colorForKind(r.kind);
-        QRectF px = ptToPx(r.rectPt);
-        g.setPen(QPen(c, 2));
-        g.setBrush(QColor(c.red(), c.green(), c.blue(), 40));
-        g.drawRect(px);
-    }
-
-    // Word segments returned by the kernel. Colour by provenance so the user can
-    // see at a glance which glyphs came from the PDF's vector text (green) and
-    // which were recovered by OCR for image-only areas (orange).
-    for (const WordBox& w : m_words) {
-        QRectF px = ptToPx(w.rectPt);
-        if (w.source == QLatin1String("ocr"))
-            g.setPen(QPen(QColor(230, 120, 0), 1));
-        else
-            g.setPen(QPen(QColor(20, 150, 80), 1));
-        g.drawRect(px);
-    }
-
-    // Live-in-canvas recognition: words inside the current rubber band are
-    // highlighted so the user sees exactly what will be recognised.
-    if (!m_previewWords.isEmpty()) {
-        g.setPen(QPen(QColor(255, 170, 0), 2));
-        g.setBrush(QColor(255, 200, 0, 60));
-        for (const WordBox& w : m_previewWords) {
-            QRectF px = ptToPx(w.rectPt);
-            g.drawRect(px);
-        }
-    }
-
-    // Live rubber band.
-    if (m_dragging) {
-        QRect r = QRect(m_pressPt, m_curPt).normalized();
-        g.setPen(QPen(QColor(255, 0, 0), 2, Qt::DashLine));
-        g.setBrush(QColor(255, 0, 0, 30));
-        g.drawRect(r);
-    }
+    m_c->paint(g, rect());
 }
 
 void PdfView::mousePressEvent(QMouseEvent* e)
 {
     if (e->button() != Qt::LeftButton) { QWidget::mousePressEvent(e); return; }
-    m_dragging = true;
-    m_pressPt = e->position().toPoint();
-    m_curPt   = m_pressPt;
-    update();
+    m_c->mousePress(e->position());
 }
 
-void PdfView::mouseMoveEvent(QMouseEvent* e)
-{
-    if (!m_dragging) { QWidget::mouseMoveEvent(e); return; }
-    m_curPt = e->position().toPoint();
-    // Live text recognition: gather vector words whose centre lies inside the
-    // current rubber band, then announce the joined text to the front-end.
-    QRectF bandPt = pxToPt(QRectF(QRect(m_pressPt, m_curPt).normalized()));
-    m_previewWords.clear();
-    QStringList txt;
-    for (const WordBox& w : m_pageWords) {
-        if (bandPt.contains(w.rectPt.center()) && !w.text.isEmpty()) {
-            m_previewWords.append(w);
-            txt.append(w.text);
-        }
-    }
-    emit textPreview(m_page, txt.join(QStringLiteral(" ")));
-    update();
-}
+void PdfView::mouseMoveEvent(QMouseEvent* e) { m_c->mouseMove(e->position()); }
 
 void PdfView::mouseReleaseEvent(QMouseEvent* e)
 {
-    if (e->button() != Qt::LeftButton || !m_dragging) { QWidget::mouseReleaseEvent(e); return; }
-    m_dragging = false;
-    m_curPt = e->position().toPoint();
-    QRect r = QRect(m_pressPt, m_curPt).normalized();
-    update();
-    // Clear the live preview highlight / announcement now that the band is gone.
-    m_previewWords.clear();
-    emit textPreview(m_page, QString());
-    // Ignore accidental clicks / tiny drags.
-    if (r.width() >= 3 && r.height() >= 3) {
-        QRectF rectPt = pxToPt(QRectF(r));
-        emit regionSelected(m_page, m_kind, rectPt);
+    if (e->button() != Qt::LeftButton) { QWidget::mouseReleaseEvent(e); return; }
+    m_c->mouseRelease(e->position());
+}
+
+void PdfView::wheelEvent(QWheelEvent* e)
+{
+    // Ctrl+滚轮 = 缩放（与主流 CAD/PDF 阅读器一致）；不按 Ctrl 时让 QScrollArea 滚动。
+    if (e->modifiers().testFlag(Qt::ControlModifier) && m_c->wheelZoom(e->angleDelta().y())) {
+        e->accept();
+        return;
     }
+    QWidget::wheelEvent(e);
+}
+
+// ---------------------------------------------------------------------------
+// GPU 壳
+// ---------------------------------------------------------------------------
+GpuPdfView::GpuPdfView(QWidget* parent) : QOpenGLWidget(parent)
+{
+    m_c = new PdfCanvas(this);
+    setMouseTracking(true);
+    setFocusPolicy(Qt::StrongFocus);
+
+    connect(m_c, &PdfCanvas::canvasResized, this, [this](const QSize& s){ setFixedSize(s); });
+    connect(m_c, &PdfCanvas::repaintNeeded, this, qOverload<>(&QWidget::update));
+}
+
+void GpuPdfView::paintEvent(QPaintEvent*)
+{
+    // QOpenGLWidget 上使用 QPainter：Qt 会走 OpenGL 绘制引擎，位图作为纹理上传，
+    // 之后每次滚动/缩放都是 GPU 采样，不再逐像素重算。
+    QPainter g(this);
+    g.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    m_c->paint(g, rect());
+}
+
+void GpuPdfView::mousePressEvent(QMouseEvent* e)
+{
+    if (e->button() != Qt::LeftButton) { QOpenGLWidget::mousePressEvent(e); return; }
+    m_c->mousePress(e->position());
+}
+
+void GpuPdfView::mouseMoveEvent(QMouseEvent* e) { m_c->mouseMove(e->position()); }
+
+void GpuPdfView::mouseReleaseEvent(QMouseEvent* e)
+{
+    if (e->button() != Qt::LeftButton) { QOpenGLWidget::mouseReleaseEvent(e); return; }
+    m_c->mouseRelease(e->position());
+}
+
+void GpuPdfView::wheelEvent(QWheelEvent* e)
+{
+    if (e->modifiers().testFlag(Qt::ControlModifier) && m_c->wheelZoom(e->angleDelta().y())) {
+        e->accept();
+        return;
+    }
+    QOpenGLWidget::wheelEvent(e);
+}
+
+// ---------------------------------------------------------------------------
+// GPU 探测 / 工厂
+// ---------------------------------------------------------------------------
+namespace {
+
+struct GpuProbe
+{
+    bool    attempted = false;
+    bool    ok        = false;
+    QString desc;
+};
+
+GpuProbe& probe()
+{
+    static GpuProbe p;
+    return p;
+}
+
+} // namespace
+
+bool gpuRenderingAvailable()
+{
+    GpuProbe& p = probe();
+    if (p.attempted) return p.ok;
+    p.attempted = true;
+
+    // 显式关闭开关（排查显卡驱动问题时用）。
+    if (qEnvironmentVariableIsSet("EGTOOLS_NO_GPU")) {
+        p.desc = QStringLiteral("已按 EGTOOLS_NO_GPU 关闭 GPU，使用 CPU 光栅");
+        p.ok = false;
+        return false;
+    }
+    // 无头/离屏平台没有真实 GL 上下文，别去尝试（否则只会打印一堆警告）。
+    if (QGuiApplication::platformName().contains(QStringLiteral("offscreen"), Qt::CaseInsensitive)) {
+        p.desc = QStringLiteral("离屏平台（无头）→ 使用 CPU 光栅");
+        p.ok = false;
+        return false;
+    }
+
+    // 真探测：能创建上下文并 makeCurrent 才算可用 —— 只看"有显卡"不算数，
+    // 远程桌面/驱动异常时会创建失败，那种情况下必须老实退回光栅。
+    QOpenGLContext ctx;
+    if (!ctx.create()) {
+        p.desc = QStringLiteral("OpenGL 上下文创建失败 → 使用 CPU 光栅");
+        p.ok = false;
+        return false;
+    }
+    QOffscreenSurface surf;
+    surf.setFormat(ctx.format());
+    surf.create();
+    if (!surf.isValid() || !ctx.makeCurrent(&surf)) {
+        p.desc = QStringLiteral("OpenGL 上下文无法激活 → 使用 CPU 光栅");
+        p.ok = false;
+        return false;
+    }
+
+    QString vendor = QStringLiteral("?"), renderer = QStringLiteral("?"), version = QStringLiteral("?");
+    if (auto* f = ctx.functions()) {
+        vendor   = QString::fromLatin1(reinterpret_cast<const char*>(f->glGetString(GL_VENDOR)));
+        renderer = QString::fromLatin1(reinterpret_cast<const char*>(f->glGetString(GL_RENDERER)));
+        version  = QString::fromLatin1(reinterpret_cast<const char*>(f->glGetString(GL_VERSION)));
+    }
+    ctx.doneCurrent();
+
+    // 软件光栅（llvmpipe/softpipe/Mesa 软件栈）不产生 GPU 收益，但功能可用；
+    // 仍然选 GPU 壳没有意义，直接退回光栅壳更省事。
+    const QString rl = renderer.toLower();
+    const bool software = rl.contains(QStringLiteral("llvmpipe"))
+                       || rl.contains(QStringLiteral("softpipe"))
+                       || rl.contains(QStringLiteral("software"))
+                       || rl.contains(QStringLiteral("swiftshader"));
+    if (software) {
+        p.desc = QStringLiteral("仅软件 OpenGL（%1）→ 使用 CPU 光栅").arg(renderer);
+        p.ok = false;
+        return false;
+    }
+
+    p.ok = true;
+    p.desc = QStringLiteral("GPU 加速已启用 — %1 / %2 (GL %3)").arg(vendor, renderer, version);
+    return true;
+}
+
+QString gpuBackendDescription()
+{
+    gpuRenderingAvailable();     // 触发/复用探测
+    return probe().desc;
+}
+
+PdfViewHost createPdfViewHost(QWidget* parent)
+{
+    PdfViewHost h;
+    if (gpuRenderingAvailable()) {
+        auto* v = new GpuPdfView(parent);
+        h.widget = v;
+        h.canvas = v->canvas();
+        h.gpu    = true;
+    } else {
+        auto* v = new PdfView(parent);
+        h.widget = v;
+        h.canvas = v->canvas();
+        h.gpu    = false;
+    }
+    return h;
 }

@@ -1,16 +1,23 @@
 #include "mainwindow.h"
 #include "clirunner.h"
 #include "kernelclient.h"
+#include "pdfcanvas.h"
 #include "manualdialog.h"
 #include "homepage.h"
 #include "schemes.h"
 #include "schemepage.h"
 #include "diffpage.h"
 #include "excelcomparepage.h"
+#include "materialextractpage.h"
+#include "pagenavpanel.h"
+#include "theme.h"
 #include "charsegmentpanel.h"
 
 #include <QApplication>
 #include <QAction>
+#include <QActionGroup>
+#include <QFutureWatcher>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -58,8 +65,14 @@ MainWindow::MainWindow(const QString& cliDir, QWidget* parent) : QMainWindow(par
         KernelClient::setDefaultBackend(KernelClient::backendFromString(mode));
     }
     buildUi();
+    // 预取用单线程池：只在空闲时占用一个后台线程渲染相邻页（并行/异步渲染），
+    // 不把 CPU 吃满，也不与用户操作争抢内核（内核调用在融合层内部串行）。
+    m_prefetchPool = std::make_shared<QThreadPool>();
+    m_prefetchPool->setMaxThreadCount(1);
     log(QStringLiteral("EGtools Qt 前端已就绪（CLI 目录：%1）")
             .arg(m_cliDir.isEmpty() ? QStringLiteral("<未设置>") : m_cliDir));
+    // 明确告诉用户/日志当前走的是 GPU 还是 CPU 光栅 —— 排查"画面不对"时第一条线索。
+    log(QStringLiteral("渲染路径：%1").arg(gpuBackendDescription()));
 }
 
 // ---------------------------------------------------------------- UI
@@ -130,6 +143,45 @@ void MainWindow::buildUi()
     mOps->addSeparator();
     mOps->addAction(diffA);
 
+    // 视图菜单：缩放 + 主题（浅色/深色），都是全局观感开关。
+    auto* mView = menuBar()->addMenu(QStringLiteral("视图(&V)"));
+    {
+        auto* zi = mView->addAction(QStringLiteral("放大"));
+        zi->setShortcut(QKeySequence::ZoomIn);
+        connect(zi, &QAction::triggered, this, [this]{ m_view.canvas->zoomIn(); });
+        auto* zo = mView->addAction(QStringLiteral("缩小"));
+        zo->setShortcut(QKeySequence::ZoomOut);
+        connect(zo, &QAction::triggered, this, [this]{ m_view.canvas->zoomOut(); });
+        auto* z1 = mView->addAction(QStringLiteral("实际大小 (100%)"));
+        connect(z1, &QAction::triggered, this, [this]{ m_view.canvas->setZoom(1.0); });
+        auto* zf = mView->addAction(QStringLiteral("适合宽度"));
+        connect(zf, &QAction::triggered, this, [this]{
+            if (m_scroll) m_view.canvas->fitToWidth(m_scroll->viewport()->width());
+        });
+        mView->addSeparator();
+        auto* themeGroup = new QActionGroup(this);
+        themeGroup->setExclusive(true);
+        const Theme::Mode cur = Theme::current();
+        struct { const char* label; Theme::Mode mode; } themes[] = {
+            { "浅色主题(&L)", Theme::Light },
+            { "深色主题(&D)", Theme::Dark  },
+        };
+        for (const auto& t : themes) {
+            auto* a = mView->addAction(QString::fromUtf8(t.label));
+            a->setCheckable(true);
+            a->setChecked(cur == t.mode);
+            themeGroup->addAction(a);
+            const Theme::Mode mode = t.mode;
+            connect(a, &QAction::triggered, this, [this, mode]{
+                Theme::setCurrent(mode);
+                // 画布是自绘的，不跟着 QSS 走，需要主动重绘换底色。
+                if (m_view.widget) m_view.widget->update();
+                log(QStringLiteral("主题已切换为%1")
+                        .arg(mode == Theme::Dark ? QStringLiteral("深色") : QStringLiteral("浅色")));
+            });
+        }
+    }
+
     auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     auto* manualA = mHelp->addAction(QStringLiteral("使用说明书(&M)"));
     manualA->setShortcut(QKeySequence::HelpContents); // F1
@@ -139,15 +191,22 @@ void MainWindow::buildUi()
     connect(aboutA, &QAction::triggered, this, &MainWindow::onAbout);
 
     // Center: view (left) + results (right).
-    m_view = new PdfView();
-    m_view->setKind(QStringLiteral("detail_table"));
-    connect(m_view, &PdfView::regionSelected, this, &MainWindow::onRegionSelected);
-    connect(m_view, &PdfView::textPreview, this, &MainWindow::onTextPreview);
+    // 画布走工厂：探测到可用的硬件 OpenGL 就用 GPU 壳，否则用 CPU 光栅壳 —— GPU
+    // 是"加分项"，探测失败绝不会变成黑屏。
+    m_view = createPdfViewHost();
+    m_view.canvas->setKind(QStringLiteral("detail_table"));
+    connect(m_view.canvas, &PdfCanvas::regionSelected, this, &MainWindow::onRegionSelected);
+    connect(m_view.canvas, &PdfCanvas::textPreview, this, &MainWindow::onTextPreview);
+    connect(m_view.canvas, &PdfCanvas::zoomChanged, this, [this](double z){
+        if (m_zoomLabel) m_zoomLabel->setText(QStringLiteral("缩放 %1%").arg(qRound(z * 100)));
+    });
 
     auto* scroll = new QScrollArea();
-    scroll->setWidget(m_view);
+    m_scroll = scroll;
+    scroll->setWidget(m_view.widget);
     scroll->setWidgetResizable(false);
     scroll->setAlignment(Qt::AlignCenter);
+    scroll->viewport()->setStyleSheet(QStringLiteral("background:#3a3e44;"));
 
     m_modeCombo = new QComboBox();
     m_modeCombo->addItem(QStringLiteral("全域表 (global_table)"), QStringLiteral("global_table"));
@@ -156,9 +215,30 @@ void MainWindow::buildUi()
     connect(m_modeCombo, &QComboBox::currentIndexChanged, this, &MainWindow::onModeChanged);
 
     m_pageLabel = new QLabel(QStringLiteral("-"));
+    m_zoomLabel = new QLabel(QStringLiteral("缩放 100%"));
+    auto* zoomOutBtn = new QPushButton(QStringLiteral("−"));
+    auto* zoomInBtn  = new QPushButton(QStringLiteral("+"));
+    auto* zoomFitBtn = new QPushButton(QStringLiteral("适合宽度"));
+    auto* zoom1Btn   = new QPushButton(QStringLiteral("100%"));
+    zoomOutBtn->setMaximumWidth(28);
+    zoomInBtn->setMaximumWidth(28);
+    zoomOutBtn->setToolTip(QStringLiteral("缩小（也可 Ctrl+滚轮）"));
+    zoomInBtn->setToolTip(QStringLiteral("放大（也可 Ctrl+滚轮）"));
+    connect(zoomOutBtn, &QPushButton::clicked, this, [this]{ m_view.canvas->zoomOut(); });
+    connect(zoomInBtn,  &QPushButton::clicked, this, [this]{ m_view.canvas->zoomIn(); });
+    connect(zoom1Btn,   &QPushButton::clicked, this, [this]{ m_view.canvas->setZoom(1.0); });
+    connect(zoomFitBtn, &QPushButton::clicked, this, [this]{
+        if (m_scroll) m_view.canvas->fitToWidth(m_scroll->viewport()->width());
+    });
     auto* topRow = new QHBoxLayout();
     topRow->addWidget(new QLabel(QStringLiteral("框选模式:")));
     topRow->addWidget(m_modeCombo);
+    topRow->addSpacing(10);
+    topRow->addWidget(zoomOutBtn);
+    topRow->addWidget(zoomInBtn);
+    topRow->addWidget(zoom1Btn);
+    topRow->addWidget(zoomFitBtn);
+    topRow->addWidget(m_zoomLabel);
     topRow->addStretch();
     topRow->addWidget(new QLabel(QStringLiteral("页码:")));
     topRow->addWidget(m_pageLabel);
@@ -250,16 +330,36 @@ void MainWindow::buildUi()
     rightLay->addWidget(m_tabs, 1);
 
     auto* split = new QSplitter(Qt::Horizontal);
+    // 页面缩略图栏放在最左，学 Adobe 的版式：缩略图 | 画布 | 结果。
+    m_pageNav = new PageNavPanel();
+    m_pageNav->setCliDir(m_cliDir);
+    connect(m_pageNav, &PageNavPanel::pageRequested, this, [this](int p){
+        if (p < 0 || p >= m_pageCount || p == m_pageIndex) return;
+        m_pageIndex = p;
+        onRenderPage();
+    });
+    connect(m_pageNav, &PageNavPanel::statusMessage, this, &MainWindow::log);
+    split->addWidget(m_pageNav);
     split->addWidget(leftPane);
     split->addWidget(rightPane);
-    split->setStretchFactor(0, 3);
-    split->setStretchFactor(1, 2);
+    // 让三栏都能拖动改变宽度（旧版把宽度写死，用户反馈"侧栏不能拖动调整"）。
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 3);
+    split->setStretchFactor(2, 2);
+    split->setChildrenCollapsible(false);
+    m_pageNav->setMinimumWidth(150);
+    m_pageNav->setMaximumWidth(320);
+    leftPane->setMinimumWidth(320);
+    rightPane->setMinimumWidth(300);
+    split->setSizes({190, 700, 420});
 
     // ---- Multi-level sidebar navigation: every sub-function is its own entry ----
     m_nav = new QTreeWidget();
-    m_nav->setFixedWidth(172);
+    // 可拖动调整宽度（旧版 setFixedWidth 让侧栏完全不能改宽度）。
+    m_nav->setMinimumWidth(140);
+    m_nav->setMaximumWidth(400);
     m_nav->setHeaderHidden(true);
-    m_nav->setStyleSheet(QStringLiteral("QTreeWidget{font-size:13px;} QTreeWidget::item{padding:7px 6px;} QTreeWidget::item:selected{background:#2d7d46;color:#fff;} QTreeWidget::item:has-children{font-weight:bold;}"));
+    m_nav->setStyleSheet(QStringLiteral("QTreeWidget{font-size:13px;} QTreeWidget::item{padding:7px 6px;} QTreeWidget::item:has-children{font-weight:bold;}"));
     auto mkNav = [&](const QString& label, int page, int ocrMode = 0) {
         auto* it = new QTreeWidgetItem(QStringList(label));
         it->setData(0, Qt::UserRole, page);
@@ -267,6 +367,7 @@ void MainWindow::buildUi()
         return it;
     };
     auto* itHome = mkNav(QStringLiteral("首页"), PageHome);
+    auto* itMat  = mkNav(QStringLiteral("材料表提取"), PageMaterials);
     auto* itPdf  = mkNav(QStringLiteral("PDF 工具"), PagePdf);
     itPdf->addChild(mkNav(QStringLiteral("渲染与框选提取"), PagePdf, 0));
     itPdf->addChild(mkNav(QStringLiteral("材料表 OCR 增强"), PagePdf, 1));
@@ -274,6 +375,7 @@ void MainWindow::buildUi()
     auto* itExcel = mkNav(QStringLiteral("Excel 比对"), PageExcel);
     auto* itSchemes = mkNav(QStringLiteral("框选方案"), PageScheme);
     m_nav->addTopLevelItem(itHome);
+    m_nav->addTopLevelItem(itMat);
     m_nav->addTopLevelItem(itPdf);
     m_nav->addTopLevelItem(itDiff);
     m_nav->addTopLevelItem(itExcel);
@@ -288,8 +390,11 @@ void MainWindow::buildUi()
     m_schemes = new SchemePage(m_schemeStore);
     m_diffPage = new DiffPage();
     m_excelPage = new ExcelComparePage();
+    m_materialPage = new MaterialExtractPage();
     connect(m_diffPage,  &DiffPage::statusMessage,  this, &MainWindow::log);
     connect(m_excelPage, &ExcelComparePage::statusMessage, this, &MainWindow::log);
+    connect(m_materialPage, &MaterialExtractPage::statusMessage, this, &MainWindow::log);
+    m_materialPage->setCliDir(m_cliDir);
 
     m_stack = new QStackedWidget();
     m_stack->addWidget(m_home);     // PageHome
@@ -297,12 +402,15 @@ void MainWindow::buildUi()
     m_stack->addWidget(m_diffPage); // PageDiff
     m_stack->addWidget(m_excelPage);// PageExcel
     m_stack->addWidget(m_schemes);  // PageScheme
+    m_stack->addWidget(m_materialPage); // PageMaterials (batch PDF → material tables)
 
     auto* navSplit = new QSplitter(Qt::Horizontal);
     navSplit->addWidget(m_nav);
     navSplit->addWidget(m_stack);
     navSplit->setStretchFactor(0, 0);
     navSplit->setStretchFactor(1, 1);
+    navSplit->setChildrenCollapsible(false);
+    navSplit->setSizes({190, 1100});     // 侧栏初始 190，之后用户可随意拖
     setCentralWidget(navSplit);
 
     connect(m_schemes, &SchemePage::rewriteRequested, this, &MainWindow::onRewriteRegion);
@@ -313,7 +421,8 @@ void MainWindow::buildUi()
         navTo(PagePdf); onOpen();
     });
     connect(m_home, &HomePage::openPdfRequested,     this, [this]{ navTo(PagePdf); onOpen(); });
-    connect(m_home, &HomePage::wholePageExtract,     this, [this]{ navTo(PagePdf); onWholePageExtract(); });
+    connect(m_home, &HomePage::wholePageExtract,     this, [this]{ navTo(PageMaterials); });
+    connect(m_home, &HomePage::materialExtractRequested, this, [this]{ navTo(PageMaterials); });
     connect(m_home, &HomePage::diffRequested,        this, [this]{ navTo(PageDiff); });
     connect(m_home, &HomePage::excelCompareRequested,this, [this]{ navTo(PageExcel); });
     connect(m_home, &HomePage::schemesRequested,     this, [this]{ navTo(PageScheme); });
@@ -397,6 +506,7 @@ void MainWindow::setCliDir(const QString& d)
     m_cliDir = d;
     if (m_cliEdit) m_cliEdit->setText(d);
     KernelClient::setCliDir(d);          // 融合层也要知道内核目录
+    if (m_materialPage) m_materialPage->setCliDir(d);
     refreshKernelStatus();
     log(QStringLiteral("CLI 目录 = %1").arg(d.isEmpty() ? QStringLiteral("<自动探测>") : d));
 }
@@ -418,6 +528,7 @@ void MainWindow::setKernelBackend(const QString& mode)
     if (m_diffPage)  m_diffPage->setKernelBackend(KernelClient::backendToString(b));
     if (m_excelPage) m_excelPage->setKernelBackend(KernelClient::backendToString(b));
     if (m_charPanel) m_charPanel->setKernelBackend(KernelClient::backendToString(b));
+    if (m_materialPage) m_materialPage->setKernelBackend(KernelClient::backendToString(b));
     log(QStringLiteral("内核调用方式 = %1（%2）")
             .arg(KernelClient::backendToString(b), KernelClient::describe()));
 }
@@ -453,11 +564,102 @@ QString MainWindow::cliExe(const QString& name) const
 
 // ---------------------------------------------------------------- open / render
 
+namespace {
+
+// 一次页面渲染的结果（含几何）。用于后台预取缓存。
+struct RenderedPage
+{
+    bool   ok = false;
+    QImage img;
+    double scale = 1.0, pwPt = 0, phPt = 0;
+    int    meanLum = -1, maxLum = -1;   // 亮度诊断（见下）
+};
+
+// 纯函数式的渲染（不含任何 UI 状态），因此可以安全地在后台线程调用。
+// 内核调用在 KernelClient 内部有全局串行保护（内嵌运行时是进程级单例），
+// 所以后台预取与用户操作并发时不会互相踩踏，只是排队执行。
+RenderedPage renderPageViaKernel(const QString& pdfPath, int page)
+{
+    RenderedPage r;
+    if (pdfPath.isEmpty()) return r;
+    QTemporaryDir tmp;
+    const QString bmp = QDir(tmp.path()).filePath(QStringLiteral("page.bmp"));
+    const KernelClient::Result kr = KernelClient::run(
+        QStringLiteral("EGpdf2excel"),
+        {QStringLiteral("--render"), QStringLiteral("--page"), QString::number(page),
+         QStringLiteral("--scale"), QStringLiteral("1"),
+         QStringLiteral("--render-out"), bmp, pdfPath},
+        QString(), KernelClient::defaultBackend());
+    if (kr.rc != 0) return r;
+
+    QImage img = QImageReader(bmp).read();
+    if (img.isNull()) return r;
+    r.img = img.copy();                    // 脱离临时目录（否则可能延迟解码失效）
+    r.ok = true;
+
+    const QJsonObject o = QJsonDocument::fromJson(kr.out.toUtf8()).object();
+    r.pwPt = o.value(QStringLiteral("pageWidthPt")).toDouble();
+    r.phPt = o.value(QStringLiteral("pageHeightPt")).toDouble();
+    r.scale = o.value(QStringLiteral("scale")).toDouble(1.0);
+    if (r.scale <= 0) r.scale = 1.0;
+    if (r.pwPt <= 0) r.pwPt = r.img.width();
+    if (r.phPt <= 0) r.phPt = r.img.height();
+
+    // 亮度诊断：把"黑屏"变成可判定的事实 —— 若整页近乎全黑，是内核渲染出的图本身
+    // 就是黑的（PDF 内容/背景问题）；若亮度正常却看不到图，则是显示侧的问题。
+    {
+        const QImage probe = img.scaled(48, 48, Qt::IgnoreAspectRatio, Qt::FastTransformation);
+        quint64 lum = 0; int maxL = 0;
+        for (int y = 0; y < probe.height(); ++y)
+            for (int x = 0; x < probe.width(); ++x) {
+                const QRgb c = probe.pixel(x, y);
+                const int l = (qRed(c) * 299 + qGreen(c) * 587 + qBlue(c) * 114) / 1000;
+                lum += static_cast<quint64>(l);
+                maxL = qMax(maxL, l);
+            }
+        r.meanLum = static_cast<int>(lum / static_cast<quint64>(probe.width() * probe.height()));
+        r.maxLum  = maxL;
+    }
+    return r;
+}
+
+} // namespace
+
+// 后台预取下一页：翻页时直接用缓存，做到"点下一页几乎瞬时"。
+// 串行池（maxThreadCount=1）：预取只该在空闲时占一个后台线程，不应把 CPU 吃满。
+void MainWindow::prefetchPage(int page)
+{
+    if (m_pdfPath.isEmpty() || page < 0 || page >= m_pageCount) return;
+    if (m_cache.page == page && m_cache.ok) return;
+    if (m_prefetchBusy) return;
+
+    const QString pdf = m_pdfPath;
+    m_prefetchBusy = true;
+    auto* watcher = new QFutureWatcher<RenderedPage>(this);
+    connect(watcher, &QFutureWatcher<RenderedPage>::finished, this, [this, watcher, page]{
+        const RenderedPage r = watcher->result();
+        watcher->deleteLater();
+        m_prefetchBusy = false;
+        if (r.ok) {
+            m_cache.page = page;
+            m_cache.ok = true;
+            m_cache.img = r.img;
+            m_cache.scale = r.scale;
+            m_cache.pwPt = r.pwPt;
+            m_cache.phPt = r.phPt;
+        }
+    });
+    watcher->setFuture(QtConcurrent::run(m_prefetchPool.get(), [pdf, page]{
+        return renderPageViaKernel(pdf, page);
+    }));
+}
+
 bool MainWindow::openPdf(const QString& path)
 {
     m_pdfPath = path;
     m_pageIndex = 0;
-    m_view->clearRegions();
+    m_cache = PageCache{};          // 换文档 ⇒ 预取缓存必须作废
+    m_view.canvas->clearRegions();
 
     // Page count: render page 0 to learn geometry, then probe via kernel render
     // loop is overkill; instead ask the kernel by rendering page 0 and reading
@@ -470,24 +672,28 @@ bool MainWindow::openPdf(const QString& path)
 
     // Discover page count with a single cheap kernel call (--page-count) instead
     // of probing each page. Robust and fast even for hundreds-of-page documents.
-    QString pcOut, pcErr;
-    int rcPc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
-        {QStringLiteral("--page-count"), m_pdfPath}, pcOut, pcErr);
+    // 同样走融合层，与渲染/抽取保持同一条通道。
+    const KernelClient::Result pcRes = KernelClient::run(
+        QStringLiteral("EGpdf2excel"),
+        {QStringLiteral("--page-count"), m_pdfPath},
+        QString(), KernelClient::defaultBackend());
     m_pageCount = 1;
-    if (rcPc == 0) {
+    if (pcRes.rc == 0) {
         QJsonParseError pe{};
-        QJsonDocument doc = QJsonDocument::fromJson(pcOut.toUtf8(), &pe);
+        QJsonDocument doc = QJsonDocument::fromJson(pcRes.out.toUtf8(), &pe);
         if (pe.error == QJsonParseError::NoError && doc.isObject())
             m_pageCount = qMax(1, doc.object().value(QStringLiteral("pageCount")).toInt());
     } else {
-        log(QStringLiteral("页码探测失败，默认按 1 页处理: %1").arg(pcErr.trimmed()));
+        log(QStringLiteral("页码探测失败，默认按 1 页处理: %1").arg(pcRes.err.trimmed()));
     }
 
-    m_view->setPage(img, scale, 0);
-    m_view->setPageIndex(0);
+    m_view.canvas->setPage(img, scale, 0);
+    m_view.canvas->setPageIndex(0);
     m_pwPt = pw; m_phPt = ph; m_scale = scale;
     loadPageWords(0);
     m_pageLabel->setText(QStringLiteral("%1 / %2").arg(1).arg(m_pageCount));
+    // 缩略图栏：一次性告知文档与页数，后台逐页补缩略图。
+    if (m_pageNav) { m_pageNav->setDocument(path, m_pageCount); m_pageNav->setCurrentPage(0); }
     log(QStringLiteral("已打开 %1（%2 页，%3 x %4 pt）")
             .arg(QFileInfo(path).fileName()).arg(m_pageCount).arg(pw).arg(ph));
     return true;
@@ -496,31 +702,27 @@ bool MainWindow::openPdf(const QString& path)
 bool MainWindow::renderPage(int page, QImage& img, double& scale, double& pwPt, double& phPt)
 {
     if (m_pdfPath.isEmpty()) { log(QStringLiteral("未打开 PDF")); return false; }
-    QTemporaryDir tmp;
-    QString bmp = QDir(tmp.path()).filePath(QStringLiteral("page.bmp"));
-    QString out, err;
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
-        {QStringLiteral("--render"), QStringLiteral("--page"), QString::number(page),
-         QStringLiteral("--scale"), QStringLiteral("1"),
-         QStringLiteral("--render-out"), bmp, m_pdfPath}, out, err);
-    if (rc != 0) { log(QStringLiteral("渲染第 %1 页失败: %2").arg(page).arg(err.trimmed())); return false; }
 
-    QImageReader reader(bmp);
-    img = reader.read();
-    if (img.isNull()) { log(QStringLiteral("读取渲染图失败: %1").arg(reader.errorString())); return false; }
-
-    // Kernel prints {page,pageWidthPt,pageHeightPt,imageWidthPx,imageHeightPx,scale}
-    QJsonParseError pe{};
-    QJsonDocument doc = QJsonDocument::fromJson(out.toUtf8(), &pe);
-    if (pe.error == QJsonParseError::NoError && doc.isObject()) {
-        QJsonObject o = doc.object();
-        pwPt = o.value(QStringLiteral("pageWidthPt")).toDouble();
-        phPt = o.value(QStringLiteral("pageHeightPt")).toDouble();
-        scale = o.value(QStringLiteral("scale")).toDouble(1.0);
-    } else {
-        // Fall back to a 1:1 assumption (still derived from the image, never hard-coded to a drawing).
-        scale = 1.0; pwPt = img.width(); phPt = img.height();
+    // 命中后台预取缓存 ⇒ 立即出图（翻页体感的关键）。
+    if (m_cache.ok && m_cache.page == page) {
+        img = m_cache.img;
+        scale = m_cache.scale; pwPt = m_cache.pwPt; phPt = m_cache.phPt;
+        log(QStringLiteral("第 %1 页来自预取缓存 (%2x%3 px)").arg(page + 1).arg(img.width()).arg(img.height()));
+        return true;
     }
+
+    const RenderedPage r = renderPageViaKernel(m_pdfPath, page);
+    if (!r.ok) {
+        log(QStringLiteral("渲染第 %1 页失败（详见内核日志）").arg(page + 1));
+        return false;
+    }
+    img = r.img; scale = r.scale; pwPt = r.pwPt; phPt = r.phPt;
+    log(QStringLiteral("渲染第 %1 页: %2x%3 px, 格式#%4, 平均亮度 %5 / max %6")
+            .arg(page + 1).arg(img.width()).arg(img.height())
+            .arg(static_cast<int>(img.format())).arg(r.meanLum).arg(r.maxLum));
+    if (r.maxLum >= 0 && r.maxLum < 24)
+        log(QStringLiteral("警告: 第 %1 页渲染结果几乎全黑（max 亮度 %2）——"
+                           "该页可能确实无内容，或 PDF 背景被画成黑色。").arg(page + 1).arg(r.maxLum));
     return true;
 }
 
@@ -539,27 +741,10 @@ void MainWindow::onHome()
 // ---- Full-page material table extraction (drives EGpdf2excel directly) ----
 void MainWindow::onWholePageExtract()
 {
-    QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("选择 PDF（可多选）"),
-        QString(), QStringLiteral("PDF (*.pdf)"));
-    if (files.isEmpty()) return;
-    QString outDir = QFileDialog::getExistingDirectory(this, QStringLiteral("选择输出目录"));
-    if (outDir.isEmpty()) return;
-
-    showPage(1);
-    QString out, err;
-    QStringList args{ files.first(), QStringLiteral("-o"), outDir, QStringLiteral("-f"),
-                      QStringLiteral("both") };
-    for (int i = 1; i < files.size(); ++i) args << files[i];
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")), args, out, err);
-    log(QStringLiteral("[整页抽取] rc=%1").arg(rc));
-    if (!err.trimmed().isEmpty()) log(err.trimmed());
-    log(rc == 0 ? QStringLiteral("整页材料表抽取完成 → %1").arg(outDir)
-                : QStringLiteral("整页材料表抽取失败，退出码 %1").arg(rc));
-    if (rc == 0) {
-        m_tabs->setCurrentWidget(m_logView);
-        QMessageBox::information(this, QStringLiteral("整页抽取"),
-            QStringLiteral("已在内核中完成整页材料表抽取，输出目录：\n%1\n\n详细日志见「内核日志」页。").arg(outDir));
-    }
+    // 旧的"弹两个对话框 + 跑一条命令 + 弹个消息框"流程，已被独立的「材料表提取」页
+    // 取代：那里有真正的 PDF 输入区（多选 / 整目录 / 拖拽）、输出设置、逐文件进度与
+    // 失败隔离。这里只做导航，保持工具栏/菜单调用点的语义不变。
+    navTo(PageMaterials);
 }
 
 // ---- Excel drawing comparison (drives EGexcel2df directly) ----
@@ -568,11 +753,17 @@ void MainWindow::onRenderPage()
     if (m_pdfPath.isEmpty()) return;
     QImage img; double scale = 1, pw = 0, ph = 0;
     if (renderPage(m_pageIndex, img, scale, pw, ph)) {
-        m_view->setPage(img, scale, m_pageIndex);
+        m_view.canvas->setPage(img, scale, m_pageIndex);
         m_scale = scale; m_pwPt = pw; m_phPt = ph;
         loadPageWords(m_pageIndex);
         m_pageLabel->setText(QStringLiteral("%1 / %2").arg(m_pageIndex + 1).arg(m_pageCount));
+        if (m_pageNav) m_pageNav->setCurrentPage(m_pageIndex);
         log(QStringLiteral("渲染第 %1 页 (%2 x %3 px)").arg(m_pageIndex + 1).arg(img.width()).arg(img.height()));
+        // 后台预取下一页（并行/异步）：等用户点"下一页"时直接命中缓存。
+        prefetchPage(m_pageIndex + 1);
+    } else if (m_view.canvas) {
+        // 渲染失败时把原因推到画布上，界面给出可读提示而不是一块深灰（"黑屏"）。
+        m_view.canvas->setRenderFailed(QStringLiteral("见「内核日志」页"));
     }
 }
 
@@ -581,7 +772,7 @@ void MainWindow::onNextPage() { if (m_pageIndex + 1 < m_pageCount) { ++m_pageInd
 
 void MainWindow::onModeChanged(int)
 {
-    m_view->setKind(m_modeCombo->currentData().toString());
+    m_view.canvas->setKind(m_modeCombo->currentData().toString());
 }
 
 void MainWindow::onRegionSelected(int page, const QString& kind, const QRectF& rectPt)
@@ -608,7 +799,7 @@ void MainWindow::onRegionSelected(int page, const QString& kind, const QRectF& r
     }
 
     Region r; r.page = page; r.kind = kind; r.rectPt = rectPt;
-    m_view->addRegion(r);
+    m_view.canvas->addRegion(r);
     refreshJsonPreview();
     log(QStringLiteral("框选: 页%1 %2 [x=%3 y=%4 w=%5 h=%6]")
             .arg(page + 1).arg(kind).arg(rectPt.x(), 0, 'f', 1).arg(rectPt.y(), 0, 'f', 1)
@@ -617,7 +808,7 @@ void MainWindow::onRegionSelected(int page, const QString& kind, const QRectF& r
 
 void MainWindow::onClearRegions()
 {
-    m_view->clearRegions();
+    m_view.canvas->clearRegions();
     m_table->clear(); m_table->setRowCount(0); m_table->setColumnCount(0);
     m_pipes->clear();
     m_jsonView->clear();
@@ -642,10 +833,14 @@ void MainWindow::onTextPreview(int /*page*/, const QString& text)
 // into the canvas pt coordinate space.
 void MainWindow::loadPageWords(int page)
 {
-    if (m_pdfPath.isEmpty() || !m_view) return;
-    QString out, err;
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
-        {QStringLiteral("--words"), QString::number(page), m_pdfPath}, out, err);
+    if (m_pdfPath.isEmpty() || !m_view.canvas) return;
+    // 同一条融合层通道（内嵌优先）：矢量词盒直接来自内核，不做任何本地重算。
+    const KernelClient::Result wRes = KernelClient::run(
+        QStringLiteral("EGpdf2excel"),
+        {QStringLiteral("--words"), QString::number(page), m_pdfPath},
+        QString(), KernelClient::defaultBackend());
+    int rc = wRes.rc;
+    const QString out = wRes.out, err = wRes.err;
     if (rc != 0) {
         log(QStringLiteral("[words] 提取页文字失败 rc=%1").arg(rc));
         return;
@@ -666,7 +861,7 @@ void MainWindow::loadPageWords(int page)
         wb.text = w.value(QStringLiteral("text")).toString();
         words.append(wb);
     }
-    m_view->setPageWords(words);
+    m_view.canvas->setPageWords(words);
     log(QStringLiteral("已加载本页矢量文字 %1 词（实时识别就绪）").arg(words.size()));
 }
 
@@ -675,7 +870,7 @@ void MainWindow::loadPageWords(int page)
 QJsonObject MainWindow::buildRequest() const
 {
     QJsonArray regions;
-    for (const Region& r : m_view->regions()) {
+    for (const Region& r : m_view.canvas->regions()) {
         QJsonObject bbox;
         bbox.insert(QStringLiteral("x"),      r.rectPt.x());
         bbox.insert(QStringLiteral("y"),      r.rectPt.y());
@@ -692,7 +887,7 @@ QJsonObject MainWindow::buildRequest() const
     if (!m_pdfPath.isEmpty()) {
         QJsonArray pages;
         // Only the pages that actually carry a selection.
-        QSet<int> used; for (const Region& r : m_view->regions()) used.insert(r.page);
+        QSet<int> used; for (const Region& r : m_view.canvas->regions()) used.insert(r.page);
         QList<int> sorted(used.begin(), used.end()); std::sort(sorted.begin(), sorted.end());
         for (int p : sorted) pages.append(p);
         req.insert(QStringLiteral("pages"), pages);
@@ -715,7 +910,7 @@ void MainWindow::refreshJsonPreview()
 
 void MainWindow::onExportJson()
 {
-    if (m_view->regions().isEmpty()) { log(QStringLiteral("没有框选可导出")); return; }
+    if (m_view.canvas->regions().isEmpty()) { log(QStringLiteral("没有框选可导出")); return; }
     QString p = QFileDialog::getSaveFileName(this, QStringLiteral("导出区域 JSON"),
                                              QStringLiteral("regions.json"),
                                              QStringLiteral("JSON (*.json)"));
@@ -731,7 +926,7 @@ void MainWindow::onExportJson()
 
 void MainWindow::onExtract()
 {
-    if (m_view->regions().isEmpty()) { log(QStringLiteral("请先框选区域")); return; }
+    if (m_view.canvas->regions().isEmpty()) { log(QStringLiteral("请先框选区域")); return; }
     refreshJsonPreview();
 
     // 走融合层（可选内嵌调库 / 命令行）。JSON 契约直接交给内核，不落临时文件。
@@ -812,7 +1007,7 @@ void MainWindow::showRegionResponse(const QJsonObject& resp)
             log(QStringLiteral("材料表列：前 %1 列对应 %2%3").arg(cols).arg(hdr.mid(0, cols).join(QStringLiteral(" / "))).arg(present));
         }
     }
-    m_view->setWordBoxes(overlay);
+    m_view.canvas->setWordBoxes(overlay);
     log(QStringLiteral("提取完成：%1 个区域，字框叠加 %2 个").arg(regions.size()).arg(overlay.size()));
 }
 
@@ -847,8 +1042,8 @@ void MainWindow::onSchemeStatus(const QString& msg) { log(msg); }
 QVector<RegionSpec> MainWindow::canvasRegions() const
 {
     QVector<RegionSpec> out;
-    if (!m_view) return out;
-    for (const Region& r : m_view->regions()) {
+    if (!m_view.canvas) return out;
+    for (const Region& r : m_view.canvas->regions()) {
         RegionSpec g;
         g.page = r.page;
         g.kind = r.kind;
@@ -887,26 +1082,26 @@ void MainWindow::onReuseScheme(const QString& schemeId)
 
 void MainWindow::applySchemeToCanvas(const Scheme& s)
 {
-    if (!m_view) return;
-    m_view->clearRegions();
+    if (!m_view.canvas) return;
+    m_view.canvas->clearRegions();
     for (const RegionSpec& g : s.regions) {
         Region r;
         r.page = g.page;
         r.kind = g.kind;
         r.rectPt = QRectF(g.x, g.y, g.w, g.h);
-        m_view->addRegion(r);
+        m_view.canvas->addRegion(r);
     }
     // Jump to the first page that carries a box so the user sees them.
     if (!s.regions.isEmpty()) {
         m_pageIndex = s.regions.first().page;
         onRenderPage();
-        m_view->clearRegions();
+        m_view.canvas->clearRegions();
         for (const RegionSpec& g : s.regions) {
             Region r;
             r.page = g.page;
             r.kind = g.kind;
             r.rectPt = QRectF(g.x, g.y, g.w, g.h);
-            m_view->addRegion(r);
+            m_view.canvas->addRegion(r);
         }
     }
     refreshJsonPreview();
@@ -924,13 +1119,13 @@ void MainWindow::onRewriteRegion(const QString& schemeId, int regionIndex)
     m_pageIndex = s->regions[regionIndex].page;
     showPage(1);
     onRenderPage();
-    m_view->clearRegions();
+    m_view.canvas->clearRegions();
     Region r;
     r.page = s->regions[regionIndex].page;
     r.kind = s->regions[regionIndex].kind;
     r.rectPt = QRectF(s->regions[regionIndex].x, s->regions[regionIndex].y,
                       s->regions[regionIndex].w, s->regions[regionIndex].h);
-    m_view->addRegion(r);
+    m_view.canvas->addRegion(r);
 
     log(QStringLiteral("重写模式：在画布上拖拽以重画该区域（完成后自动保存到方案「%1」）").arg(s->name));
     statusBar()->showMessage(QStringLiteral("重写模式 — 在画布上拖拽重画区域"));

@@ -621,6 +621,22 @@ KernelClient::Result KernelClient::runCli(const QString& kernel, const QStringLi
 KernelClient::Result KernelClient::run(const QString& kernel, const QStringList& args,
                                        const QString& jsonRequest, Backend backend, int timeoutMs)
 {
+    // ------------------------------------------------------------------
+    // 调用串行化
+    //
+    // 内嵌后端把内核 DLL 载入本进程，内核用的是**进程级单例**资源：MuPDFContext、
+    // g_log（日志缓冲）、以及 hostfxr 绑定的默认 ALC。并发调用会互相污染日志、
+    // 甚至同时持有 MuPDF 上下文导致随机崩溃。命令行后端起的是独立进程，天然隔离，
+    // 并发是安全的（也才有真正的并行收益）。
+    // 因此：内嵌路径全局串行；命令行路径不加锁。
+    // "并行"体现在：界面线程绝不被内核调用阻塞（所有调用都在后台线程），
+    // 且命令行后端可多文件并行。
+    // ------------------------------------------------------------------
+    static QMutex s_embeddedMutex;
+    const bool needsLock = backend != Backend::Cli;
+    if (needsLock) s_embeddedMutex.lock();
+    struct Unlocker { QMutex* m; bool on; ~Unlocker() { if (on) m->unlock(); } } unlocker{ &s_embeddedMutex, needsLock };
+
     if (backend == Backend::Embedded)
         return runEmbedded(kernel, args, jsonRequest);
 

@@ -661,13 +661,20 @@ namespace EGexcel2df.Engine
             return n.Length > 28 ? n.Substring(0, 28) + i : n + i;
         }
     
+    /// <summary>
+    /// 引擎入口（CLI 与 GUI 共用）。给了 log 时把**诊断**（Console.Error）转发过去。
+    ///
+    /// ⚠️ 不要转发 Console.Out：stdout 是机器可读的结果通道（--json / --locate 等
+    /// 模式往 stdout 打 JSON），内嵌调用靠捕获 stdout 经 outBuf 回传给宿主；转发
+    /// stdout 会把结果当日志吞掉。详见 EGpdf2excel.Engine.PdfExtractor.Run 的注释。
+    /// </summary>
     public static int Run(string[] args, Action<string>? log = null)
     {
-        TextWriter? prevErr = Console.Error, prevOut = Console.Out;
+        TextWriter? prevErr = Console.Error;
         ForwardingWriter? fw = null;
-        if (log != null) { fw = new ForwardingWriter(log); Console.SetError(fw); Console.SetOut(fw); }
+        if (log != null) { fw = new ForwardingWriter(log); Console.SetError(fw); }
         try { return MainCore(args); }
-        finally { fw?.Flush(); Console.SetError(prevErr); Console.SetOut(prevOut); }
+        finally { fw?.Flush(); Console.SetError(prevErr); }
     }
 
     /// <summary>One-shot compare used by the GUI. Returns change records.</summary>
