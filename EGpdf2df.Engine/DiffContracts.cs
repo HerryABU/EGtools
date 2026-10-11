@@ -45,6 +45,8 @@ namespace EGpdf2df.Engine
         //   textAdded  = 新增文字改色(默认红)；textRemoved = 删除文字改色(默认蓝)。
         // 文字不再画圈/点，而是直接重绘成对应颜色（git +/- 风格：红=新增，蓝=删除）。
         [JsonPropertyName("colors")] public ReqColors? Colors { get; set; }
+        // 图形差异的标记形式：semi(半透明填充+深色描边，默认) / solid(实心填充) / outline(仅描边)。
+        [JsonPropertyName("markStyle")] public string? MarkStyle { get; set; }
         // 变更时"旧(蓝)"文字相对"新(红)"文字的插入方向：down(下) / up(上) / right(右) / left(左)。
         [JsonPropertyName("textInsertDirection")] public string? TextInsertDirection { get; set; }
         // 线宽（描红边线粗细，可调参数，覆盖配置文件 lineWidth）。
@@ -64,6 +66,7 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("change")] public string? Change { get; set; } // 变更 图形描红(绿)
         [JsonPropertyName("textAdded")] public string? TextAdded { get; set; }     // 新增文字改色(红)
         [JsonPropertyName("textRemoved")] public string? TextRemoved { get; set; } // 删除文字改色(蓝)
+        [JsonPropertyName("markStroke")] public string? MarkStroke { get; set; } // 图形标记描边色(留空=自动取标记色深色版)
     }
 
     public sealed class Bbox

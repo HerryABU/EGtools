@@ -31,6 +31,7 @@ public static class Program
         string? baseline = null, target = null, output = null;
         string? pagesArg = null;
         string? textAddedColor = null, textRemovedColor = null, textInsertDirection = null;
+        string? markStyle = null, markStrokeColor = null;
         bool readStdin = false;
         bool locateMode = false;
         for (int i = 0; i < args.Length; i++)
@@ -51,6 +52,8 @@ public static class Program
                 case "--text-added-color": textAddedColor = take(""); break;
                 case "--text-removed-color": textRemovedColor = take(""); break;
                 case "--text-insert-direction": textInsertDirection = take(""); break;
+                case "--mark-style": markStyle = take(""); break;
+                case "--mark-stroke-color": markStrokeColor = take(""); break;
                 default:
                     if (a.StartsWith("-")) { L($"Unknown option: {a} (use --help)"); return 2; }
                     if (baseline == null) baseline = a; else if (target == null) target = a; else L($"Ignoring extra argument: {a}");
@@ -95,8 +98,13 @@ public static class Program
             if (!string.IsNullOrWhiteSpace(c.Change)) cfg.Annotation.ChangeColor = c.Change;
             if (!string.IsNullOrWhiteSpace(c.TextAdded)) cfg.Annotation.TextAddedColor = c.TextAdded;
             if (!string.IsNullOrWhiteSpace(c.TextRemoved)) cfg.Annotation.TextRemovedColor = c.TextRemoved;
+            if (!string.IsNullOrWhiteSpace(c.MarkStroke)) cfg.Annotation.MarkStrokeColor = c.MarkStroke;
         }
         var o = req?.Options;
+        // 图形标记形式：semi(半透明填充+深色描边，默认) / solid(实心填充) / outline(仅描边)
+        if (!string.IsNullOrWhiteSpace(o?.MarkStyle)) cfg.Annotation.MarkStyle = NormalizeMarkStyle(o!.MarkStyle);
+        if (!string.IsNullOrWhiteSpace(markStyle)) cfg.Annotation.MarkStyle = NormalizeMarkStyle(markStyle);
+        if (!string.IsNullOrWhiteSpace(markStrokeColor)) cfg.Annotation.MarkStrokeColor = markStrokeColor;
         if (o?.LineWidth != null) cfg.Annotation.LineWidth = (int)Math.Max(0.5, o.LineWidth.Value);
         if (o?.FillOpacity != null) cfg.Annotation.FillOpacity = Math.Min(1.0, Math.Max(0.0, o.FillOpacity.Value));
         if (o?.Outline != null) cfg.Annotation.Outline = o.Outline.Value;
@@ -204,6 +212,18 @@ public static class Program
         };
     }
 
+    // 标记形式归一化：semi(默认) / solid / outline；非法值回退 semi。
+    static string NormalizeMarkStyle(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "semi";
+        return s.Trim().ToLowerInvariant() switch
+        {
+            "solid" or "fill" or "实心" => "solid",
+            "outline" or "stroke" or "line" or "描边" => "outline",
+            _ => "semi"
+        };
+    }
+
     static void PrintHelp()
     {
         Console.WriteLine("EGpdf2df v1.0.0 - 对比两份图纸 PDF，输出带红色差异标注的新 PDF");
@@ -224,6 +244,8 @@ public static class Program
         Console.WriteLine("  --text-added-color H    新增文字改色 #RRGGBB (default #FF0000 红)");
         Console.WriteLine("  --text-removed-color H  删除文字改色 #RRGGBB (default #0000FF 蓝)");
         Console.WriteLine("  --text-insert-direction D  变更时旧(蓝)文字插入方向 down/up/right/left (default down)");
+        Console.WriteLine("  --mark-style M       图形标记形式 semi(半透明填充+深色描边,默认)/solid(实心填充)/outline(仅描边)");
+        Console.WriteLine("  --mark-stroke-color H     图形标记描边色 #RRGGBB (default 自动取标记色深色版)");
         Console.WriteLine("  --locate FILE    定位模式：在两份 PDF 指定页查找字符串坐标 (--json 可给路径或名称)");
         Console.WriteLine("  -h, --help       显示帮助 (show help)");
         Console.WriteLine();

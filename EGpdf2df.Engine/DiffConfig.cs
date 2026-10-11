@@ -75,10 +75,17 @@ namespace EGpdf2df.Engine
             public string TextAddedColor { get; set; } = "#FF0000";   // 新增文字改色（红）
             public string TextRemovedColor { get; set; } = "#0000FF";  // 删除文字改色（蓝）
             public string TextInsertDirection { get; set; } = "down";  // 变更旧文字插入方向 down/up/right/left
+            // 图形差异的【标记形式】（高密度图纸可选弱化标记，避免实心块盖住底图内容）：
+            //   semi    = 半透明填充 + 深色描边（默认；填充很淡、描边清晰，底图仍可读）
+            //   solid   = 实心填充（原行为，标记最强）
+            //   outline = 仅描边、不填充（最不遮挡，适合极密的施工图）
+            public string MarkStyle { get; set; } = "semi";
+            // 描边色（#RRGGBB）。留空则自动取标记色的深色版（保证对比度且不刺眼）。
+            public string MarkStrokeColor { get; set; } = "";
             // 线宽（描红轮廓边线粗细，可调参数：前端数值框 / 配置文件）。亦控制填充外扩后的边线。
             public int LineWidth { get; set; } = 3;
             // 真描红：填充实际变更区域（半透明），而非仅描边轮廓。
-            public double FillOpacity { get; set; } = 0.40;       // 填充透明度 0~1
+            public double FillOpacity { get; set; } = 0.40;       // 填充透明度 0~1（semi 模式下会自动再打 5 折）
             public bool Outline { get; set; } = true;             // 是否在填充外再描一条同形边线
             public int HaloPx { get; set; } = 0;                  // 填充向外扩张像素(0=精准贴合形状)
             // 嵌入 Unicode 字体（默认 Windows Arial，含土耳其语等字形），让"消失/变更文字"
@@ -105,7 +112,7 @@ namespace EGpdf2df.Engine
   ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
+  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""markStyle"": ""semi"", ""markStrokeColor"": """", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
   ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 

@@ -39,6 +39,7 @@ private slots:
     void onPickChangeColor();
     void onPickTextAddedColor();
     void onPickTextRemovedColor();
+    void onPickMarkStrokeColor();
 
 private:
     QString cliExe(const QString& name) const;
@@ -66,6 +67,10 @@ private:
     QPushButton* m_textAddedColorBtn = nullptr;
     QPushButton* m_textRemovedColorBtn = nullptr;
     QComboBox* m_textDirCombo = nullptr;   // 变更旧(蓝)文字插入方向 down/up/right/left
+    // 图形标记形式 + 描边色：这类图信息密度很高，实心块会盖住底图，故默认"淡填充+深色描边"。
+    QComboBox* m_markStyleCombo = nullptr;  // semi(半透明+描边) / solid(实心) / outline(仅描边)
+    QString m_markStrokeColor = QString();   // 留空 = 内核自动取标记色深色版
+    QPushButton* m_markStrokeBtn = nullptr;
     // 描红/填充可调参数（线宽粗细、填充透明度、填充外扩像素）。
     QSpinBox*      m_lwSpin   = nullptr;   // 线宽(描边粗细) 1..10
     QDoubleSpinBox* m_opacSpin = nullptr;  // 填充透明度 0..1

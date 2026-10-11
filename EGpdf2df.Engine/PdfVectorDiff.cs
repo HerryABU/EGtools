@@ -90,24 +90,61 @@ namespace EGpdf2df.Engine
                         foreach (var ln in it.OldLines) removedBoxes.Add(ToContentBox(ln, mA, mB, mC, mD, mE, mF));
                 }
 
-                // ---- 图形差异层：UNROTATED 内容空间下的描边(下垫) + 真描红填充(上层) ----
-                float lw = Math.Max(1.2f, (float)ann.LineWidth);
-                var underCanvas = new PdfCanvas(page.NewContentStreamBefore(), page.GetResources(), pdf);
-                underCanvas.SaveState();
-                underCanvas.ConcatMatrix(mA, mB, mC, mD, mE, mF);
-                foreach (var c in a.AddedContours)
-                    StrokePoly(underCanvas, c, scale, traceCol, lw, solid: true);
-                foreach (var c in a.RemovedContours)
-                    StrokePoly(underCanvas, c, scale, traceCol, lw, solid: false);
-                foreach (var c in a.ChangedContours)
-                    StrokePoly(underCanvas, c, scale, changeCol, lw, solid: true);
-                underCanvas.RestoreState();
+                // ---- 图形差异层：标记形式可选（semi / solid / outline）----
+                //   semi(默认) = 淡填充 + 顶部深色描边 —— 底图仍可读，高密度图纸首选
+                //   solid      = 实心填充 + 细描边（原行为，标记最强）
+                //   outline    = 仅描边、不填充 —— 最不遮挡
+                string mstyle = (ann.MarkStyle ?? "semi").Trim().ToLowerInvariant();
+                if (mstyle != "solid" && mstyle != "outline") mstyle = "semi";
+                Color? userStroke = ParseColor(ann.MarkStrokeColor);
+                Color traceStroke = userStroke ?? Darken(traceCol, 0.45f);
+                Color changeStroke = userStroke ?? Darken(changeCol, 0.45f);
+                float lwBase = Math.Max(1.2f, (float)ann.LineWidth);
+                float lwMark = mstyle == "solid" ? lwBase : lwBase * 2f;   // 弱填充时需要更粗的描边才看得清
+                double fillAlpha = mstyle switch
+                {
+                    "solid" => ann.FillOpacity,
+                    "semi" => ann.FillOpacity * 0.5,
+                    _ => 0.0,
+                };
 
-                // OVER 层：真描红填充变更图形(覆盖在变更线框之上，保证可见)。
+                // OVER 层：与下垫层用同一套 /Rotate 补偿矩阵，保证旋转页上的标注不错位。
+                // 必须 Save/Restore 配对——后面 TextRedlineDiff 会往同一内容流追加原始算子，
+                // 泄漏的 cm 会把那些字形一起搬歪。
                 var overCanvas = new PdfCanvas(page);
-                foreach (var c in a.AddedContours) FillPoly(overCanvas, c, scale, traceCol, ann.FillOpacity);
-                foreach (var c in a.RemovedContours) FillPoly(overCanvas, c, scale, traceCol, ann.FillOpacity);
-                foreach (var c in a.ChangedContours) FillPoly(overCanvas, c, scale, changeCol, ann.FillOpacity);
+                overCanvas.SaveState();
+                overCanvas.ConcatMatrix(mA, mB, mC, mD, mE, mF);
+
+                // ① 填充层（semi / solid）
+                if (fillAlpha > 0)
+                {
+                    foreach (var c in a.AddedContours) FillPoly(overCanvas, c, scale, traceCol, fillAlpha);
+                    foreach (var c in a.RemovedContours) FillPoly(overCanvas, c, scale, traceCol, fillAlpha);
+                    foreach (var c in a.ChangedContours) FillPoly(overCanvas, c, scale, changeCol, fillAlpha);
+                }
+
+                // ② 描边层。solid 沿用原行为——垫在内容流之前(字下面)避免遮住原图文字；
+                //    semi / outline 的描边就是标记本身，压在填充之上让边缘锐利可辨。
+                if (mstyle == "solid")
+                {
+                    if (ann.Outline)
+                    {
+                        var underCanvas = new PdfCanvas(page.NewContentStreamBefore(), page.GetResources(), pdf);
+                        underCanvas.SaveState();
+                        underCanvas.ConcatMatrix(mA, mB, mC, mD, mE, mF);
+                        foreach (var c in a.AddedContours) StrokePoly(underCanvas, c, scale, traceCol, lwMark, solid: true);
+                        foreach (var c in a.RemovedContours) StrokePoly(underCanvas, c, scale, traceCol, lwMark, solid: false);
+                        foreach (var c in a.ChangedContours) StrokePoly(underCanvas, c, scale, changeCol, lwMark, solid: true);
+                        underCanvas.RestoreState();
+                    }
+                }
+                else
+                {
+                    foreach (var c in a.AddedContours) StrokePoly(overCanvas, c, scale, traceStroke, lwMark, solid: true);
+                    foreach (var c in a.RemovedContours) StrokePoly(overCanvas, c, scale, traceStroke, lwMark, solid: false);
+                    foreach (var c in a.ChangedContours) StrokePoly(overCanvas, c, scale, changeStroke, lwMark, solid: true);
+                }
+                overCanvas.RestoreState();
 
                 // ---- 文字差异重绘（最后绘制，确保红/蓝字形压在图形填充之上，清晰可读）----
                 if (addedBoxes.Count > 0)
@@ -203,6 +240,16 @@ namespace EGpdf2df.Engine
             PathPoly(c, pts, scale);
             c.Fill();
             c.RestoreState();
+        }
+
+        // 取标记色的深色版作描边：保证与底图/填充的对比度，且不像纯黑那样在红填充上显得脏。
+        static Color Darken(Color c, float f)
+        {
+            var v = c.GetColorValue();
+            return new DeviceRgb(
+                (int)Math.Round(Math.Max(0, v[0] * (1 - f))),
+                (int)Math.Round(Math.Max(0, v[1] * (1 - f))),
+                (int)Math.Round(Math.Max(0, v[2] * (1 - f))));
         }
 
         // 解析用户传入的色号 #RRGGBB / #RRGGBBAA → iText DeviceRgb（忽略 alpha）。

@@ -108,6 +108,24 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     colRow->addWidget(m_textDirCombo);
     colRow->addStretch();
 
+    // ---- 图形标记形式 + 描边色（高密度图纸默认淡填充+深色描边，避免实心块遮挡底图） ----
+    auto* mkRow = new QHBoxLayout();
+    m_markStyleCombo = new QComboBox();
+    m_markStyleCombo->addItem(QStringLiteral("半透明填充 + 深色描边（推荐）"), QStringLiteral("semi"));
+    m_markStyleCombo->addItem(QStringLiteral("实心填充（标记最强）"),          QStringLiteral("solid"));
+    m_markStyleCombo->addItem(QStringLiteral("仅描边，不填充（最不遮挡）"),    QStringLiteral("outline"));
+    m_markStyleCombo->setCurrentIndex(0);          // 默认 semi
+    m_markStrokeBtn = new QPushButton();
+    m_markStrokeBtn->setFixedSize(56, 24);
+    m_markStrokeBtn->setCursor(Qt::PointingHandCursor);
+    m_markStrokeBtn->setToolTip(QStringLiteral("留空则由内核自动取标记色的深色版"));
+    paintSwatch(m_markStrokeBtn, m_markStrokeColor.isEmpty() ? QStringLiteral("#8A8A8A") : m_markStrokeColor);
+    mkRow->addWidget(new QLabel(QStringLiteral("图形标记形式:")));
+    mkRow->addWidget(m_markStyleCombo);
+    mkRow->addWidget(new QLabel(QStringLiteral("描边色(留空=自动):")));
+    mkRow->addWidget(m_markStrokeBtn);
+    mkRow->addStretch();
+
     // ---- 描红/填充可调参数：线宽粗细 / 填充透明度 / 填充外扩 ----
     auto* parRow = new QHBoxLayout();
     m_lwSpin = new QSpinBox();
@@ -130,7 +148,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     parRow->addWidget(m_haloSpin);
     parRow->addStretch();
 
-    m_runBtn = new QPushButton(QStringLiteral("开始比对（红/绿填充=图形变更·文字直接改色：新增红(+)/删除蓝(-)）"));
+    m_runBtn = new QPushButton(QStringLiteral("开始比对（图形标记按所选形式·文字直接改色：新增红(+)/删除蓝(-)）"));
     m_runBtn->setStyleSheet(QStringLiteral("QPushButton{background:#2d7d46;color:#fff;padding:6px 12px;border-radius:5px;font-weight:600;}"));
     auto* openBtn = new QPushButton(QStringLiteral("打开差异图…"));
     auto* btnRow = new QHBoxLayout();
@@ -145,12 +163,12 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     auto* legend = new QGroupBox(QStringLiteral("图例（差异直接标注在新 PDF 中）"));
     auto* legendLay = new QVBoxLayout(legend);
     legendLay->addWidget(new QLabel(QStringLiteral(
-        "● <b>红填充(实线轮廓)</b> = 新增图形 — 真描红：精确填充变更区域(非描边/非方框/非圈)\n"
-        "● <b>红填充(虚线轮廓)</b> = 删除图形 — 原轮廓真填充\n"
-        "● <b>绿填充(实线轮廓)</b> = 变更：同序号/同位置但内容改动(绿)\n"
+        "● <b>图形标记形式</b>（可切换）：<b>semi</b> 半透明填充+深色描边（默认，底图仍可读）／"
+        "<b>solid</b> 实心填充（标记最强）／<b>outline</b> 仅描边（最不遮挡）\n"
+        "● <b>红(实线轮廓)</b> = 新增图形　<b>红(虚线轮廓)</b> = 删除图形　<b>绿</b> = 变更：同序号但内容改动\n"
         "● <b>文字直接改色（不画圈）</b>：<font color=\"#FF0000\">新增文字 = 红色</font>（覆盖在原黑色文字上，改原字色），"
         "<font color=\"#0000FF\">删除文字 = 蓝色</font>（插入到原文本框，git - 行）；变更则红(新,改原字色)+蓝(旧,按方向插入)\n"
-        "文字比对按<b>序号配对</b>再比内容，位置位移不影响判定；红/蓝/绿三色与线宽/透明度/外扩/变更旧字方向均可自定，色号直接传给内核。")));
+        "标记色/描边色/线宽/透明度/外扩/标记形式/变更旧字方向均可自定，色号直接传给内核。")));
     legendLay->setSpacing(2);
 
     // ---- 管线号↔材料表一一对应结果 ----
@@ -170,6 +188,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     ctrlLay->addLayout(csvRow);
     ctrlLay->addLayout(optRow);
     ctrlLay->addLayout(colRow);
+    ctrlLay->addLayout(mkRow);
     ctrlLay->addLayout(parRow);
     ctrlLay->addLayout(btnRow);
     ctrlLay->addWidget(m_status);
@@ -213,6 +232,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     connect(m_changeColorBtn, &QPushButton::clicked, this, &DiffPage::onPickChangeColor);
     connect(m_textAddedColorBtn, &QPushButton::clicked, this, &DiffPage::onPickTextAddedColor);
     connect(m_textRemovedColorBtn, &QPushButton::clicked, this, &DiffPage::onPickTextRemovedColor);
+    connect(m_markStrokeBtn, &QPushButton::clicked, this, &DiffPage::onPickMarkStrokeColor);
 }
 
 // 同步颜色按钮的色块：背景=当前颜色；深色底自动换白字，浅色底用黑字。
@@ -260,6 +280,16 @@ void DiffPage::onPickTextRemovedColor()
 {
     if (pickColor(QStringLiteral("选择删除文字颜色（git -，默认蓝）"), m_textRemovedColor, m_textRemovedColorBtn))
         emit statusMessage(QStringLiteral("删除文字颜色 = %1").arg(m_textRemovedColor));
+}
+
+void DiffPage::onPickMarkStrokeColor()
+{
+    const QColor init = m_markStrokeColor.isEmpty() ? QColor(0x8A, 0x8A, 0x8A) : QColor(m_markStrokeColor);
+    const QColor picked = QColorDialog::getColor(init, this, QStringLiteral("选择图形标记描边色（留空则自动取标记色深色版）"));
+    if (!picked.isValid()) return;
+    m_markStrokeColor = picked.name(QColor::HexRgb).toUpper();
+    paintSwatch(m_markStrokeBtn, m_markStrokeColor);
+    emit statusMessage(QStringLiteral("图形标记描边色 = %1").arg(m_markStrokeColor));
 }
 
 QString DiffPage::cliExe(const QString& name) const
@@ -340,7 +370,11 @@ void DiffPage::onRun()
     colors[QStringLiteral("change")] = m_changeColor;
     colors[QStringLiteral("textAdded")]   = m_textAddedColor;
     colors[QStringLiteral("textRemoved")] = m_textRemovedColor;
+    if (!m_markStrokeColor.isEmpty())
+        colors[QStringLiteral("markStroke")] = m_markStrokeColor;   // 留空则由内核自动取深色版
     opt[QStringLiteral("colors")] = colors;
+    // 图形标记形式：semi(半透明填充+深色描边) / solid(实心填充) / outline(仅描边)
+    opt[QStringLiteral("markStyle")] = m_markStyleCombo->currentData().toString();
     // 变更旧(蓝)文字插入方向（down/up/right/left），蓝字按方向插入到"新(红)"文字文本框附近。
     if (m_textDirCombo)
         opt[QStringLiteral("textInsertDirection")] = m_textDirCombo->currentData().toString();
