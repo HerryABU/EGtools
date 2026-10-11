@@ -64,7 +64,10 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
     auto* ht = new QVBoxLayout();
     ht->setSpacing(2);
     ht->addWidget(heading(QStringLiteral("EGtools"), 22, "#0b5cad"));
-    ht->addWidget(new QLabel(QStringLiteral("工程图纸材料表提取与对比工具集 · 区域框选 / 图纸差异")));
+    auto* subTitle = new QLabel(QStringLiteral("工程图纸材料表提取与对比工具集 · 区域框选 / 图纸差异"));
+    subTitle->setWordWrap(true);
+    subTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    ht->addWidget(subTitle);
     m_kernelBadge = new QLabel();
     m_kernelBadge->setStyleSheet("color:#5a6472;");
     ht->addWidget(m_kernelBadge);
@@ -92,10 +95,15 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
         for (const char* t : texts) {
             auto* s = new QFrame();
             s->setStyleSheet("QFrame{background:#eef3fa;border:none;border-radius:8px;}");
+            s->setMinimumWidth(0);
             auto* sl = new QVBoxLayout(s);
             sl->setContentsMargins(14, 12, 14, 12);
             auto* lbl = new QLabel(QString::fromUtf8(t));
             lbl->setStyleSheet("border:none;");
+            // 四步说明并排一行，若不让它们换行/不忽略宽度诉求，就会把整页最小宽度
+            // 顶到 ~1400px（进而绑架主窗口）。允许换行 + 水平 Ignored 后可自由收窄。
+            lbl->setWordWrap(true);
+            lbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
             sl->addWidget(lbl);
             steps->addWidget(s, 1);
         }
@@ -166,8 +174,11 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
     }
     col->addLayout(grid);
 
-    col->addWidget(new QLabel(QStringLiteral(
-        "提示：Qt 界面只负责交互与编排，所有 PDF / Excel 处理均由独立的 .NET 命令行内核完成，界面与内核通过 JSON 契约解耦。")));
+    auto* footNote = new QLabel(QStringLiteral(
+        "提示：Qt 界面只负责交互与编排，所有 PDF / Excel 处理均由独立的 .NET 命令行内核完成，界面与内核通过 JSON 契约解耦。"));
+    footNote->setWordWrap(true);
+    footNote->setObjectName(QStringLiteral("mutedHint"));
+    col->addWidget(footNote);
 
     scroll->setWidget(page);
     outer->addWidget(scroll);
@@ -190,11 +201,14 @@ QWidget* HomePage::makeCard(const QString& iconText, const QString& title,
     ic->setStyleSheet("background:#0b5cad;color:white;border-radius:8px;font-size:15pt;border:none;");
     top->addWidget(ic);
     auto* t = heading(title, 12, "#1a2b3c");
+    t->setWordWrap(true);
+    t->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     top->addWidget(t, 1);
     l->addLayout(top);
 
     auto* d = new QLabel(desc);
     d->setWordWrap(true);
+    d->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     d->setStyleSheet("color:#4a5568;border:none;");
     l->addWidget(d);
 

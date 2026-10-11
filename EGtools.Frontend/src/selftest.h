@@ -24,3 +24,8 @@ int runContinuousTest(const QString& cliDir, const QString& pdfPath);
 // 批量提取并发自检：同一 PDF 重复 N 次、并发度 >1 跑一遍，验证并发路径的
 // 线程安全与计数正确（跨线程信号不丢、成败数准、确实产出文件）。
 int runBatchTest(const QString& cliDir, const QString& pdfPath, int jobs, int concurrency);
+
+// 布局审计：离屏构造主窗口，打印窗口最小尺寸 + 控件树几何 + 各关键区域宽度。
+// 用来把"横向太长"从主观观感变成可比较的数字（尤其是 minimumSizeHint —— 它才是
+// 决定"窗口能不能变窄"的东西）。不依赖内核与 PDF。
+int runLayoutDump();

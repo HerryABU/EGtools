@@ -1,6 +1,7 @@
 #include "schemepage.h"
 
 #include <QComboBox>
+#include <QSizePolicy>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -51,6 +52,8 @@ SchemePage::SchemePage(SchemeStore* store, QWidget* parent)
     root->setSpacing(8);
 
     auto* title = new QLabel(QStringLiteral("框选方案 — 保存 / 复用 / 修改 / 导出"));
+    title->setWordWrap(true);
+    title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     title->setStyleSheet("font-size:13pt;font-weight:600;color:#0b5cad;");
     root->addWidget(title);
 
@@ -104,6 +107,9 @@ SchemePage::SchemePage(SchemeStore* store, QWidget* parent)
         "直接在表格里改「类型 / 页 / X / Y / 宽 / 高」即可修改字段（无需编辑 JSON）。\n"
         "坐标单位为 PDF 点，左上原点、y 向下；「重写框选」会回到画布重新框一次。"));
     hint->setStyleSheet("color:#5a6472;");
+    // 允许换行 + 忽略宽度诉求：否则这段说明会把整个方案页（进而主窗口）顶宽。
+    hint->setWordWrap(true);
+    hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     rv->addWidget(hint);
 
     auto* brow = new QHBoxLayout();

@@ -3,6 +3,8 @@
 #include "kernelclient.h"
 
 #include <QCoreApplication>
+#include <QScrollArea>
+#include <QSizePolicy>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -54,10 +56,23 @@ ExcelComparePage::ExcelComparePage(QWidget* parent) : QWidget(parent)
     m_jsonView = new QTextEdit();
     m_jsonView->setReadOnly(true);
     m_jsonView->setLineWrapMode(QTextEdit::NoWrap);
+    // ⚠️ NoWrap 文本控件按"最长行"报告 minimumSizeHint ⇒ 内容变长就会抬高整窗最小宽度。
+    // 水平方向设为 Ignored：布局不采信它的宽度诉求，横向溢出交给它自己的滚动条。
+    m_jsonView->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+
+
+    // 控制区包滚动容器：窄/矮窗口下靠滚动查看，不裁切、不顶宽。
+    auto* ctrlScroll = new QScrollArea();
+    ctrlScroll->setWidget(ctrl);
+    ctrlScroll->setWidgetResizable(true);
+    ctrlScroll->setFrameShape(QFrame::NoFrame);
+    ctrlScroll->setMinimumWidth(0);
+    ctrlScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
 
     auto* split = new QSplitter(Qt::Horizontal);
-    split->addWidget(ctrl);
+    split->addWidget(ctrlScroll);
     split->addWidget(m_jsonView);
+    split->setChildrenCollapsible(false);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 3);
 

@@ -3,19 +3,25 @@
 #include "continuouspdfview.h"
 #include "kernelclient.h"
 #include "materialextractpage.h"
+#include "mainwindow.h"
 
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QGuiApplication>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScreen>
 #include <QScrollArea>
+#include <QStatusBar>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QThread>
+#include <QToolBar>
 #include <QApplication>
 
 static QTextStream out(stdout);
@@ -393,6 +399,142 @@ int runBatchTest(const QString& cliDirIn, const QString& pdfIn, int jobs, int co
     if (produced.isEmpty()) { out << "[FAIL] 没有产出任何 CSV（并发路径没真干活？）\n"; out.flush(); return 8; }
 
     out << "[PASS] batch test: 并发提取正确（计数准确、跨线程信号完整、有实际产物）\n";
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 布局审计
+//
+// "横向太长"这类问题靠肉眼争论没有意义，这里把它变成数字：
+//   * window.minimumSizeHint() —— **窗口能不能变窄**完全由它决定；它偏大就说明
+//     有某个控件（常见是文字很长的下拉/按钮）在绑架整窗宽度。
+//   * 每个控件的 minimumSizeHint / sizeHint / 实际几何 —— 定位"谁把它撑大的"。
+// 递归打印控件树（限深度），并在最后给出横向占用前几名的排行。
+// ---------------------------------------------------------------------------
+namespace {
+
+struct LayoutRow
+{
+    QString path;        // 父链路径（用于定位"到底是谁"）
+    QString cls;
+    QString name;
+    int minW = 0, hintW = 0, actualW = 0, actualH = 0;
+};
+
+QString widgetPath(QWidget* w)
+{
+    QStringList chain;
+    for (QWidget* p = w; p; p = qobject_cast<QWidget*>(p->parentWidget())) {
+        QString seg = QString::fromLatin1(p->metaObject()->className());
+        if (!p->objectName().isEmpty()) seg += QLatin1Char('#') + p->objectName();
+        chain.prepend(seg);
+        if (chain.size() >= 4) break;
+    }
+    return chain.join(QStringLiteral(" < "));
+}
+
+void walkLayout(QWidget* w, int depth, int maxDepth, QTextStream& os,
+                QVector<LayoutRow>& rank)
+{
+    if (!w || depth > maxDepth) return;
+    const QSize mn = w->minimumSizeHint().isValid() ? w->minimumSizeHint() : QSize(0, 0);
+    LayoutRow row;
+    row.path = widgetPath(w);
+    row.cls = QString::fromLatin1(w->metaObject()->className());
+    row.name = w->objectName();
+    row.minW = mn.width();
+    row.hintW = w->sizeHint().width();
+    row.actualW = w->width();
+    row.actualH = w->height();
+    rank.push_back(row);
+    Q_UNUSED(os);
+
+    const QObjectList kids = w->children();
+    for (QObject* o : kids) {
+        if (auto* cw = qobject_cast<QWidget*>(o))
+            walkLayout(cw, depth + 1, maxDepth, os, rank);
+    }
+}
+
+} // namespace
+
+int runLayoutDump()
+{
+    auto* w = new MainWindow();
+    w->resize(1280, 860);
+    w->show();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 300);
+
+    out << "=== 布局审计（1280x860，离屏） ===\n";
+    const QSize mn = w->minimumSizeHint();
+    out << "窗口最小尺寸 = " << mn.width() << " x " << mn.height()
+        << "   ← 这个数决定窗口能不能变窄\n";
+    out << "窗口实际尺寸 = " << w->width() << " x " << w->height() << "\n";
+    if (QScreen* scr = QGuiApplication::primaryScreen()) {
+        const QRect ag = scr->availableGeometry();
+        out << "屏幕可用区   = " << ag.width() << "x" << ag.height() << "\n";
+    } else {
+        out << "屏幕可用区   = ?\n";
+    }
+
+    // 状态栏常驻读数（「缩放 %」「页码」已下放到这里）
+    if (auto* sb = w->statusBar())
+        out << "状态栏高度 = " << sb->height() << "\n";
+
+    QVector<LayoutRow> rank;
+    walkLayout(w, 0, 12, out, rank);
+
+    // 横向占用排行：把"谁在绑架窗口宽度"按最小宽度排出来（含父链，便于定位）。
+    std::sort(rank.begin(), rank.end(), [](const LayoutRow& a, const LayoutRow& b){
+        return a.minW > b.minW;
+    });
+    out << "\n最小宽度排行（前 20，>=150 才可能绑架窗口宽度）:\n";
+    int shown = 0;
+    for (const LayoutRow& r : rank) {
+        if (r.minW < 150 || shown >= 20) continue;
+        out << QStringLiteral("  minW=%1 hintW=%2 实际=%3x%4\n     %5\n")
+                   .arg(r.minW, 5).arg(r.hintW, 5).arg(r.actualW, 5).arg(r.actualH, 4)
+                   .arg(r.path);
+        ++shown;
+    }
+
+    out << "\n标签页清单（核对「窗口堆叠」是否真的把面板收进来了）:\n";
+    for (QWidget* kid : w->findChildren<QWidget*>()) {
+        if (auto* tw = qobject_cast<QTabWidget*>(kid)) {
+            QStringList names;
+            for (int i = 0; i < tw->count(); ++i)
+                names << QStringLiteral("%1[%2px]").arg(tw->tabText(i)).arg(tw->widget(i)->width());
+            out << QStringLiteral("  %1: %2\n")
+                       .arg(QString::fromLatin1(tw->metaObject()->className()),
+                            names.join(QStringLiteral(" | ")));
+        }
+    }
+
+    out << "\n关键区域实测宽度:\n";
+    auto report = [&](const char* label, QWidget* wid){
+        if (!wid) { out << QStringLiteral("  %1: <null>\n").arg(QLatin1String(label)); return; }
+        out << QStringLiteral("  %1: 宽 %2 (最小 %3)\n")
+                   .arg(QString::fromUtf8(label), -22)
+                   .arg(wid->width(), 5).arg(wid->minimumSizeHint().width(), 5);
+    };
+    for (QWidget* kid : w->findChildren<QWidget*>()) {
+        const QString cn = QString::fromLatin1(kid->metaObject()->className());
+        if (cn.contains(QStringLiteral("ToolBar")))
+            report("工具栏", kid);
+        if (kid->objectName() == QLatin1String("cmdBar"))
+            report("命令条", kid);
+        if (cn.contains(QStringLiteral("PageNavPanel")))
+            report("缩略图栏", kid);
+        if (cn.contains(QStringLiteral("ContinuousPdfView")))
+            report("画布(连续视图)", kid);
+        if (cn.contains(QStringLiteral("QTabWidget")))
+            report("结果面板", kid);
+    }
+    out.flush();
+
+    delete w;                 // 显式回收（避免退出时的线程/mutex 噪音）
+    out << "[PASS] layout dump\n";
     out.flush();
     return 0;
 }

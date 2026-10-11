@@ -3,6 +3,8 @@
 #include "kernelclient.h"
 
 #include <QCheckBox>
+#include <QSizePolicy>
+#include <QScrollArea>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
@@ -343,9 +345,21 @@ MaterialExtractPage::MaterialExtractPage(QWidget* parent) : QWidget(parent)
     sideLay->addWidget(logBox);
     sideLay->addStretch();
 
+    // 设置区包一层滚动容器：竖向布局/自由缩放下窗口可能很窄很矮，
+    // 内容靠滚动查看，不会被裁切，也不再把窗口顶宽。
+    auto* sideScroll = new QScrollArea();
+    sideScroll->setWidget(side);
+    sideScroll->setWidgetResizable(true);
+    sideScroll->setFrameShape(QFrame::NoFrame);
+    sideScroll->setMinimumWidth(0);
+    sideScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    sideScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    sideScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
     auto* split = new QSplitter(Qt::Horizontal);
     split->addWidget(top);
-    split->addWidget(side);
+    split->addWidget(sideScroll);
+    split->setChildrenCollapsible(false);
     split->setStretchFactor(0, 3);
     split->setStretchFactor(1, 2);
 

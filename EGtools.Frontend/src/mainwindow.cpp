@@ -15,6 +15,7 @@
 #include "charsegmentpanel.h"
 
 #include <QApplication>
+#include <QSizePolicy>
 #include <QAction>
 #include <QActionGroup>
 #include <QFutureWatcher>
@@ -43,6 +44,7 @@
 #include <QSet>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QTabBar>
 #include <QTreeWidget>
 #include <QCheckBox>
 #include <QStatusBar>
@@ -82,6 +84,9 @@ void MainWindow::buildUi()
 {
     setWindowTitle(QStringLiteral("EGtools — PDF 框选提取 / 图纸差异（Qt）"));
     resize(1280, 860);
+    // 允许自由缩放到较小窗口：所有面板都配了滚动条（画布/结果/设置），
+    // 窗口小了靠滚动查看，而不是被内容撑开或裁切。
+    setMinimumSize(640, 400);
 
     auto* openA = new QAction(QStringLiteral("打开 PDF"), this);
     auto* prevA = new QAction(QStringLiteral("上一页"), this);
@@ -93,14 +98,13 @@ void MainWindow::buildUi()
     auto* diffA = new QAction(QStringLiteral("图纸差异"), this);
 
     auto* tb = addToolBar(QStringLiteral("主工具栏"));
+    tb->setMovable(false);
     auto* homeA = new QAction(QStringLiteral("首页"), this);
     auto* schemesA = new QAction(QStringLiteral("框选方案"), this);
     auto* captureA = new QAction(QStringLiteral("存为方案"), this);
-    tb->addAction(schemesA);
-    tb->addAction(captureA);
-    tb->addSeparator();
+    // 工具栏只保留**最高频**的动作。旧版把 11 项全塞在一行，横向过长，
+    // 而且与「操作」菜单大量重复；其余动作进菜单，功能一个不少。
     tb->addAction(homeA);
-    tb->addSeparator();
     tb->addAction(openA);
     tb->addSeparator();
     tb->addAction(prevA);
@@ -108,10 +112,7 @@ void MainWindow::buildUi()
     tb->addAction(nextA);
     tb->addAction(renderA);
     tb->addSeparator();
-    tb->addAction(exportA);
     tb->addAction(extractA);
-    tb->addAction(clearA);
-    tb->addSeparator();
     tb->addAction(diffA);
 
     connect(openA,    &QAction::triggered, this, &MainWindow::onOpen);
@@ -134,6 +135,9 @@ void MainWindow::buildUi()
     connect(mQuit, &QAction::triggered, this, &QWidget::close);
 
     auto* mOps = menuBar()->addMenu(QStringLiteral("操作(&O)"));
+    mOps->addAction(schemesA);
+    mOps->addAction(captureA);
+    mOps->addSeparator();
     mOps->addAction(prevA);
     mOps->addAction(nextA);
     mOps->addAction(renderA);
@@ -183,6 +187,26 @@ void MainWindow::buildUi()
             if (m_continuousMode) m_contView->fitToPageHeight(sa->viewport()->height());
             else                  activeCanvas()->setZoom(1.0);
         });
+
+        mView->addSeparator();
+        // ---- 布局模式：侧栏式 / 竖向堆叠式（横变竖）----
+        auto* layGroup = new QActionGroup(this);
+        layGroup->setExclusive(true);
+        const bool stackedNow =
+            QSettings().value(QStringLiteral("ui/layout")).toString() == QLatin1String("stacked");
+        auto* laySide = mView->addAction(QStringLiteral("布局：侧栏式"));
+        laySide->setCheckable(true);
+        laySide->setChecked(!stackedNow);
+        auto* layStack = mView->addAction(QStringLiteral("布局：竖向堆叠式"));
+        layStack->setCheckable(true);
+        layStack->setChecked(stackedNow);
+        layStack->setToolTip(QStringLiteral(
+            "竖向堆叠：导航收纳为顶部标签条、页面缩略图下放到底部标签页，\n"
+            "画布独占整幅宽度 —— 适合窄屏 / 只想看图的场景。"));
+        layGroup->addAction(laySide);
+        layGroup->addAction(layStack);
+        connect(laySide,  &QAction::triggered, this, [this]{ setStackedLayout(false); });
+        connect(layStack, &QAction::triggered, this, [this]{ setStackedLayout(true); });
 
         mView->addSeparator();
         auto* themeGroup = new QActionGroup(this);
@@ -263,9 +287,15 @@ void MainWindow::buildUi()
     m_viewStack->addWidget(m_contScroll);  // 1 = 连续滚动
 
     m_modeCombo = new QComboBox();
-    m_modeCombo->addItem(QStringLiteral("全域表 (global_table)"), QStringLiteral("global_table"));
-    m_modeCombo->addItem(QStringLiteral("细表 (detail_table)"),     QStringLiteral("detail_table"));
-    m_modeCombo->addItem(QStringLiteral("材料编号区 (material_no_region)"), QStringLiteral("material_no_region"));
+    // 显示文字只留中文短名：括号里的内部 kind 是给内核的，放在 tooltip 里即可。
+    // （下拉框会按"最长项"报告最小宽度，长文字会直接把命令条撑宽。）
+    m_modeCombo->addItem(QStringLiteral("全域表"), QStringLiteral("global_table"));
+    m_modeCombo->addItem(QStringLiteral("细表"),     QStringLiteral("detail_table"));
+    m_modeCombo->addItem(QStringLiteral("材料编号区"), QStringLiteral("material_no_region"));
+    m_modeCombo->setItemData(0, QStringLiteral("整张材料表（kind = global_table）"), Qt::ToolTipRole);
+    m_modeCombo->setItemData(1, QStringLiteral("子表/明细块（kind = detail_table）"), Qt::ToolTipRole);
+    m_modeCombo->setItemData(2, QStringLiteral("管线号所在区域（kind = material_no_region）"), Qt::ToolTipRole);
+    m_modeCombo->setToolTip(QStringLiteral("框选语义：决定内核按哪种结构解析你框住的区域。"));
     connect(m_modeCombo, &QComboBox::currentIndexChanged, this, &MainWindow::onModeChanged);
 
     m_pageLabel = new QLabel(QStringLiteral("-"));
@@ -333,10 +363,9 @@ void MainWindow::buildUi()
     topRow->addWidget(zoom1Btn);
     topRow->addWidget(zoomFitBtn);
     topRow->addWidget(zoomPageBtn);
-    topRow->addWidget(m_zoomLabel);
+    // 「缩放 %」与「页码」已经**下放到底部状态栏**（它们是状态读数，不是操作），
+    // 命令条因此只剩「框选模式 + 缩放」两组，横向短了很多。
     topRow->addStretch(1);
-    topRow->addWidget(mkGroupLabel(QStringLiteral("页码")));
-    topRow->addWidget(m_pageLabel);
 
     // 字符段（导出列集）面板：查看 / 编辑 / 恢复默认。
     m_charPanel = new CharSegmentPanel();
@@ -366,6 +395,10 @@ void MainWindow::buildUi()
     m_jsonView = new QTextEdit();
     m_jsonView->setReadOnly(true);
     m_jsonView->setLineWrapMode(QTextEdit::NoWrap);
+    // ⚠️ NoWrap 文本控件按"最长行"报告 minimumSizeHint ⇒ 内容变长就会抬高整窗最小宽度。
+    // 水平方向设为 Ignored：布局不采信它的宽度诉求，横向溢出交给它自己的滚动条。
+    m_jsonView->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+
     m_logView = new QTextEdit();
     m_logView->setReadOnly(true);
     m_tabs->addTab(m_table,  QStringLiteral("表格结果"));
@@ -408,12 +441,19 @@ void MainWindow::buildUi()
         m_tabs->addTab(colPage, QStringLiteral("导出列集"));
     }
 
+    // ---------------- 内核设置（放到左侧栏底部，竖排两行） ----------------
+    // 旧版把「CLI 目录」和「内核调用」挤在右侧同一行，其中下拉项文字很长
+    // （"自动（优先内嵌调库，失败回退命令行）"）会把整个右栏的最小宽度撑大 ⇒
+    // 窗口被拉宽。现在：① 拆成两行（下放）；② 下拉项文字缩短为「自动/内嵌/命令行」，
+    // 详细解释移入 tooltip（信息不丢，宽度不再被文字绑架）。
     m_cliEdit = new QLineEdit(m_cliDir);
-    m_cliEdit->setPlaceholderText(QStringLiteral("CLI 内核目录（含 EGpdf2excel.exe / EGpdf2df.exe）"));
+    m_cliEdit->setPlaceholderText(QStringLiteral("自动探测（留空即可）"));
     auto* cliRow = new QHBoxLayout();
-    cliRow->addWidget(new QLabel(QStringLiteral("CLI 目录:")));
+    cliRow->setSpacing(6);
+    cliRow->addWidget(new QLabel(QStringLiteral("CLI 目录")));
     cliRow->addWidget(m_cliEdit, 1);
     auto* cliBrowse = new QPushButton(QStringLiteral("…"));
+    cliBrowse->setFixedWidth(30);
     cliRow->addWidget(cliBrowse);
     connect(cliBrowse, &QPushButton::clicked, this, [this]{
         QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("选择内核目录"), m_cliDir);
@@ -423,13 +463,15 @@ void MainWindow::buildUi()
 
     // 内核调用方式：融合 CLI/内嵌两种方式，随时可切。
     m_backendCombo = new QComboBox();
-    m_backendCombo->addItem(QStringLiteral("自动（优先内嵌调库，失败回退命令行）"), QStringLiteral("auto"));
-    m_backendCombo->addItem(QStringLiteral("内嵌（进程内直接调内核库）"),       QStringLiteral("embedded"));
-    m_backendCombo->addItem(QStringLiteral("命令行（QProcess 起内核 exe）"),     QStringLiteral("cli"));
+    m_backendCombo->addItem(QStringLiteral("自动"), QStringLiteral("auto"));
+    m_backendCombo->addItem(QStringLiteral("内嵌（调库）"), QStringLiteral("embedded"));
+    m_backendCombo->addItem(QStringLiteral("命令行"), QStringLiteral("cli"));
     m_backendCombo->setToolTip(QStringLiteral(
-        "内嵌：用 hostfxr 把内核 DLL 载入本进程直接调用 — 无子进程、无控制台窗口、启动更快，\n"
-        "内核日志能实时回传（可在下方「内核日志」看到进度）。\n"
-        "命令行：起独立的 {内核}.exe — 兼容性最好，内核崩溃不会带走界面。\n"
+        "自动：优先内嵌调库，失败自动回退命令行。\n"
+        "内嵌（调库）：用 hostfxr 把内核 DLL 载入本进程直接调用 — 无子进程、无控制台窗口、\n"
+        "  启动更快，内核日志能实时回传。⚠️ 由于 .NET 运行时是进程级单例，内嵌下\n"
+        "  多文件并发会被串行化。\n"
+        "命令行：起独立的 {内核}.exe — 兼容性最好、崩溃不带走界面，且**支持真正的并发**。\n"
         "两条路吃的是同一份内核 DLL 与同一套 JSON 契约，结果一致。"));
     {
         const int idx = m_backendCombo->findData(KernelClient::backendToString(KernelClient::defaultBackend()));
@@ -438,19 +480,33 @@ void MainWindow::buildUi()
     connect(m_backendCombo, &QComboBox::currentIndexChanged, this, [this](int){
         setKernelBackend(m_backendCombo->currentData().toString());
     });
-    cliRow->addSpacing(12);
-    cliRow->addWidget(new QLabel(QStringLiteral("内核调用:")));
-    cliRow->addWidget(m_backendCombo);
+    auto* backendRow = new QHBoxLayout();
+    backendRow->setSpacing(6);
+    backendRow->addWidget(new QLabel(QStringLiteral("内核调用")));
+    backendRow->addWidget(m_backendCombo, 1);
 
-    auto* rightPane = new QWidget();
-    auto* rightLay = new QVBoxLayout(rightPane);
-    rightLay->setContentsMargins(4, 6, 6, 6);
-    rightLay->setSpacing(6);
-    rightLay->addLayout(cliRow);
-    rightLay->addWidget(m_tabs, 1);
+    auto* kernelBox = new QGroupBox(QStringLiteral("内核设置"));
+    auto* kernelLay = new QVBoxLayout(kernelBox);
+    kernelLay->setContentsMargins(8, 10, 8, 8);
+    kernelLay->setSpacing(6);
+    kernelLay->addLayout(cliRow);
+    kernelLay->addLayout(backendRow);
+    kernelLay->addStretch();
 
-    auto* split = new QSplitter(Qt::Horizontal);
-    // 页面缩略图栏放在最左，学 Adobe 的版式：缩略图 | 画布 | 结果。
+    // ⚠️ 竖向堆叠 / 自由缩放下，容器可能变窄变矮 —— 设置区必须能滚动，
+    // 否则内容会被裁掉。这里统一包一层 QScrollArea（跟着容器大小自适应），
+    // 于是无论它待在侧栏还是底部标签页，都不会因为窄/矮而看不全。
+    auto* kernelScroll = new QScrollArea();
+    kernelScroll->setWidget(kernelBox);
+    kernelScroll->setWidgetResizable(true);
+    kernelScroll->setFrameShape(QFrame::NoFrame);
+    kernelScroll->setMinimumWidth(0);
+    kernelScroll->setMinimumHeight(0);
+    kernelScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    kernelScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    kernelScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    // ---- 上方：缩略图 | 画布 ----
     m_pageNav = new PageNavPanel();
     m_pageNav->setCliDir(m_cliDir);
     connect(m_pageNav, &PageNavPanel::pageRequested, this, [this](int p){
@@ -459,19 +515,30 @@ void MainWindow::buildUi()
         onRenderPage();
     });
     connect(m_pageNav, &PageNavPanel::statusMessage, this, &MainWindow::log);
-    split->addWidget(m_pageNav);
-    split->addWidget(leftPane);
-    split->addWidget(rightPane);
-    // 让三栏都能拖动改变宽度（旧版把宽度写死，用户反馈"侧栏不能拖动调整"）。
-    split->setStretchFactor(0, 0);
-    split->setStretchFactor(1, 3);
-    split->setStretchFactor(2, 2);
-    split->setChildrenCollapsible(false);
+
+    auto* canvasSplit = new QSplitter(Qt::Horizontal);
+    m_canvasSplit = canvasSplit;
+    canvasSplit->addWidget(m_pageNav);
+    canvasSplit->addWidget(leftPane);
+    canvasSplit->setStretchFactor(0, 0);
+    canvasSplit->setStretchFactor(1, 1);
+    canvasSplit->setChildrenCollapsible(false);
     m_pageNav->setMinimumWidth(150);
-    m_pageNav->setMaximumWidth(320);
-    leftPane->setMinimumWidth(320);
-    rightPane->setMinimumWidth(300);
-    split->setSizes({190, 700, 420});
+    m_pageNav->setMaximumWidth(280);
+    leftPane->setMinimumWidth(360);
+    canvasSplit->setSizes({180, 900});
+
+    // ---- 上下两层：上层画布区，**下层结果面板** ----
+    // 旧版是"缩略图|画布|结果"三栏并排 —— 三者一起把窗口横向撑得很宽。
+    // 现在结果面板下放到底部：横向只剩「缩略图 + 画布」，窗口可以窄很多。
+    auto* split = new QSplitter(Qt::Vertical);
+    split->addWidget(canvasSplit);
+    split->addWidget(m_tabs);
+    split->setStretchFactor(0, 1);
+    split->setStretchFactor(1, 0);
+    split->setChildrenCollapsible(false);
+    m_tabs->setMinimumHeight(140);
+    split->setSizes({560, 260});
 
     // ---- Multi-level sidebar navigation: every sub-function is its own entry ----
     m_nav = new QTreeWidget();
@@ -524,14 +591,62 @@ void MainWindow::buildUi()
     m_stack->addWidget(m_schemes);  // PageScheme
     m_stack->addWidget(m_materialPage); // PageMaterials (batch PDF → material tables)
 
-    auto* navSplit = new QSplitter(Qt::Horizontal);
-    navSplit->addWidget(m_nav);
-    navSplit->addWidget(m_stack);
-    navSplit->setStretchFactor(0, 0);
-    navSplit->setStretchFactor(1, 1);
-    navSplit->setChildrenCollapsible(false);
-    navSplit->setSizes({190, 1100});     // 侧栏初始 190，之后用户可随意拖
-    setCentralWidget(navSplit);
+    // 侧栏 = 导航树（占满剩余高度）+ 底部「内核设置」（两行竖排）。
+    // 设置类控件放在侧栏底部，既不占画布的纵向空间，也不再把窗口横向撑宽。
+    auto* sidePane = new QWidget();
+    auto* sideLay = new QVBoxLayout(sidePane);
+    sideLay->setContentsMargins(0, 0, 0, 0);
+    sideLay->setSpacing(6);
+    sideLay->addWidget(m_nav, 1);
+    sideLay->addWidget(kernelScroll);
+    sidePane->setMinimumWidth(190);
+    sidePane->setMaximumWidth(380);
+    m_kernelBox = kernelScroll;      // 布局模式切换时搬动的就是这层滚动容器
+
+    // 顶部导航条：**竖向堆叠模式**下用它取代左侧导航列 —— 导航从"横着占一列"
+    // 变成"竖着占一条"，把整块横向空间让给画布。条目与左侧导航树一致。
+    m_topNav = new QTabBar();
+    m_topNav->setObjectName(QStringLiteral("topNav"));
+    m_topNav->setExpanding(false);
+    m_topNav->setDrawBase(false);
+    m_topNav->setUsesScrollButtons(true);
+    {
+        const QVector<QPair<QString, int>> entries = {
+            { QStringLiteral("首页"),       PageHome },
+            { QStringLiteral("材料表提取"), PageMaterials },
+            { QStringLiteral("PDF 工具"),   PagePdf },
+            { QStringLiteral("图纸比对"),   PageDiff },
+            { QStringLiteral("Excel 比对"), PageExcel },
+            { QStringLiteral("框选方案"),   PageScheme },
+        };
+        for (const auto& e : entries) {
+            const int i = m_topNav->addTab(e.first);
+            m_topNav->setTabData(i, e.second);
+        }
+        connect(m_topNav, &QTabBar::currentChanged, this, [this](int i){
+            if (i < 0 || !m_topNav) return;
+            showPage(m_topNav->tabData(i).toInt());
+        });
+    }
+
+    m_navSplit = new QSplitter(Qt::Horizontal);
+    m_navSplit->addWidget(sidePane);
+    m_navSplit->addWidget(m_stack);
+    m_navSplit->setStretchFactor(0, 0);
+    m_navSplit->setStretchFactor(1, 1);
+    m_navSplit->setChildrenCollapsible(false);
+    m_navSplit->setSizes({210, 1060});   // 侧栏初始 210，之后用户可随意拖
+
+    // 中央 = 顶部导航条（堆叠模式可见）+ 主体。放在同一个 QVBox 里，
+    // 于是"竖向堆叠"只是切换可见性/位置，不需要重建控件树。
+    auto* central = new QWidget();
+    auto* centralLay = new QVBoxLayout(central);
+    centralLay->setContentsMargins(0, 0, 0, 0);
+    centralLay->setSpacing(0);
+    centralLay->addWidget(m_topNav);
+    centralLay->addWidget(m_navSplit, 1);
+    setCentralWidget(central);
+    m_sidePane = sidePane;
 
     connect(m_schemes, &SchemePage::rewriteRequested, this, &MainWindow::onRewriteRegion);
     connect(m_schemes, &SchemePage::reuseRequested,   this, &MainWindow::onReuseScheme);
@@ -550,6 +665,34 @@ void MainWindow::buildUi()
     connect(m_home, &HomePage::aboutRequested,       this, &MainWindow::onAbout);
 
     refreshTheme();      // 视口底色按当前主题初始化
+
+    // 布局模式（侧栏式 / 竖向堆叠式）：环境变量 > QSettings > 默认侧栏式。
+    // 环境变量入口，方便排障/审计时强制某种布局。
+    {
+        QString mode = QSettings().value(QStringLiteral("ui/layout")).toString();
+        const QByteArray env = qgetenv("EGTOOLS_LAYOUT");
+        if (!env.isEmpty()) mode = QString::fromLocal8Bit(env);
+        m_stackedLayout = (mode == QLatin1String("stacked"));
+    }
+    applyLayoutMode();
+
+    // ---- 状态栏：把「缩放 %」「页码」下放为常驻读数 ----
+    // 它们是**状态**而不是操作，放在底部既符合专业软件惯例，也把命令条腾空了。
+    {
+        auto* sb = statusBar();
+        sb->setSizeGripEnabled(true);
+        m_zoomLabel->setObjectName(QStringLiteral("pageBadge"));
+        m_pageLabel->setObjectName(QStringLiteral("pageBadge"));
+        m_zoomLabel->setMinimumWidth(78);
+        m_pageLabel->setMinimumWidth(72);
+        auto* sep1 = new QFrame();
+        sep1->setObjectName(QStringLiteral("cmdSep"));
+        sep1->setFrameShape(QFrame::VLine);
+        sep1->setFixedWidth(1);
+        sb->addPermanentWidget(m_zoomLabel);
+        sb->addPermanentWidget(sep1);
+        sb->addPermanentWidget(m_pageLabel);
+    }
     statusBar()->showMessage(QStringLiteral("就绪 — 从首页开始，或左侧选择功能"));
     refreshKernelStatus();
 }
@@ -558,6 +701,7 @@ void MainWindow::navTo(int index)
 {
     if (!m_stack) return;
     m_stack->setCurrentIndex(index);
+    syncTopNav(index);                 // 顶部导航条跟随（堆叠模式下可见）
     if (index == PageHome) refreshKernelStatus();
 }
 
@@ -577,6 +721,7 @@ void MainWindow::showPage(int index)
         if (pick) m_nav->setCurrentItem(pick);
     }
     if (m_stack) m_stack->setCurrentIndex(index);
+    syncTopNav(index);
 }
 
 void MainWindow::onNavItemClicked(QTreeWidgetItem* item, int /*col*/)
@@ -887,6 +1032,88 @@ void MainWindow::clearRegionsAll()
 {
     if (m_view.canvas) m_view.canvas->clearRegions();
     if (m_contView)    m_contView->clearRegions();
+}
+
+void MainWindow::setStackedLayout(bool stacked)
+{
+    if (m_stackedLayout == stacked) return;
+    m_stackedLayout = stacked;
+    QSettings().setValue(QStringLiteral("ui/layout"),
+                         stacked ? QStringLiteral("stacked") : QStringLiteral("sidebar"));
+    applyLayoutMode();
+    log(stacked
+        ? QStringLiteral("布局已切到「竖向堆叠式」：导航收到顶部标签条，缩略图与内核设置下放到底部标签页，画布独占整宽")
+        : QStringLiteral("布局已切到「侧栏式」：导航与内核设置在左列，缩略图在画布左侧"));
+}
+
+// 布局模式落地：只切换"可见性 / 宿主"，不重建控件树，所以随时来回切都不会丢状态。
+void MainWindow::applyLayoutMode()
+{
+    if (m_topNav)   m_topNav->setVisible(m_stackedLayout);
+    if (m_sidePane) m_sidePane->setVisible(!m_stackedLayout);
+
+    auto moveIntoTabs = [this](QWidget* w, const QString& title, int at) {
+        if (!w || !m_tabs) return;
+        if (m_tabs->indexOf(w) < 0) m_tabs->insertTab(at, w, title);
+    };
+    auto moveIntoSplitter = [this](QWidget* w, int at) {
+        if (!w || !m_canvasSplit) return;
+        if (m_tabs && m_tabs->indexOf(w) >= 0) m_tabs->removeTab(m_tabs->indexOf(w));
+        if (m_canvasSplit->indexOf(w) < 0) {
+            w->setParent(nullptr);              // 先脱离旧父，再交给 splitter 接管
+            m_canvasSplit->insertWidget(at, w);
+        }
+    };
+
+    if (m_stackedLayout) {
+        // 竖向堆叠：把"占横向空间"的两块都收进底部标签页（＝窗口堆叠）。
+        // ⚠️ 缩略图栏原本在画布左侧，带 min/max 宽度限制；进了底部标签页后必须
+        // 解除限制，否则它会被卡在 180px 宽（显得很挤），也无法随窗口伸展。
+        if (m_pageNav) {
+            m_pageNav->setMinimumWidth(0);
+            m_pageNav->setMaximumWidth(QWIDGETSIZE_MAX);
+        }
+        moveIntoTabs(m_pageNav,  QStringLiteral("页面"), 0);
+        moveIntoTabs(m_kernelBox, QStringLiteral("内核设置"), -1);
+        if (m_pageNav && m_tabs->indexOf(m_pageNav) >= 0)
+            m_tabs->setCurrentIndex(m_tabs->indexOf(m_pageNav));   // 默认显示缩略图
+    } else {
+        // 侧栏式：缩略图回到画布左侧（恢复列宽约束），内核设置回到侧栏底部。
+        if (m_pageNav) {
+            m_pageNav->setMinimumWidth(150);
+            m_pageNav->setMaximumWidth(280);
+        }
+        moveIntoSplitter(m_pageNav, 0);
+        if (m_kernelBox) {
+            if (m_tabs && m_tabs->indexOf(m_kernelBox) >= 0)
+                m_tabs->removeTab(m_tabs->indexOf(m_kernelBox));
+            if (m_sidePane && m_kernelBox->parentWidget() != m_sidePane) {
+                m_kernelBox->setParent(m_sidePane);
+                if (auto* sl = qobject_cast<QVBoxLayout*>(m_sidePane->layout()))
+                    sl->addWidget(m_kernelBox);
+            }
+        }
+        if (m_canvasSplit) m_canvasSplit->setSizes({180, 900});
+    }
+    refreshTheme();
+    if (m_topNav) syncTopNav(m_stack ? m_stack->currentIndex() : 0);
+    if (m_navSplit) m_navSplit->setSizes(m_stackedLayout ? QList<int>{0, 1200}
+                                                         : QList<int>{210, 1060});
+}
+
+void MainWindow::syncTopNav(int page)
+{
+    if (!m_topNav) return;
+    // 顶部导航只列顶层页面；PagePdf 的子项（OCR 变体）也归到「PDF 工具」。
+    for (int i = 0; i < m_topNav->count(); ++i) {
+        if (m_topNav->tabData(i).toInt() == page) {
+            if (m_topNav->currentIndex() != i) {
+                QSignalBlocker blk(m_topNav);
+                m_topNav->setCurrentIndex(i);
+            }
+            return;
+        }
+    }
 }
 
 bool MainWindow::renderPage(int page, QImage& img, double& scale, double& pwPt, double& phPt)

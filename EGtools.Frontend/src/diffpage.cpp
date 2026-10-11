@@ -3,6 +3,9 @@
 #include "kernelclient.h"
 
 #include <QApplication>
+#include <QScrollArea>
+#include <QSizePolicy>
+#include <QTextBrowser>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -281,23 +284,41 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
 
     m_status = new QLabel(QStringLiteral("内核状态：未探测"));
     m_status->setWordWrap(true);
+    m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     // ---- 图例 ----
+    // ⚠️ 这里原来是一个**没有 setWordWrap 的 QLabel**，装着近千字说明 ⇒ 它的
+    // minimumSizeHint 达 6786px，再经 QStackedWidget（取所有页最小值/最大值的合并）
+    // 传染给主窗口，把**整窗最小宽度抬到 7189px** —— 这就是"横向太长、拖不窄"的真凶。
+    // 现在改用只读 QTextBrowser：自带换行与滚动条，最小宽度很小，长文本再也绑架不了布局。
     auto* legend = new QGroupBox(QStringLiteral("图例（差异直接标注在新 PDF 中）"));
     auto* legendLay = new QVBoxLayout(legend);
-    legendLay->addWidget(new QLabel(QStringLiteral(
-        "● <b>图形标记形式</b>（可切换）：<b>semi</b> 半透明填充+深色描边（默认，底图仍可读）／"
-        "<b>solid</b> 实心填充（标记最强）／<b>outline</b> 仅描边（最不遮挡）\n"
-        "● <b>红(实线)</b> = 新增图形　<b>红(虚线)</b> = 删除图形　<b>绿</b> = 变更（同位置形状改了）\n"
+    auto* legendText = new QTextBrowser();
+    legendText->setOpenExternalLinks(false);
+    legendText->setFrameShape(QFrame::NoFrame);
+    legendText->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);   // 只纵向滚
+    legendText->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    legendText->setMinimumWidth(0);
+    legendText->setMaximumHeight(150);
+    legendText->setStyleSheet(QStringLiteral(
+        "QTextBrowser{background:transparent;border:none;}"));
+    legendText->setHtml(QStringLiteral(
+        "● <b>图形标记形式</b>：<b>semi</b> 半透明填充+深色描边（默认，底图仍可读）／"
+        "<b>solid</b> 实心填充（标记最强）／<b>outline</b> 仅描边（最不遮挡）<br>"
+        "● <b>红(实线)</b> = 新增图形　<b>红(虚线)</b> = 删除图形　<b>绿</b> = 变更（同位置形状改了）<br>"
         "● <b>差异线样式</b>：沿【真实变更的那几条线】描边（不是填充块），默认 <b>细线 1.0pt + 半透明 0.55</b>"
-        "（上千条变更也不糊成一片、不遮底图）；线宽/透明度可调，1.0 = 实色\n"
+        "（上千条变更也不糊成一片、不遮底图）；线宽/透明度可调，1.0 = 实色<br>"
         "● <b>页面配对</b>：先按【图号】（标题栏右下角的每页唯一号，如 408.101.P02）1:1 配对，"
-        "图号只在一侧的页直接判为新增/删除、<b>不参与比对</b>；无图号的页（封面/总图）用线画指纹兜底\n"
+        "图号只在一侧的页直接判为新增/删除、<b>不参与比对</b>；无图号的页（封面/总图）用线画指纹兜底<br>"
         "● <b>页码语义</b>：默认「图号优先」——所选页码只用于在配对结果里<b>筛选</b>（不会因新版插页而错配）；"
-        "「索引钉死」为旧行为，仅排障用\n"
-        "● <b>文字直接改色（不画圈）</b>：<font color=\"#FF0000\">新增文字 = 红色</font>（覆盖在原黑色文字上，改原字色），"
-        "<font color=\"#0000FF\">删除文字 = 蓝色</font>（插入到原文本框，git - 行）；变更则红(新,改原字色)+蓝(旧,按方向插入)\n"
-        "记号色/描边色/线宽/透明度/标记形式/差异线宽与透明度/检测方法/容差/报告粒度/文字框粒度/图号区/页码语义均可自定，色号直接传给内核。")));
+        "「索引钉死」为旧行为，仅排障用<br>"
+        "● <b>文字直接改色（不画圈）</b>："
+        "<font color=\"#FF0000\">新增文字 = 红色</font>（覆盖在原黑色文字上，改原字色），"
+        "<font color=\"#0000FF\">删除文字 = 蓝色</font>（插入到原文本框，git - 行）；"
+        "变更则红(新,改原字色)+蓝(旧,按方向插入)<br>"
+        "记号色/描边色/线宽/透明度/标记形式/差异线宽与透明度/检测方法/容差/报告粒度/文字框粒度/"
+        "图号区/页码语义均可自定，色号直接传给内核。"));
+    legendLay->addWidget(legendText);
     legendLay->setSpacing(2);
 
     // ---- 管线号↔材料表一一对应结果 ----
@@ -306,6 +327,11 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     m_pipeView = new QTextEdit();
     m_pipeView->setReadOnly(true);
     m_pipeView->setLineWrapMode(QTextEdit::NoWrap);
+    // ⚠️ NoWrap 的文本控件会按"最长行"报告 minimumSizeHint ⇒ 一旦内容变长就会把
+    // 最小宽度往上推（进而绑架整窗宽度）。这里把水平方向的 size policy 设为
+    // Ignored：布局不再采信它的宽度诉求，横向溢出交给它自己的滚动条。
+    m_pipeView->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    m_pipeView->setMinimumWidth(0);
     m_pipeView->setPlainText(QStringLiteral("运行后显示：匹配 / 图中独有(材料表缺) / 材料表独有(图中未画)"));
     pipeLay->addWidget(m_pipeView);
 
@@ -333,6 +359,10 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     m_jsonView = new QTextEdit();
     m_jsonView->setReadOnly(true);
     m_jsonView->setLineWrapMode(QTextEdit::NoWrap);
+    // ⚠️ NoWrap 文本控件按"最长行"报告 minimumSizeHint ⇒ 内容变长就会抬高整窗最小宽度。
+    // 水平方向设为 Ignored：布局不采信它的宽度诉求，横向溢出交给它自己的滚动条。
+    m_jsonView->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+
     m_jsonView->setPlainText(QStringLiteral("差异 JSON 摘要（运行后显示）"));
 
     m_preview = new QLabel(QStringLiteral("差异标注预览（运行后显示）"));
@@ -346,11 +376,24 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     right->setStretchFactor(0, 2);
     right->setStretchFactor(1, 3);
 
+    // 设置面板有两行是"多组控件挤一行"（尤其 colRow：5 组颜色选择器），
+    // 它们的宽度诉求合计 ~1090px。把整块设置面板放进 QScrollArea —— 滚动容器
+    // 自带滚动条，最小宽度很小，于是"面板再宽也不会绑架窗口宽度"。
+    // 这也是长设置面板的通用做法：窄了横向滚，高了纵向滚。
+    auto* ctrlScroll = new QScrollArea();
+    ctrlScroll->setWidget(ctrl);
+    ctrlScroll->setWidgetResizable(true);
+    ctrlScroll->setFrameShape(QFrame::NoFrame);
+    ctrlScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    ctrlScroll->setMinimumWidth(0);
+    ctrlScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+
     auto* split = new QSplitter(Qt::Horizontal);
-    split->addWidget(ctrl);
+    split->addWidget(ctrlScroll);
     split->addWidget(right);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 3);
+    split->setSizes({420, 900});
 
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);

@@ -23,6 +23,9 @@ class QCheckBox;
 class QStackedWidget;
 class QScrollArea;
 class QActionGroup;
+class QTabBar;
+class QGroupBox;
+class QSplitter;
 class HomePage;
 class SchemePage;
 class SchemeStore;
@@ -89,6 +92,11 @@ private:
     QScrollArea*   activeScroll() const;
     // 切换视图模式：true = 连续滚动（Adobe 式），false = 单页精看。
     void setContinuousMode(bool continuous);
+    // 布局模式：false = 侧栏式（导航树在左列）；true = 竖向堆叠式
+    // （导航收纳为顶部标签条，缩略图栏下放到底部标签页，画布独占整宽）。
+    void setStackedLayout(bool stacked);
+    void applyLayoutMode();
+    bool stackedLayout() const { return m_stackedLayout; }
     // 主题切换后需要手动刷新的少数几处（画布视口底色等自绘/局部样式）。
     void refreshTheme();
     // 框选是"文档级"的：两个视图各自保存一份，变更时镜像过去 —— 这样切换视图
@@ -135,6 +143,15 @@ private:
     ContinuousPdfView* m_contView  = nullptr;
     QScrollArea*       m_contScroll = nullptr;
     bool               m_continuousMode = false;
+
+    // ---- 布局模式（侧栏式 / 竖向堆叠式）----
+    bool       m_stackedLayout = false;
+    QTabBar*   m_topNav    = nullptr;   // 堆叠模式下的顶部导航条（取代左侧导航树）
+    QWidget*   m_sidePane  = nullptr;   // 侧栏容器（导航树 + 内核设置）
+    QSplitter* m_canvasSplit = nullptr; // 缩略图 | 画布
+    QSplitter* m_navSplit    = nullptr; // 侧栏 | 内容页
+    QWidget*   m_kernelBox   = nullptr; // 内核设置（滚动容器；侧栏式在侧栏、堆叠式在底部标签）
+    void syncTopNav(int page);
     CharSegmentPanel* m_charPanel = nullptr;
     QTreeWidget* m_nav = nullptr;
     QCheckBox*   m_ocrAlwaysCb = nullptr;
