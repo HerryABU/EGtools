@@ -18,6 +18,8 @@ class CharSegmentPanel : public QWidget
 public:
     explicit CharSegmentPanel(QWidget* parent = nullptr);
     void setCliDir(const QString& dir) { m_cliDir = dir; reload(); }
+    // 内核调用方式由 MainWindow 下发（本面板的调用是纯参数形式，两条后端都支持）。
+    void setKernelBackend(const QString& mode) { m_kernelBackend = mode; }
 
 signals:
     void statusMessage(const QString& msg);
@@ -38,6 +40,7 @@ private:
     bool writeHeaders(const QStringList& headers);
 
     QString m_cliDir;
+    QString m_kernelBackend = QStringLiteral("auto");
     QListWidget* m_list = nullptr;
     QPushButton* m_addBtn = nullptr;
     QPushButton* m_delBtn = nullptr;

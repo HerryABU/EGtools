@@ -1,5 +1,6 @@
 #include "charsegmentpanel.h"
 #include "clirunner.h"
+#include "kernelclient.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -187,10 +188,13 @@ void CharSegmentPanel::onRestoreDefault()
         emit statusMessage(QStringLiteral("请先设置 CLI 目录，才能恢复默认字符段"));
         return;
     }
-    QString out, err;
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
-        {QStringLiteral("--reset-config")}, out, err);
-    emit statusMessage(QStringLiteral("[恢复默认] rc=%1 %2").arg(rc).arg(err.trimmed()));
+    // 走融合层（纯参数调用）：内嵌/命令行两条路都支持。
+    const KernelClient::Result kr = KernelClient::run(
+        QStringLiteral("EGpdf2excel"), {QStringLiteral("--reset-config")}, QString(),
+        KernelClient::backendFromString(m_kernelBackend));
+    const QString out = kr.out, err = kr.err;
+    const int rc = kr.rc;
+    emit statusMessage(QStringLiteral("[恢复默认/%1] rc=%2 %3").arg(kr.backend).arg(rc).arg(err.trimmed()));
     if (rc == 0) {
         reload();
         QMessageBox::information(this, QStringLiteral("恢复默认"),

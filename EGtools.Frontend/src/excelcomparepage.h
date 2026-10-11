@@ -16,6 +16,7 @@ class ExcelComparePage : public QWidget
 public:
     explicit ExcelComparePage(QWidget* parent = nullptr);
     void setCliDir(const QString& dir) { m_cliDir = dir; refreshKernelStatus(); }
+    void setKernelBackend(const QString& mode) { m_kernelBackend = mode; }
 
 signals:
     void statusMessage(const QString& msg);
@@ -30,6 +31,7 @@ private:
     void refreshKernelStatus();
 
     QString m_cliDir;
+    QString m_kernelBackend = QStringLiteral("auto");
     QLineEdit* m_oldEdit = nullptr;
     QLineEdit* m_newEdit = nullptr;
     QTextEdit* m_jsonView = nullptr;

@@ -24,6 +24,8 @@ public:
 
     // CLI kernel directory (set by MainWindow whenever it changes).
     void setCliDir(const QString& dir) { m_cliDir = dir; refreshKernelStatus(); }
+    // 内核调用方式（auto/embedded/cli）—— 由 MainWindow 下发，融合层据此选路。
+    void setKernelBackend(const QString& mode) { m_kernelBackend = mode; }
 
 signals:
     void statusMessage(const QString& msg);
@@ -51,6 +53,7 @@ private:
     static void paintSwatch(QPushButton* btn, const QString& hex);
 
     QString m_cliDir;
+    QString m_kernelBackend = QStringLiteral("auto");
     QLineEdit* m_baseEdit = nullptr;
     QLineEdit* m_tgtEdit  = nullptr;
     QLineEdit* m_csvEdit  = nullptr;

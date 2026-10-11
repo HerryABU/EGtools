@@ -1,5 +1,6 @@
 #include "diffpage.h"
 #include "clirunner.h"
+#include "kernelclient.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -484,7 +485,6 @@ void DiffPage::onRun()
     }
     QTemporaryDir tmp;
     if (!tmp.isValid()) { emit statusMessage(QStringLiteral("无法创建临时目录")); return; }
-    QString reqPath = QDir(tmp.path()).filePath(QStringLiteral("req.json"));
     QString outPdf  = QDir(tmp.path()).filePath(QStringLiteral("diff.pdf"));
 
     // 构造请求 JSON（含选项、精细度、三个自定义颜色与可选的人工修正材料表）。
@@ -540,18 +540,17 @@ void DiffPage::onRun()
     const QString csv = m_csvEdit->text().trimmed();
     if (!csv.isEmpty()) req[QStringLiteral("correctedMaterialTable")] = csv;
 
-    QFile rf(reqPath);
-    if (!rf.open(QIODevice::WriteOnly | QIODevice::Text)
-        || rf.write(QJsonDocument(req).toJson(QJsonDocument::Compact)) < 0) {
-        emit statusMessage(QStringLiteral("无法写入请求 JSON"));
-        return;
-    }
-    rf.close();
-
-    QString out, err;
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2df")),
-        {QStringLiteral("--json"), reqPath}, out, err);
-    emit statusMessage(QStringLiteral("[EGpdf2df] rc=%1 %2").arg(rc).arg(err.trimmed()));
+    // 交给融合层：JSON 契约直接送进去 —— 内嵌后端走 stdin（**一个临时文件都不落**），
+    // 命令行后端由融合层内部落临时文件并补 --json。两条路吃同一份内核、同一套契约。
+    const QString reqJson = QString::fromUtf8(QJsonDocument(req).toJson(QJsonDocument::Compact));
+    const KernelClient::Result kr = KernelClient::run(
+        QStringLiteral("EGpdf2df"), {}, reqJson,
+        KernelClient::backendFromString(m_kernelBackend));
+    const QString out = kr.out;
+    const QString err = kr.err;
+    const int rc = kr.rc;
+    emit statusMessage(QStringLiteral("[EGpdf2df/%1] rc=%2 %3")
+                           .arg(kr.backend).arg(rc).arg(err.trimmed().left(300)));
     m_jsonView->setPlainText(out);
 
     // 解析输出：对齐信息 + 管线号↔材料表一一对应。

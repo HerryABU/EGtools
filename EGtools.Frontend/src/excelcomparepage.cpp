@@ -1,5 +1,6 @@
 #include "excelcomparepage.h"
 #include "clirunner.h"
+#include "kernelclient.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -118,10 +119,14 @@ void ExcelComparePage::onRun()
         QStringLiteral("图纸变化清单.xlsx"), QStringLiteral("Excel (*.xlsx)"));
     if (outXlsx.isEmpty()) return;
 
-    QString out, err;
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGexcel2df")),
-        {a, b, QStringLiteral("-o"), outXlsx}, out, err);
-    emit statusMessage(QStringLiteral("[EGexcel2df] rc=%1 %2").arg(rc).arg(err.trimmed()));
+    // 走融合层：纯参数调用（无 JSON 契约）两条路都支持 —— 内嵌直接进程内调，命令行起 exe。
+    const KernelClient::Result kr = KernelClient::run(
+        QStringLiteral("EGexcel2df"),
+        {a, b, QStringLiteral("-o"), outXlsx}, QString(),
+        KernelClient::backendFromString(m_kernelBackend));
+    const QString out = kr.out, err = kr.err;
+    const int rc = kr.rc;
+    emit statusMessage(QStringLiteral("[EGexcel2df/%1] rc=%2 %3").arg(kr.backend).arg(rc).arg(err.trimmed()));
     m_jsonView->setPlainText(out);
     if (rc == 0)
         emit statusMessage(QStringLiteral("Excel 比对完成，输出：%1").arg(outXlsx));

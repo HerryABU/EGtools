@@ -65,6 +65,8 @@ private:
     QString cliExe(const QString& name) const;
     void log(const QString& s);
     void setCliDir(const QString& d);
+    // 内核调用方式（自动 / 内嵌 / 命令行）—— 融合层的选择，持久化到 QSettings。
+    void setKernelBackend(const QString& mode);
     void refreshKernelStatus();
     void showPage(int index);
 
@@ -89,6 +91,7 @@ private:
     void loadPageWords(int page);
 
     QString m_cliDir;
+    QComboBox* m_backendCombo = nullptr;   // 内核调用方式：自动/内嵌(调库)/命令行
     QString m_pdfPath;
     int     m_pageCount = 0;
     int     m_pageIndex = 0;

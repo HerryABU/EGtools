@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "clirunner.h"
+#include "kernelclient.h"
 #include "manualdialog.h"
 #include "homepage.h"
 #include "schemes.h"
@@ -22,6 +23,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeySequence>
+#include <QSettings>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -47,6 +49,14 @@ MainWindow::MainWindow(const QString& cliDir, QWidget* parent) : QMainWindow(par
 {
     if (!cliDir.isEmpty()) m_cliDir = cliDir;
     else                   m_cliDir = qEnvironmentVariable("EGTOOLS_CLI_DIR");
+    // 内核调用方式：命令行 --backend > 环境变量 > QSettings > 默认自动。
+    {
+        QSettings st;
+        QString mode = st.value(QStringLiteral("kernel/backend")).toString();
+        const QByteArray env = qgetenv("EGTOOLS_KERNEL_BACKEND");
+        if (!env.isEmpty()) mode = QString::fromLocal8Bit(env);
+        KernelClient::setDefaultBackend(KernelClient::backendFromString(mode));
+    }
     buildUi();
     log(QStringLiteral("EGtools Qt 前端已就绪（CLI 目录：%1）")
             .arg(m_cliDir.isEmpty() ? QStringLiteral("<未设置>") : m_cliDir));
@@ -212,6 +222,27 @@ void MainWindow::buildUi()
     });
     connect(m_cliEdit, &QLineEdit::editingFinished, this, [this]{ setCliDir(m_cliEdit->text().trimmed()); });
 
+    // 内核调用方式：融合 CLI/内嵌两种方式，随时可切。
+    m_backendCombo = new QComboBox();
+    m_backendCombo->addItem(QStringLiteral("自动（优先内嵌调库，失败回退命令行）"), QStringLiteral("auto"));
+    m_backendCombo->addItem(QStringLiteral("内嵌（进程内直接调内核库）"),       QStringLiteral("embedded"));
+    m_backendCombo->addItem(QStringLiteral("命令行（QProcess 起内核 exe）"),     QStringLiteral("cli"));
+    m_backendCombo->setToolTip(QStringLiteral(
+        "内嵌：用 hostfxr 把内核 DLL 载入本进程直接调用 — 无子进程、无控制台窗口、启动更快，\n"
+        "内核日志能实时回传（可在下方「内核日志」看到进度）。\n"
+        "命令行：起独立的 {内核}.exe — 兼容性最好，内核崩溃不会带走界面。\n"
+        "两条路吃的是同一份内核 DLL 与同一套 JSON 契约，结果一致。"));
+    {
+        const int idx = m_backendCombo->findData(KernelClient::backendToString(KernelClient::defaultBackend()));
+        if (idx >= 0) m_backendCombo->setCurrentIndex(idx);
+    }
+    connect(m_backendCombo, &QComboBox::currentIndexChanged, this, [this](int){
+        setKernelBackend(m_backendCombo->currentData().toString());
+    });
+    cliRow->addSpacing(12);
+    cliRow->addWidget(new QLabel(QStringLiteral("内核调用:")));
+    cliRow->addWidget(m_backendCombo);
+
     auto* rightPane = new QWidget();
     auto* rightLay = new QVBoxLayout(rightPane);
     rightLay->setContentsMargins(4, 4, 4, 4);
@@ -357,14 +388,38 @@ void MainWindow::refreshKernelStatus()
     if (m_diffPage)  m_diffPage->setCliDir(m_cliDir);
     if (m_excelPage) m_excelPage->setCliDir(m_cliDir);
     if (m_charPanel) m_charPanel->setCliDir(m_cliDir);
+    // 每次刷新内核状态都把当前后端一并下发，避免页面用的还是旧设置。
+    setKernelBackend(KernelClient::backendToString(KernelClient::defaultBackend()));
 }
 
 void MainWindow::setCliDir(const QString& d)
 {
     m_cliDir = d;
     if (m_cliEdit) m_cliEdit->setText(d);
+    KernelClient::setCliDir(d);          // 融合层也要知道内核目录
     refreshKernelStatus();
     log(QStringLiteral("CLI 目录 = %1").arg(d.isEmpty() ? QStringLiteral("<自动探测>") : d));
+}
+
+void MainWindow::setKernelBackend(const QString& mode)
+{
+    const KernelClient::Backend b = KernelClient::backendFromString(mode);
+    KernelClient::setDefaultBackend(b);
+    QSettings().setValue(QStringLiteral("kernel/backend"), KernelClient::backendToString(b));
+    if (m_backendCombo)
+    {
+        const int idx = m_backendCombo->findData(KernelClient::backendToString(b));
+        if (idx >= 0 && idx != m_backendCombo->currentIndex())
+        {
+            QSignalBlocker blk(m_backendCombo);
+            m_backendCombo->setCurrentIndex(idx);
+        }
+    }
+    if (m_diffPage)  m_diffPage->setKernelBackend(KernelClient::backendToString(b));
+    if (m_excelPage) m_excelPage->setKernelBackend(KernelClient::backendToString(b));
+    if (m_charPanel) m_charPanel->setKernelBackend(KernelClient::backendToString(b));
+    log(QStringLiteral("内核调用方式 = %1（%2）")
+            .arg(KernelClient::backendToString(b), KernelClient::describe()));
 }
 
 void MainWindow::log(const QString& s)
@@ -679,18 +734,15 @@ void MainWindow::onExtract()
     if (m_view->regions().isEmpty()) { log(QStringLiteral("请先框选区域")); return; }
     refreshJsonPreview();
 
-    QTemporaryDir tmp;
-    QString reqPath = QDir(tmp.path()).filePath(QStringLiteral("request.json"));
-    QFile f(reqPath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) { log(QStringLiteral("无法写入临时请求")); return; }
-    f.write(QJsonDocument(buildRequest()).toJson(QJsonDocument::Compact));
-    f.close();
-
-    QString out, err;
-    int rc = CliRunner::run(cliExe(QStringLiteral("EGpdf2excel")),
-        {QStringLiteral("--mode"), QStringLiteral("region"),
-         QStringLiteral("--json"), reqPath}, out, err);
-    if (!err.trimmed().isEmpty()) log(QStringLiteral("[内核 stderr] ") + err.trimmed());
+    // 走融合层（可选内嵌调库 / 命令行）。JSON 契约直接交给内核，不落临时文件。
+    const QString reqJson = QString::fromUtf8(QJsonDocument(buildRequest()).toJson(QJsonDocument::Compact));
+    const KernelClient::Result kr = KernelClient::run(
+        QStringLiteral("EGpdf2excel"),
+        {QStringLiteral("--mode"), QStringLiteral("region")},
+        reqJson, KernelClient::defaultBackend());
+    QString out = kr.out, err = kr.err;
+    int rc = kr.rc;
+    if (!err.trimmed().isEmpty()) log(QStringLiteral("[内核 stderr/%1] ").arg(kr.backend) + err.trimmed().left(500));
     if (rc != 0) { log(QStringLiteral("提取失败，退出码 %1").arg(rc)); return; }
 
     QJsonParseError pe{};
