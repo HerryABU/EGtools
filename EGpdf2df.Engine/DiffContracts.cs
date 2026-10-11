@@ -57,6 +57,34 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("outline")] public bool? Outline { get; set; }
         // 填充向外扩张像素(0=精准贴合形状，覆盖配置文件 haloPx)。
         [JsonPropertyName("haloPx")] public int? HaloPx { get; set; }
+
+        // ---- 图形差异检测路径与矢量参数（前端 / 命令行可调）----
+        // 图形检测路径：vector(默认，纯矢量、误报低) / pixel(旧的渲染+OpenCV 回退)。
+        [JsonPropertyName("graphicMethod")] public string? GraphicMethod { get; set; }
+        // 矢量比对容差(pt)：两版同名线画允许的位置偏差。默认 3.0。
+        [JsonPropertyName("vectorTolPt")] public double? VectorTolPt { get; set; }
+        // 方向容差(度)：防密集区被无关线段误判为覆盖。默认 12。
+        [JsonPropertyName("vectorAngleTolDeg")] public double? VectorAngleTolDeg { get; set; }
+        // 页面配对最小线画相似度。默认 0.85。
+        [JsonPropertyName("pageMatchMinSim")] public double? PageMatchMinSim { get; set; }
+        // 报告粒度：cluster(按差异区域汇总，默认) / run(逐条变更折线)。
+        [JsonPropertyName("reportMode")] public string? ReportMode { get; set; }
+        // 丢弃总长小于此值(pt)的变更折线（碎屑噪声）。
+        [JsonPropertyName("minRunLengthPt")] public double? MinRunLengthPt { get; set; }
+        // 邻近聚类半径(pt)：间距小于此值的折线归为同一差异区域。
+        [JsonPropertyName("clusterRadiusPt")] public double? ClusterRadiusPt { get; set; }
+        // 丢弃折线总长小于此值(pt)的差异区域（把零散微调整体忽略）。
+        [JsonPropertyName("minClusterLengthPt")] public double? MinClusterLengthPt { get; set; }
+        // 丢弃折线数少于此值的差异区域。
+        [JsonPropertyName("minClusterRuns")] public int? MinClusterRuns { get; set; }
+
+        // ---- 文字差异参数 ----
+        // 差异框粒度：word(逐词框，更精确) / line(整行墨迹框)。
+        [JsonPropertyName("textBoxMode")] public string? TextBoxMode { get; set; }
+        // 字形原点命中差异框的绝对容差(pt)。必须是小绝对值（见 AnnotationCfg 注释）。
+        [JsonPropertyName("textBoxPadPt")] public double? TextBoxPadPt { get; set; }
+        // 序号匹配宽严：loose(含材料表行首纯数字) / strict(只认管段号与 NOTE n)。
+        [JsonPropertyName("textSerialMatchMode")] public string? TextSerialMatchMode { get; set; }
     }
 
     // 前端可选传入的标注颜色（缺省则使用配置文件默认）。
@@ -148,6 +176,19 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("size")] public double Size { get; set; }    // 原始 Tf 字号(pt，可能含矩阵缩放，仅参考)
         // 该行在 DISPLAY 帧下的真实墨水包围盒(原点左上, y-down)，由原始 Word 几何得出，
         // 供内容流重着色/抽取时按几何精确匹配 Tj/TJ 文本运行(避免坐标/字号猜测)。
+        [JsonPropertyName("x0")] public double X0 { get; set; }
+        [JsonPropertyName("y0")] public double Y0 { get; set; }
+        [JsonPropertyName("x1")] public double X1 { get; set; }
+        [JsonPropertyName("y1")] public double Y1 { get; set; }
+        // 逐词包围盒（DISPLAY 帧 pt, y-down）。textBoxMode=word 时按它出框 → 只改真正变动的词，
+        // 不牵连同一行内的其它文字。
+        [JsonPropertyName("words")] public List<TextWord>? Words { get; set; }
+    }
+
+    // 单个词的墨迹包围盒（DISPLAY 帧, y-down）。
+    public sealed class TextWord
+    {
+        [JsonPropertyName("t")] public string T { get; set; } = "";
         [JsonPropertyName("x0")] public double X0 { get; set; }
         [JsonPropertyName("y0")] public double Y0 { get; set; }
         [JsonPropertyName("x1")] public double X1 { get; set; }

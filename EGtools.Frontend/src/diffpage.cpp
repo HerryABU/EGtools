@@ -126,6 +126,69 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     mkRow->addWidget(m_markStrokeBtn);
     mkRow->addStretch();
 
+    // ---- 矢量检测参数（纯矢量解析，误报率低；参数可调） ----
+    auto* vecRow = new QHBoxLayout();
+    m_gfxMethodCombo = new QComboBox();
+    m_gfxMethodCombo->addItem(QStringLiteral("矢量（推荐，误报低）"), QStringLiteral("vector"));
+    m_gfxMethodCombo->addItem(QStringLiteral("像素（旧路径，回退用）"), QStringLiteral("pixel"));
+    m_gfxMethodCombo->setCurrentIndex(0);
+    m_gfxMethodCombo->setToolTip(QStringLiteral("矢量：解析 PDF 内容流取线画比对，不做位图渲染。\n像素：旧的两版渲染成位图逐像素比对，对配准误差零容忍。"));
+    m_vecTolSpin = new QDoubleSpinBox();
+    m_vecTolSpin->setRange(0.5, 30.0); m_vecTolSpin->setSingleStep(0.5);
+    m_vecTolSpin->setValue(3.0); m_vecTolSpin->setSuffix(QStringLiteral(" pt"));
+    m_vecTolSpin->setToolTip(QStringLiteral("两版同名线画允许的位置偏差。调小更灵敏（可能把导出误差报成差异），调大更钝。"));
+    m_vecAngSpin = new QDoubleSpinBox();
+    m_vecAngSpin->setRange(1.0, 60.0); m_vecAngSpin->setSingleStep(1.0);
+    m_vecAngSpin->setValue(12.0); m_vecAngSpin->setSuffix(QStringLiteral(" °"));
+    m_vecAngSpin->setToolTip(QStringLiteral("方向容差：防密集区被横穿的无关线段误判为覆盖。"));
+    vecRow->addWidget(new QLabel(QStringLiteral("图形检测:")));
+    vecRow->addWidget(m_gfxMethodCombo);
+    vecRow->addWidget(new QLabel(QStringLiteral("容差:")));
+    vecRow->addWidget(m_vecTolSpin);
+    vecRow->addWidget(new QLabel(QStringLiteral("方向:")));
+    vecRow->addWidget(m_vecAngSpin);
+    vecRow->addStretch();
+
+    // ---- 报告粒度与差异密度过滤（差异太多/太碎时调这里） ----
+    auto* repRow = new QHBoxLayout();
+    m_reportModeCombo = new QComboBox();
+    m_reportModeCombo->addItem(QStringLiteral("按区域汇总（推荐）"), QStringLiteral("cluster"));
+    m_reportModeCombo->addItem(QStringLiteral("逐条折线（最详细）"), QStringLiteral("run"));
+    m_reportModeCombo->setCurrentIndex(0);
+    m_clusterRadiusSpin = new QDoubleSpinBox();
+    m_clusterRadiusSpin->setRange(0.0, 200.0); m_clusterRadiusSpin->setSingleStep(2.0);
+    m_clusterRadiusSpin->setValue(24.0); m_clusterRadiusSpin->setSuffix(QStringLiteral(" pt"));
+    m_clusterRadiusSpin->setToolTip(QStringLiteral("邻近折线归为同一差异区域的距离阈值。调大 → 区域更少更聚合。"));
+    m_minClusterLenSpin = new QDoubleSpinBox();
+    m_minClusterLenSpin->setRange(0.0, 2000.0); m_minClusterLenSpin->setSingleStep(5.0);
+    m_minClusterLenSpin->setValue(0.0); m_minClusterLenSpin->setSuffix(QStringLiteral(" pt"));
+    m_minClusterLenSpin->setToolTip(QStringLiteral("丢弃总长小于此值的差异区域（把零散微调整体忽略）。0=不过滤。"));
+    repRow->addWidget(new QLabel(QStringLiteral("图形报告:")));
+    repRow->addWidget(m_reportModeCombo);
+    repRow->addWidget(new QLabel(QStringLiteral("聚类半径:")));
+    repRow->addWidget(m_clusterRadiusSpin);
+    repRow->addWidget(new QLabel(QStringLiteral("忽略小区域<:")));
+    repRow->addWidget(m_minClusterLenSpin);
+    repRow->addStretch();
+
+    // ---- 文字差异参数（框粒度 / 序号匹配宽严） ----
+    auto* txtRow = new QHBoxLayout();
+    m_textBoxModeCombo = new QComboBox();
+    m_textBoxModeCombo->addItem(QStringLiteral("逐词框（精确，推荐）"), QStringLiteral("word"));
+    m_textBoxModeCombo->addItem(QStringLiteral("整行框"), QStringLiteral("line"));
+    m_textBoxModeCombo->setCurrentIndex(0);
+    m_textBoxModeCombo->setToolTip(QStringLiteral("逐词框只改真正变动的词，不牵连同行其它文字。"));
+    m_textSerialCombo = new QComboBox();
+    m_textSerialCombo->addItem(QStringLiteral("宽松（含材料表行首数字）"), QStringLiteral("loose"));
+    m_textSerialCombo->addItem(QStringLiteral("严格（只认管段号/NOTE n）"), QStringLiteral("strict"));
+    m_textSerialCombo->setCurrentIndex(0);
+    m_textSerialCombo->setToolTip(QStringLiteral("若出现毫不相关的两行被报成\"变更\"（两版行号含义不同），改严格模式。"));
+    txtRow->addWidget(new QLabel(QStringLiteral("文字框:")));
+    txtRow->addWidget(m_textBoxModeCombo);
+    txtRow->addWidget(new QLabel(QStringLiteral("序号匹配:")));
+    txtRow->addWidget(m_textSerialCombo);
+    txtRow->addStretch();
+
     // ---- 描红/填充可调参数：线宽粗细 / 填充透明度 / 填充外扩 ----
     auto* parRow = new QHBoxLayout();
     m_lwSpin = new QSpinBox();
@@ -189,6 +252,9 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     ctrlLay->addLayout(optRow);
     ctrlLay->addLayout(colRow);
     ctrlLay->addLayout(mkRow);
+    ctrlLay->addLayout(vecRow);
+    ctrlLay->addLayout(repRow);
+    ctrlLay->addLayout(txtRow);
     ctrlLay->addLayout(parRow);
     ctrlLay->addLayout(btnRow);
     ctrlLay->addWidget(m_status);
@@ -375,6 +441,17 @@ void DiffPage::onRun()
     opt[QStringLiteral("colors")] = colors;
     // 图形标记形式：semi(半透明填充+深色描边) / solid(实心填充) / outline(仅描边)
     opt[QStringLiteral("markStyle")] = m_markStyleCombo->currentData().toString();
+    // ---- 矢量检测参数（可调）----
+    opt[QStringLiteral("graphicMethod")] = m_gfxMethodCombo->currentData().toString();
+    opt[QStringLiteral("vectorTolPt")] = m_vecTolSpin->value();
+    opt[QStringLiteral("vectorAngleTolDeg")] = m_vecAngSpin->value();
+    // ---- 报告粒度与差异密度过滤 ----
+    opt[QStringLiteral("reportMode")] = m_reportModeCombo->currentData().toString();
+    opt[QStringLiteral("clusterRadiusPt")] = m_clusterRadiusSpin->value();
+    opt[QStringLiteral("minClusterLengthPt")] = m_minClusterLenSpin->value();
+    // ---- 文字差异参数 ----
+    opt[QStringLiteral("textBoxMode")] = m_textBoxModeCombo->currentData().toString();
+    opt[QStringLiteral("textSerialMatchMode")] = m_textSerialCombo->currentData().toString();
     // 变更旧(蓝)文字插入方向（down/up/right/left），蓝字按方向插入到"新(红)"文字文本框附近。
     if (m_textDirCombo)
         opt[QStringLiteral("textInsertDirection")] = m_textDirCombo->currentData().toString();

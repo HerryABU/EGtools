@@ -71,6 +71,16 @@ private:
     QComboBox* m_markStyleCombo = nullptr;  // semi(半透明+描边) / solid(实心) / outline(仅描边)
     QString m_markStrokeColor = QString();   // 留空 = 内核自动取标记色深色版
     QPushButton* m_markStrokeBtn = nullptr;
+    // ---- 矢量检测参数（可调）----
+    QComboBox* m_gfxMethodCombo = nullptr;   // vector(默认,纯矢量) / pixel(渲染+OpenCV 回退)
+    QDoubleSpinBox* m_vecTolSpin = nullptr;  // 矢量比对容差(pt)
+    QDoubleSpinBox* m_vecAngSpin = nullptr;  // 方向容差(度)
+    QComboBox* m_reportModeCombo = nullptr;  // cluster(按区域) / run(逐条)
+    QDoubleSpinBox* m_clusterRadiusSpin = nullptr;  // 聚类半径(pt)
+    QDoubleSpinBox* m_minClusterLenSpin = nullptr;  // 丢弃小于此总长(pt)的区域
+    // ---- 文字差异参数 ----
+    QComboBox* m_textBoxModeCombo = nullptr; // word(逐词框,更精确) / line(整行框)
+    QComboBox* m_textSerialCombo = nullptr;  // loose(含行首纯数字) / strict(只认管段号/NOTE n)
     // 描红/填充可调参数（线宽粗细、填充透明度、填充外扩像素）。
     QSpinBox*      m_lwSpin   = nullptr;   // 线宽(描边粗细) 1..10
     QDoubleSpinBox* m_opacSpin = nullptr;  // 填充透明度 0..1

@@ -213,22 +213,41 @@ namespace EGpdf2df.Engine
                             // 页面内容流只有几十字节（`q /Meta0 Do Q`）。用纯 content 重载会得到空线画。
                             var bLine = VectorLinework.Extract(baseSrc, basePno);
                             var tLine = VectorLinework.Extract(tgtSrc, tgtPno);
+                            var vfilter = new VectorGeomDiff.FilterCfg
+                            {
+                                MinRunLengthPt = cfg.GraphicDiff.MinRunLengthPt,
+                                ClusterRadiusPt = cfg.GraphicDiff.ClusterRadiusPt,
+                                MinClusterLengthPt = cfg.GraphicDiff.MinClusterLengthPt,
+                                MinClusterRuns = cfg.GraphicDiff.MinClusterRuns,
+                            };
                             var vr = VectorGeomDiff.Compare(bLine, tLine,
-                                cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, L);
+                                cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, L,
+                                filter: vfilter);
                             pageAnno.Strokes.AddRange(vr.Runs);
                             int rotT = tgtSrc.Rotation(tgtPno);
                             float WcT = tBounds.X1 - tBounds.X0, HcT = tBounds.Y1 - tBounds.Y0;
                             float oxT = tBounds.X0, oyT = tBounds.Y0;
-                            foreach (var run in vr.Runs)
-                            {
-                                double rminx = double.MaxValue, rminy = double.MaxValue;
-                                double rmaxx = double.MinValue, rmaxy = double.MinValue;
-                                for (int k = 0; k + 1 < run.Pts.Count; k += 2)
+                            bool byCluster = !string.Equals(cfg.GraphicDiff.ReportMode, "run", StringComparison.OrdinalIgnoreCase);
+                            // 报告条目：按区域(cluster)或逐条折线(run)。大改页逐条可达十几万条，
+                            // 让 JSON 与前端都不可用，故默认按区域。
+                            var boxes = new List<(double x0, double y0, double x1, double y1, string dir)>();
+                            if (byCluster)
+                                foreach (var c in vr.Clusters)
+                                    boxes.Add((c.X0, c.Y0, c.X1, c.Y1, c.Dir));
+                            else
+                                foreach (var run in vr.Runs)
                                 {
-                                    rminx = Math.Min(rminx, run.Pts[k]); rmaxx = Math.Max(rmaxx, run.Pts[k]);
-                                    rminy = Math.Min(rminy, run.Pts[k + 1]); rmaxy = Math.Max(rmaxy, run.Pts[k + 1]);
+                                    if (run.Pts.Count == 0) continue;
+                                    double a0 = double.MaxValue, b0 = double.MaxValue, a1 = double.MinValue, b1 = double.MinValue;
+                                    for (int k = 0; k + 1 < run.Pts.Count; k += 2)
+                                    {
+                                        a0 = Math.Min(a0, run.Pts[k]); a1 = Math.Max(a1, run.Pts[k]);
+                                        b0 = Math.Min(b0, run.Pts[k + 1]); b1 = Math.Max(b1, run.Pts[k + 1]);
+                                    }
+                                    boxes.Add((a0, b0, a1, b1, run.Dir));
                                 }
-                                if (run.Pts.Count == 0) continue;
+                            foreach (var (rminx, rminy, rmaxx, rmaxy, rdir) in boxes)
+                            {
                                 // 转成 DISPLAY 帧(y-down) 供报告统一口径
                                 PdfVectorDiff.ContentToDisplay(rotT, WcT, HcT, oxT, oyT, rminx, rminy, out double dx0, out double dy0);
                                 PdfVectorDiff.ContentToDisplay(rotT, WcT, HcT, oxT, oyT, rmaxx, rmaxy, out double dx1, out double dy1);
@@ -236,7 +255,7 @@ namespace EGpdf2df.Engine
                                 {
                                     Page = tgtPno,
                                     Type = "graphic",
-                                    ChangeType = run.Dir == "changed" ? "changed" : run.Dir,
+                                    ChangeType = rdir == "changed" ? "changed" : rdir,
                                     Bbox = new Bbox
                                     {
                                         X = Round(Math.Min(dx0, dx1)), Y = Round(Math.Min(dy0, dy1)),
@@ -246,7 +265,8 @@ namespace EGpdf2df.Engine
                                 });
                             }
                             L($"  [vec] 线画差异: 变更折线 {vr.Runs.Count} 条 " +
-                              $"(新增 {vr.Runs.Count(r => r.Dir == "added")} / 删除 {vr.Runs.Count(r => r.Dir == "removed")})");
+                              $"(新增 {vr.Runs.Count(r => r.Dir == "added")} / 删除 {vr.Runs.Count(r => r.Dir == "removed")})" +
+                              $"，差异区域 {vr.Clusters.Count} 个（报告粒度={(byCluster ? "区域" : "逐条")}）");
                         }
                         else if (cfg.GraphicDiff.Enabled)
                         {
@@ -312,7 +332,8 @@ namespace EGpdf2df.Engine
                         // ----- STEP 2: TEXT diff (independent of the pixel stage) -----
                         if (cfg.TextDiff.Enabled)
                         {
-                            var textItems = TextDiff(baseWordsAligned, tgtWords, cfg.TextDiff, tgtPno, pageRegions, tBounds, scale);
+                            var textItems = TextDiff(baseWordsAligned, tgtWords, cfg.TextDiff, tgtPno, pageRegions, tBounds, scale,
+                                string.Equals(cfg.Annotation.TextSerialMatchMode, "strict", StringComparison.OrdinalIgnoreCase));
                             diffs.AddRange(textItems);
                             pageAnno.TextItems.AddRange(textItems);
                         }
@@ -834,6 +855,9 @@ namespace EGpdf2df.Engine
             //   DISPLAY 帧真实墨水包围盒 x0/y0/x1/y1)。包围盒由原始 Word 几何得出，供内容流
             // 重着色/抽取时按几何精确匹配 Tj/TJ 文本运行(避免坐标/字号猜测)。
             public List<(string text, double x0, double baselineY, double height, double size, double bx0, double by0, double bx1, double by1)> Lines = new();
+            // 与 Lines 一一对应：每行的逐词包围盒（DISPLAY 帧, y-down）。textBoxMode=word 时
+            // 用它出差异框 → 只改真正变动的词，不牵连同行其它文字。
+            public List<List<TextWord>> LineWords = new();
             public double X0, Y0, X1, Y1;           // 合并包围盒(目标 pt 帧)
             public double LastYc;                    // 末行中心 y(续行判断)
             public double Xc => (X0 + X1) / 2;
@@ -847,7 +871,7 @@ namespace EGpdf2df.Engine
         // 其次纯数字(材料表 NO 列)、NOTE n / ITEM n。
         // ⚠️ 关键：一行(row, 按 yc 聚类)里可能出现多个独立标签(如两个管段号并排)，必须在
         // 每个"序号起点"处切分，否则并排的两个编号会被并成一条、导致与另一版对不上 → 误报。
-        static List<TextItem> Itemize(List<TextGeometry.Word> words)
+        static List<TextItem> Itemize(List<TextGeometry.Word> words, bool strictSerial)
         {
             var sorted = words.Where(w => !string.IsNullOrWhiteSpace(w.text))
                               .OrderBy(w => w.yc).ThenBy(w => w.x0).ToList();
@@ -875,7 +899,7 @@ namespace EGpdf2df.Engine
                 {
                     var w = row[i];
                     var wt = (w.text ?? "").Trim();
-                    string? ser = SerialOf(wt, row, i);
+                    string? ser = SerialOf(wt, row, i, strictSerial);
                     if (ser != null)
                     {
                         Flush();
@@ -899,10 +923,12 @@ namespace EGpdf2df.Engine
         }
 
         // 序号识别：管道/管线号 > 纯数字 > NOTE n / ITEM n。均为原样保留(不剥离后缀)。
-        static string? SerialOf(string wt, List<TextGeometry.Word> row, int i)
+        static string? SerialOf(string wt, List<TextGeometry.Word> row, int i, bool strict)
         {
             if (TextGeometry.LooksLikeLineNo(wt)) return wt.ToUpperInvariant();  // 管段号 408.101.P76
-            if (i == 0 && RePureNum.IsMatch(wt)) return wt;                      // 纯数字序号(材料表 NO 列)
+            // strict：不把"行首纯数字"当匹配键。行首数字并非唯一标识（一张表多行都以小数字开头），
+            // 两版行号含义/行序不同时会把无关两行配成一对 → 假 changed。
+            if (!strict && i == 0 && RePureNum.IsMatch(wt)) return wt;           // 纯数字序号(材料表 NO 列)
             if (i == 0 && ReLabelNum.IsMatch(wt) && i + 1 < row.Count
                 && RePureNum.IsMatch((row[i + 1].text ?? "").Trim()))
                 return wt + " " + (row[i + 1].text ?? "").Trim();               // NOTE 1 / ITEM 2 …
@@ -942,6 +968,10 @@ namespace EGpdf2df.Engine
                 double height = Math.Max(1.0, by1 - by0);
                 it.Lines.Add((JoinContent(line), bx0, baselineSum / n, height, sizeSum / n,
                               bx0, by0, bx1, by1));
+                it.LineWords.Add(line.Select(w => new TextWord
+                {
+                    T = w.text, X0 = w.x0, Y0 = w.y0, X1 = w.x1, Y1 = w.y1,
+                }).ToList());
             }
             it.LastYc = line.Average(w => w.yc);
         }
@@ -963,9 +993,16 @@ namespace EGpdf2df.Engine
         {
             if (it == null || it.Lines.Count == 0) return null;
             var out_ = new List<TextLine>();
-            foreach (var ln in it.Lines)
-                out_.Add(new TextLine { Text = ln.text, X = ln.x0, Baseline = ln.baselineY, Height = ln.height, Size = ln.size,
-                                        X0 = ln.bx0, Y0 = ln.by0, X1 = ln.bx1, Y1 = ln.by1 });
+            for (int i = 0; i < it.Lines.Count; i++)
+            {
+                var ln = it.Lines[i];
+                out_.Add(new TextLine
+                {
+                    Text = ln.text, X = ln.x0, Baseline = ln.baselineY, Height = ln.height, Size = ln.size,
+                    X0 = ln.bx0, Y0 = ln.by0, X1 = ln.bx1, Y1 = ln.by1,
+                    Words = i < it.LineWords.Count ? it.LineWords[i] : null,
+                });
+            }
             return out_;
         }
 
@@ -984,15 +1021,16 @@ namespace EGpdf2df.Engine
             };
 
         static List<DiffItem> TextDiff(List<TextGeometry.Word> wordsA, List<TextGeometry.Word> wordsB,
-            Pdf2dfConfig.TextCfg t, int page, List<Bbox> regions, Rectangle tBounds, double scale)
+            Pdf2dfConfig.TextCfg t, int page, List<Bbox> regions, Rectangle tBounds, double scale,
+            bool strictSerial = false)
         {
             // 只保留"有序号"的条目参与比对（管道号 408.101.P## / NOTE n / 材料表 NO 等）。
             // 无序号的自有文本(标题、图框、英文说明)在两版导出时分词/换行极易不一致，
             // 逐条比对会产生海量伪差异并把整页画满标记 —— 用户明确要求：先按序号配对，
             // 再看序号对应内容是否相同，无序号文本不报差异。
-            var IA = Itemize(wordsA.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList())
+            var IA = Itemize(wordsA.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList(), strictSerial)
                      .Where(it => it.Serial != null).ToList();
-            var IB = Itemize(wordsB.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList())
+            var IB = Itemize(wordsB.Where(w => !string.IsNullOrWhiteSpace(w.text)).ToList(), strictSerial)
                      .Where(it => it.Serial != null).ToList();
             var inside = regions.Count == 0 ? (Func<double, double, bool>)((x, y) => true)
                                            : (x, y) => regions.Any(r => x >= r.X && x <= r.X + r.Width && y >= r.Y && y <= r.Y + r.Height);

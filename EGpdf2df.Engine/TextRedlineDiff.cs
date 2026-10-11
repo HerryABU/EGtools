@@ -70,6 +70,8 @@ namespace EGpdf2df.Engine
             public byte[] Operand = Array.Empty<byte>();  // 原始 (...) / [...] 字节
             public bool IsTJ;
             public string FontName = "";                  // 原始字体资源名(不含 /)
+            /// <summary>该字形所用字体字典（可能位于 Form XObject 的 /Resources 内）。</summary>
+            public PdfObject? FontObj;
             public float FontSize;
             public float[] M = new float[6];              // 折叠后的文本矩阵 [a b c d e f]
         }
@@ -105,20 +107,27 @@ namespace EGpdf2df.Engine
         {
             private readonly PdfDocument _target;
             private readonly PdfPage _targetPage;
+            private readonly PdfDocument? _foreign;   // 字体来自另一份文档时需指定（跨文档 CopyTo）
             private readonly Dictionary<PdfObject, string> _cache = new();
-            public FontMover(PdfDocument target, PdfPage targetPage) { _target = target; _targetPage = targetPage; }
+            public FontMover(PdfDocument target, PdfPage targetPage, PdfDocument? foreign = null)
+            { _target = target; _targetPage = targetPage; _foreign = foreign; }
 
-            // 把来源字体字典原样深拷贝进目标页 /Font 资源(不解析)，返回新资源名。
+            // 把来源字体挂到目标页 /Font 资源下，返回新资源名。
+            // ⚠️ 两种情况必须区分：
+            //   • 字体本来就在目标文档里（如"目标页文字改色"，字体可能在同文档的 Form XObject 里）
+            //     → 直接建立**别名引用**；对它 CopyTo 会抛
+            //       "Cannot copy indirect object from the document that is being written"。
+            //   • 字体来自另一份文档（"从基准页抽取删除文字"）→ 必须 CopyTo 深拷贝进目标文档。
             public string Move(PdfObject srcFontDict)
             {
                 if (_cache.TryGetValue(srcFontDict, out var name)) return name;
-                var copied = srcFontDict.CopyTo(_target, true);
+                PdfObject toPut = _foreign == null ? srcFontDict : srcFontDict.CopyTo(_target, true);
                 var resDict = _targetPage.GetResources().GetPdfObject();
                 var fonts = resDict.GetAsDictionary(PdfName.Font);
                 if (fonts == null) { fonts = new PdfDictionary(); resDict.Put(PdfName.Font, fonts); }
                 int n = 0; PdfName fn;
                 do { fn = new PdfName("Ft" + n++); } while (fonts.Get(fn) != null);
-                fonts.Put(fn, copied);
+                fonts.Put(fn, toPut);
                 name = fn.GetValue();
                 _cache[srcFontDict] = name;
                 return name;
@@ -130,92 +139,175 @@ namespace EGpdf2df.Engine
         /// （新增/变更新 → 红）。只重绘命中字符，绝不牵连同文本块内其它文字；字体/字号/文本矩阵/
         /// 旋转与原文 1:1 保真。
         /// </summary>
-        public static void RecolorAdded(PdfDocument targetPdf, int pageNum, List<WordBox> boxes, Color col)
+        public static void RecolorAdded(PdfDocument targetPdf, int pageNum, List<WordBox> boxes, Color col, double padPt = 2.0)
         {
             if (boxes == null || boxes.Count == 0) return;
             var page = targetPdf.GetPage(pageNum);
-            var shows = Collect(page.GetContentBytes(), boxes);
+            var shows = Collect(page, boxes, padPt);
             if (shows.Count == 0) return;
+            // 字形可能来自 Form XObject，其字体只在该 XObject 的 /Resources 里可见；
+            // 重绘到页面内容流前必须把字体深拷贝进页面 /Font 并改写成新资源名。
+            var remap = RehostFonts(targetPdf, page, shows);
             var canvas = new PdfCanvas(page);
-            Emit(canvas.GetContentStream().GetOutputStream(), shows, null, col);
+            Emit(canvas.GetContentStream().GetOutputStream(), shows, remap, col);
         }
 
         /// <summary>
         /// 从 baselinePdf 第 pageNum 页抽取与 boxes 匹配的每个文字字形，原样拷贝进 targetPdf 该页并以
         /// col（删除/变更旧 → 蓝）独立重绘。字体字典原样深拷贝(不解析)，中文/竖排/旋转全部保真。
         /// </summary>
-        public static void DrawRemoved(PdfDocument targetPdf, PdfDocument baselinePdf, int pageNum, List<WordBox> boxes, Color col)
+        public static void DrawRemoved(PdfDocument targetPdf, PdfDocument baselinePdf, int pageNum, List<WordBox> boxes, Color col, double padPt = 2.0)
         {
             if (boxes == null || boxes.Count == 0) return;
             var basePage = baselinePdf.GetPage(pageNum);
-            var shows = Collect(basePage.GetContentBytes(), boxes);
+            var shows = Collect(basePage, boxes, padPt);
             if (shows.Count == 0) return;
-
-            // 解析匹配字形引用到的字体名 → 基准字体字典 → 深拷贝进目标并拿 旧名→新名 映射。
-            var baseRes = basePage.GetResources();
-            var remap = new Dictionary<string, string>();
-            var mover = new FontMover(targetPdf, targetPdf.GetPage(pageNum));
-            foreach (var s in shows)
-            {
-                if (remap.ContainsKey(s.FontName)) continue;
-                var fontsDict = baseRes.GetPdfObject().GetAsDictionary(PdfName.Font);
-                var fontObj = fontsDict?.Get(new PdfName(s.FontName));
-                if (fontObj == null) continue;
-                remap[s.FontName] = mover.Move(fontObj);
-            }
+            // 字体深拷贝进目标页并拿 旧名→新名 映射（跨文档拷贝）。
+            var remap = RehostFonts(targetPdf, targetPdf.GetPage(pageNum), shows, baselinePdf);
             var canvas = new PdfCanvas(targetPdf.GetPage(pageNum));
             Emit(canvas.GetContentStream().GetOutputStream(), shows, remap, col);
         }
 
-        // 分词 + 状态机：跟踪 cm/q/Q 与 BT/Tm/Td/TD/T* 得到每个 Tj/TJ 的【折叠 CTM×Tm 矩阵】、
-        // 当前字体与字号；与 MuPDF 算出的内容流空间包围盒做"原点命中 + 文本包含(拉丁)"匹配。
-        // 命中即产出一个 ShowRender（携带该字形的原始字符串字节与精确矩阵）；不命中则不产出 →
-        // 绝不误染同文本块内的其它文字。
-        private static List<ShowRender> Collect(byte[] content, List<WordBox> boxes)
+        /// <summary>
+        /// 把每个命中字形引用的字体深拷贝进目标页 /Font，返回 原资源名 → 新资源名 映射。
+        /// ⚠️ 必须做：字形可能位于 Form XObject 内，其字体名在**页面**资源里并不存在
+        /// （实测本项目大量页面的文字全在 XObject 里），直接用原名 Tf 会找不到字体。
+        /// </summary>
+        static Dictionary<string, string> RehostFonts(PdfDocument targetPdf, PdfPage targetPage,
+            List<ShowRender> shows, PdfDocument? foreignDoc = null)
         {
-            var toks = Tokenize(content);
-            var shows = new List<ShowRender>();
-            var ctm = Affine.Identity;
-            var tm = Affine.Identity;
-            var stack = new Stack<(Affine ctm, Affine tm)>();
-            float lead = 0;
-            float lastSize = 0;
-            string lastName = "";
-
-            for (int k = 0; k < toks.Count; k++)
+            var remap = new Dictionary<string, string>();
+            var mover = new FontMover(targetPdf, targetPage, foreignDoc);
+            foreach (var s in shows)
             {
-                var t = toks[k];
-                if (t.Op == "q") { stack.Push((ctm, tm)); continue; }
-                if (t.Op == "Q") { if (stack.Count > 0) { var s = stack.Pop(); ctm = s.ctm; tm = s.tm; } continue; }
-                if (t.Op == "cm") { if (TryNums(toks, k - 6, 6, out var m)) ctm = ctm.Mul(new Affine(m[0], m[1], m[2], m[3], m[4], m[5])); continue; }
-                if (t.Op == "BT") { tm = Affine.Identity; continue; }
-                if (t.Op == "Tm") { if (TryNums(toks, k - 6, 6, out var m)) tm = new Affine(m[0], m[1], m[2], m[3], m[4], m[5]); continue; }
-                if (t.Op == "Td") { if (TryNums(toks, k - 2, 2, out var d)) tm = tm.Mul(new Affine(1, 0, 0, 1, d[0], d[1])); continue; }
-                if (t.Op == "TD") { if (TryNums(toks, k - 2, 2, out var td)) { lead = td[1]; tm = tm.Mul(new Affine(1, 0, 0, 1, td[0], td[1])); } continue; }
-                if (t.Op == "T*") { tm = tm.Mul(new Affine(1, 0, 0, 1, 0, -lead)); continue; }
-                if (t.Op == "Tf") { if (k >= 2) { if (toks[k - 2].IsName) lastName = toks[k - 2].Name; float.TryParse(toks[k - 1].Op, NumberStyles.Float, CultureInfo.InvariantCulture, out lastSize); } continue; }
-                if (t.IsShow)
+                if (s.FontObj == null || remap.ContainsKey(s.FontName)) continue;
+                string nn = mover.Move(s.FontObj);
+                if (!string.IsNullOrEmpty(nn)) remap[s.FontName] = nn;
+            }
+            return remap;
+        }
+
+        /// <summary>
+        /// 采集页面内容流（**递归跟随 /Name Do 进入 Form XObject**）中命中差异框的文字字形。
+        /// ⚠️ 必须跟随：实测本项目大量页面内容流只有几十字节（`q /Meta0 Do Q`），文字与线画
+        /// 全在其中；不跟随就会"什么都没改"却报"已处理 N 处"（N 只是框数），静默失效。
+        /// </summary>
+        private static List<ShowRender> Collect(PdfPage page, List<WordBox> boxes, double padPt)
+        {
+            var col = new Collector(boxes, padPt);
+            var res = page.GetResources()?.GetPdfObject();
+            col.Walk(res, page.GetContentBytes(), Affine.Identity, 0);
+            return col.Shows;
+        }
+
+        sealed class Collector
+        {
+            readonly List<WordBox> _boxes;
+            readonly double _pad;
+            public readonly List<ShowRender> Shows = new();
+
+            public Collector(List<WordBox> boxes, double pad) { _boxes = boxes; _pad = pad; }
+
+            public void Walk(PdfDictionary? resources, byte[] content, Affine ctmBase, int depth)
+            {
+                if (content == null || content.Length == 0 || depth > 12) return;
+                var toks = Tokenize(content);
+                var ctm = ctmBase;
+                var tm = Affine.Identity;
+                var stack = new Stack<(Affine ctm, Affine tm)>();
+                float lead = 0;
+                float lastSize = 0;
+                string lastName = "";
+                PdfObject? lastFontObj = null;
+
+                for (int k = 0; k < toks.Count; k++)
                 {
-                    var eff = ctm.Mul(tm);
-                    var (ox, oy) = eff.Apply(0, 0);
-                    var txt = (k - 1 >= 0) ? toks[k - 1].Text : "";
-                    if (MatchBox(ox, oy, txt, boxes))
+                    var t = toks[k];
+                    if (t.Op == "q") { stack.Push((ctm, tm)); continue; }
+                    if (t.Op == "Q") { if (stack.Count > 0) { var s = stack.Pop(); ctm = s.ctm; tm = s.tm; } continue; }
+                    if (t.Op == "cm") { if (TryNums(toks, k - 6, 6, out var m)) ctm = ctm.Mul(new Affine(m[0], m[1], m[2], m[3], m[4], m[5])); continue; }
+                    if (t.Op == "BT") { tm = Affine.Identity; continue; }
+                    if (t.Op == "Tm") { if (TryNums(toks, k - 6, 6, out var m)) tm = new Affine(m[0], m[1], m[2], m[3], m[4], m[5]); continue; }
+                    if (t.Op == "Td") { if (TryNums(toks, k - 2, 2, out var d)) tm = tm.Mul(new Affine(1, 0, 0, 1, d[0], d[1])); continue; }
+                    if (t.Op == "TD") { if (TryNums(toks, k - 2, 2, out var td)) { lead = td[1]; tm = tm.Mul(new Affine(1, 0, 0, 1, td[0], td[1])); } continue; }
+                    if (t.Op == "T*") { tm = tm.Mul(new Affine(1, 0, 0, 1, 0, -lead)); continue; }
+                    if (t.Op == "Tf")
                     {
-                        byte[] operand = Array.Empty<byte>();
-                        if (k - 1 >= 0) { var op = toks[k - 1]; int len = op.End - op.Start; if (len > 0) { operand = new byte[len]; Array.Copy(content, op.Start, operand, 0, len); } }
-                        shows.Add(new ShowRender
+                        if (k >= 2)
                         {
-                            Operand = operand,
-                            IsTJ = t.Op == "TJ",
-                            FontName = lastName,
-                            FontSize = lastSize,
-                            M = new float[] { eff.a, eff.b, eff.c, eff.d, eff.e, eff.f }
-                        });
+                            if (toks[k - 2].IsName)
+                            {
+                                lastName = toks[k - 2].Name;
+                                lastFontObj = LookupFont(resources, lastName);
+                            }
+                            float.TryParse(toks[k - 1].Op, NumberStyles.Float, CultureInfo.InvariantCulture, out lastSize);
+                        }
+                        continue;
                     }
-                    continue;
+                    // 跟随 Form XObject：叠加其 /Matrix、换用其 /Resources 后递归。
+                    if (t.Op == "Do")
+                    {
+                        FollowXObject(resources, lastNameDo(toks, k), ctm, depth);
+                        continue;
+                    }
+                    if (t.IsShow)
+                    {
+                        var eff = ctm.Mul(tm);
+                        var (ox, oy) = eff.Apply(0, 0);
+                        var txt = (k - 1 >= 0) ? toks[k - 1].Text : "";
+                        if (MatchBox(ox, oy, txt, _boxes, _pad))
+                        {
+                            byte[] operand = Array.Empty<byte>();
+                            if (k - 1 >= 0) { var op = toks[k - 1]; int len = op.End - op.Start; if (len > 0) { operand = new byte[len]; Array.Copy(content, op.Start, operand, 0, len); } }
+                            Shows.Add(new ShowRender
+                            {
+                                Operand = operand,
+                                IsTJ = t.Op == "TJ",
+                                FontName = lastName,
+                                FontObj = lastFontObj,
+                                FontSize = lastSize,
+                                M = new float[] { eff.a, eff.b, eff.c, eff.d, eff.e, eff.f }
+                            });
+                        }
+                        continue;
+                    }
                 }
             }
-            return shows;
+
+            // /Name 后紧跟 Do 时，名字在 Do 之前的 token（可能被数组/其它对象分隔，取最近的名字）。
+            static string lastNameDo(List<Tok> toks, int k)
+            {
+                for (int j = k - 1; j >= 0 && j >= k - 3; j--)
+                    if (toks[j].IsName) return toks[j].Name;
+                return "";
+            }
+
+            static PdfObject? LookupFont(PdfDictionary? res, string name)
+            {
+                if (res == null || string.IsNullOrEmpty(name)) return null;
+                var fonts = res.GetAsDictionary(PdfName.Font);
+                return fonts?.Get(new PdfName(name));
+            }
+
+            void FollowXObject(PdfDictionary? resources, string name, Affine ctm, int depth)
+            {
+                if (resources == null || string.IsNullOrEmpty(name)) return;
+                var xo = resources.GetAsDictionary(PdfName.XObject);
+                var st = xo?.GetAsStream(new PdfName(name));
+                if (st == null) return;
+                if (st.GetAsName(PdfName.Subtype)?.GetValue() != "Form") return;
+
+                var m = st.GetAsArray(PdfName.Matrix);
+                var next = ctm;
+                if (m != null && m.Size() == 6)
+                {
+                    var v = new float[6];
+                    for (int i = 0; i < 6; i++) v[i] = m.GetAsNumber(i).FloatValue();
+                    next = ctm.Mul(new Affine(v[0], v[1], v[2], v[3], v[4], v[5]));
+                }
+                var inner = st.GetAsDictionary(PdfName.Resources) ?? resources;
+                Walk(inner, st.GetBytes(), next, depth + 1);
+            }
         }
 
         // 把每个匹配字形【自包含】重绘：把原始 CTM×Tm 折叠进一个 Tm，配合原字号与原始字符串字节，
@@ -409,16 +501,22 @@ namespace EGpdf2df.Engine
             return true;
         }
 
-        private static bool MatchBox(float ox, float oy, string text, List<WordBox> boxes)
+        /// <summary>
+        /// 字形原点是否落在某个差异框内（供"原字形改色"用）。
+        ///
+        /// ⚠️ 容差必须是**小绝对值**，不能按框的尺寸成比例放大：
+        /// 差异框是整行墨迹包围盒（实测一行可宽达 1600pt），若把容差取成框宽，x 判定会退化成
+        /// "整页宽度都算命中"，同行内无关文字（含页边框注）会被一并改色 —— 这正是"误报高"的一条。
+        /// </summary>
+        private static bool MatchBox(float ox, float oy, string text, List<WordBox> boxes, double padPt)
         {
             foreach (var bx in boxes)
             {
-                double mx = Math.Max(2.0, bx.X1 - bx.X0);
-                double my = Math.Max(2.0, bx.Y1 - bx.Y0);
-                bool pos = ox >= bx.X0 - mx && ox <= bx.X1 + mx && oy >= bx.Y0 - my && oy <= bx.Y1 + my;
+                bool pos = ox >= bx.X0 - padPt && ox <= bx.X1 + padPt
+                        && oy >= bx.Y0 - padPt && oy <= bx.Y1 + padPt;
                 if (!pos) continue;
                 bool textOk = !HasAlpha(text) || !HasAlpha(bx.Text) || TextMatch(text, bx.Text);
-                if (pos && textOk) return true;
+                if (textOk) return true;
             }
             return false;
         }

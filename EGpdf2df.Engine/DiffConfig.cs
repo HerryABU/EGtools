@@ -45,6 +45,18 @@ namespace EGpdf2df.Engine
             // 页面配对（按线画指纹）的最小余弦相似度：低于此值视为"不同图纸"，不配对。
             // 实测同图纸≈0.99+、不同图纸≈0.3~0.6，0.85 有很宽的裕度。
             public double PageMatchMinSim { get; set; } = 0.85;
+            // ---- 差异密度过滤与报告粒度（都可调；默认弱过滤，避免误杀真实改动）----
+            // 报表粒度：run=逐条变更折线（信息最全，但大改页可达十几万条）；cluster=按区域汇总
+            // （默认，数量降两个数量级，贴合"这一片图面改了"的语义）。
+            public string ReportMode { get; set; } = "cluster";
+            // 丢弃总长小于此值(pt)的变更折线（抗锯齿级碎屑）。0=不过滤。
+            public double MinRunLengthPt { get; set; } = 1.0;
+            // 邻近聚类半径(pt)：包围盒间距小于此值的折线归为同一差异区域。0=不聚类。
+            public double ClusterRadiusPt { get; set; } = 24.0;
+            // 丢弃折线总长小于此值(pt)的差异区域。0=不过滤。调大可把零散微调整体忽略。
+            public double MinClusterLengthPt { get; set; } = 0.0;
+            // 丢弃折线数少于 this 的差异区域。0=不过滤。
+            public int MinClusterRuns { get; set; } = 0;
             public int Threshold { get; set; } = 60;        // absdiff path: 0..255
             public bool ExcludeText { get; set; } = true;
             public int GaussianBlur { get; set; } = 5;
@@ -91,7 +103,22 @@ namespace EGpdf2df.Engine
             public string ChangeColor { get; set; } = "#16A34A";  // 变更 图形描红（绿）
             public string TextAddedColor { get; set; } = "#FF0000";   // 新增文字改色（红）
             public string TextRemovedColor { get; set; } = "#0000FF";  // 删除文字改色（蓝）
-            public string TextInsertDirection { get; set; } = "down";  // 变更旧文字插入方向 down/up/right/left
+            // 变更旧(蓝)文字插入方向 down/up/right/left
+            public string TextInsertDirection { get; set; } = "down";
+            // 文字差异框粒度：line=整行墨迹包围盒（默认）；word=逐词包围盒（更精确，
+            // 避免同行内无关文字被一并改色，但一行改动会拆成多个框）。
+            public string TextBoxMode { get; set; } = "word";
+            // 字形原点命中差异框时允许的绝对容差(pt)。⚠️ 必须是小绝对值：差异框是整行墨迹盒
+            // （一行可宽达 1600pt），若按框尺寸成比例外扩，x 判定会退化成"整页宽度都命中"，
+            // 同行无关文字（含页边框注）会被一并改色。
+            public double TextBoxPadPt { get; set; } = 2.0;
+            // 文字"序号"匹配键的宽严：
+            //   loose(默认) = 管段号 / NOTE n / 以及【行首纯数字】(材料表 NO 列)
+            //   strict      = 只用管段号与 NOTE n，**不**把行首纯数字当键
+            // ⚠️ loose 下，行首纯数字会成为匹配键；若两版行号含义/行序不同，会把毫不相关的
+            // 两行配成一对 → 假 changed（实测页 3 的 '2 …对焊法兰…' 配上 '2 FLANGES …'）。
+            // 遇到这类假配对时改 strict：宁可报成 added+removed，也不产出错误的"变更"。
+            public string TextSerialMatchMode { get; set; } = "loose";
             // 图形差异的【标记形式】（高密度图纸可选弱化标记，避免实心块盖住底图内容）：
             //   semi    = 半透明填充 + 深色描边（默认；填充很淡、描边清晰，底图仍可读）
             //   solid   = 实心填充（原行为，标记最强）
@@ -126,10 +153,10 @@ namespace EGpdf2df.Engine
 {
   ""precision"": ""medium"",
   ""renderDpi"": 200,
-  ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""graphicMethod"": ""vector"", ""vectorTolPt"": 3.0, ""vectorAngleTolDeg"": 12.0, ""pageMatchMinSim"": 0.85, ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
+  ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""graphicMethod"": ""vector"", ""vectorTolPt"": 3.0, ""vectorAngleTolDeg"": 12.0, ""pageMatchMinSim"": 0.85, ""reportMode"": ""cluster"", ""minRunLengthPt"": 1.0, ""clusterRadiusPt"": 24.0, ""minClusterLengthPt"": 0.0, ""minClusterRuns"": 0, ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""markStyle"": ""semi"", ""markStrokeColor"": """", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
+  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""textBoxMode"": ""word"", ""textBoxPadPt"": 2.0, ""markStyle"": ""semi"", ""markStrokeColor"": """", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
   ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 

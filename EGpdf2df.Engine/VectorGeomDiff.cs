@@ -32,15 +32,35 @@ namespace EGpdf2df.Engine
             public List<double> Pts = new();   // 内容空间 pt, y-up，扁平 [x,y,...]
             public string Dir = "added";       // added / removed / changed
             public double Length;
+            /// <summary>本折线的原始序号（聚类后回溯用）。</summary>
+            public int Index;
+        }
+
+        /// <summary>
+        /// 一片"差异区域"：由邻近的若干条变更折线聚成。报告粒度用它比逐条折线实用得多——
+        /// 实测全书变更折线可达 20 万条，逐条输出会让 JSON 与前端都不可用；聚成区域后
+        /// 数量降到千级，且更贴近"这一片图面改了"的语义。
+        /// </summary>
+        public sealed class Cluster
+        {
+            public List<int> Runs = new();      // Run.Index 列表
+            public double X0, Y0, X1, Y1;       // 内容空间包围盒
+            public double Length;               // 折线总长
+            public string Dir = "added";        // 多数方向
+            public double Xc => (X0 + X1) / 2;
+            public double Yc => (Y0 + Y1) / 2;
         }
 
         public sealed class Result
         {
             public List<Run> Runs = new();
+            public List<Cluster> Clusters = new();
             public double Scale = 1, Dx = 0, Dy = 0;
             public int BaseSegs, TgtSegs, TgtMatched, BaseMatched;
             /// <summary>标定质量诊断（长线段中点命中率），供日志/排障。</summary>
             public double CalibHitRate;
+            /// <summary>被最小长度过滤掉的噪声折线数（诊断用）。</summary>
+            public int DroppedShortRuns;
         }
 
         // ------------------------------------------------------------------
@@ -352,7 +372,8 @@ namespace EGpdf2df.Engine
         /// 运行矢量差异检测。tol 为容差(pt, 目标空间)，angTolDeg 为方向容差(度)。
         /// </summary>
         public static Result Compare(List<VectorLinework.Seg> bsegs, List<VectorLinework.Seg> tsegs,
-                                 double tol, double angTolDeg, Action<string>? log = null, bool quick = false)
+                                 double tol, double angTolDeg, Action<string>? log = null, bool quick = false,
+                                 FilterCfg? filter = null)
         {
             var res = new Result { BaseSegs = bsegs.Count, TgtSegs = tsegs.Count };
             if (bsegs.Count == 0 || tsegs.Count == 0)
@@ -415,7 +436,160 @@ namespace EGpdf2df.Engine
             // 成链：未匹配线段按端点连通性合并成极大折线
             res.Runs.AddRange(Chain(tUnmatched, "added", tol));
             res.Runs.AddRange(Chain(bUnmatched, "removed", tol));
+            for (int i = 0; i < res.Runs.Count; i++) res.Runs[i].Index = i;
+
+            // 密度过滤 + 区域聚类（都可调；参数为 0/false 时保持逐条原样）
+            ApplyFilterAndCluster(res, filter, log);
             return res;
+        }
+
+        // ------------------------------------------------------------------
+        //  密度过滤 + 区域聚类
+        // ------------------------------------------------------------------
+        /// <summary>
+        /// 过滤/聚类参数。全部可经配置文件 / 前端调整；取默认值时行为等同"不过滤、逐条"。
+        /// 目的：CAD 图纸一次修订常改动成千上万条线，逐条输出既不可读也压垮前端；
+        /// 聚成"差异区域"后数量降到千级，并可丢弃长度极短的抗锯齿级噪声。
+        /// </summary>
+        public sealed class FilterCfg
+        {
+            /// <summary>丢弃总长小于此值(pt)的变更折线。0=不过滤。建议 2~10 可滤掉碎屑。</summary>
+            public double MinRunLengthPt = 0.0;
+            /// <summary>把包围盒间距小于此值(pt)的折线聚成同一区域。0=不聚类（逐条）。</summary>
+            public double ClusterRadiusPt = 0.0;
+            /// <summary>丢弃"折线总长"小于此值(pt)的区域。0=不过滤。用于把零散微调归并/忽略。</summary>
+            public double MinClusterLengthPt = 0.0;
+            /// <summary>丢弃折线条数少于此值的区域。0=不过滤。</summary>
+            public int MinClusterRuns = 0;
+        }
+
+        static void ApplyFilterAndCluster(Result res, FilterCfg? f, Action<string>? log)
+        {
+            if (f == null) return;
+
+            // ① 长度过滤
+            if (f.MinRunLengthPt > 0)
+            {
+                int before = res.Runs.Count;
+                res.Runs.RemoveAll(r => r.Length < f.MinRunLengthPt);
+                res.DroppedShortRuns = before - res.Runs.Count;
+                for (int i = 0; i < res.Runs.Count; i++) res.Runs[i].Index = i;
+                log?.Invoke($"  [vec] 长度过滤: 丢弃总长<{f.MinRunLengthPt:F1}pt 的折线 {res.DroppedShortRuns} 条，余 {res.Runs.Count} 条");
+            }
+            if (res.Runs.Count == 0) return;
+
+            // ② 聚类（不聚类时每簇=一条折线，便于统一后续过滤/报告）
+            if (f.ClusterRadiusPt > 0) res.Clusters = ClusterRuns(res.Runs, f.ClusterRadiusPt);
+            else
+            {
+                res.Clusters = new List<Cluster>(res.Runs.Count);
+                foreach (var r in res.Runs) res.Clusters.Add(OneClusterOf(r));
+            }
+
+            // ③ 区域级过滤
+            if (f.MinClusterLengthPt > 0 || f.MinClusterRuns > 0)
+            {
+                int before = res.Clusters.Count;
+                res.Clusters.RemoveAll(c =>
+                    c.Length < f.MinClusterLengthPt || c.Runs.Count < f.MinClusterRuns);
+                log?.Invoke($"  [vec] 区域过滤: 丢弃 {before - res.Clusters.Count} 个区域" +
+                            $"(阈值 总长≥{f.MinClusterLengthPt:F1}pt 且 线数≥{f.MinClusterRuns})，余 {res.Clusters.Count} 个");
+            }
+            log?.Invoke($"  [vec] 聚类: {res.Runs.Count} 条折线 → {res.Clusters.Count} 个差异区域");
+        }
+
+        static Cluster OneClusterOf(Run r)
+        {
+            var c = new Cluster { Dir = r.Dir, Length = r.Length };
+            c.Runs.Add(r.Index);
+            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
+            for (int k = 0; k + 1 < r.Pts.Count; k += 2)
+            {
+                x0 = Math.Min(x0, r.Pts[k]); x1 = Math.Max(x1, r.Pts[k]);
+                y0 = Math.Min(y0, r.Pts[k + 1]); y1 = Math.Max(y1, r.Pts[k + 1]);
+            }
+            if (x0 > x1) { x0 = y0 = x1 = y1 = 0; }
+            c.X0 = x0; c.Y0 = y0; c.X1 = x1; c.Y1 = y1;
+            return c;
+        }
+
+        /// <summary>
+        /// 按包围盒邻近关系聚类（union-find + 网格加速）。半径 r 内互相接近的折线归为同一区域，
+        /// 这样一片连续改动的图面会收敛成一个区域，而不是成千上万条线段。
+        /// </summary>
+        static List<Cluster> ClusterRuns(List<Run> runs, double r)
+        {
+            int n = runs.Count;
+            var parent = new int[n];
+            for (int i = 0; i < n; i++) parent[i] = i;
+            int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+            void Union(int a, int b) { a = Find(a); b = Find(b); if (a != b) parent[b] = a; }
+
+            // 每条折线的包围盒
+            var bb = new double[n][];
+            for (int i = 0; i < n; i++)
+            {
+                double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
+                var p = runs[i].Pts;
+                for (int k = 0; k + 1 < p.Count; k += 2)
+                {
+                    x0 = Math.Min(x0, p[k]); x1 = Math.Max(x1, p[k]);
+                    y0 = Math.Min(y0, p[k + 1]); y1 = Math.Max(y1, p[k + 1]);
+                }
+                if (x0 > x1) { x0 = y0 = x1 = y1 = 0; }
+                bb[i] = new[] { x0, y0, x1, y1 };
+            }
+
+            // 网格：把包围盒按 cell 号覆盖的所有格子登记，同格即为候选邻居
+            double cell = Math.Max(0.5, r);
+            var grid = new Dictionary<long, List<int>>();
+            long Key(long cx, long cy) => (cx + 0x4000000L) * 0x8000000L + (cy + 0x4000000L);
+            for (int i = 0; i < n; i++)
+            {
+                long cx0 = (long)Math.Floor((bb[i][0] - r) / cell), cx1 = (long)Math.Floor((bb[i][2] + r) / cell);
+                long cy0 = (long)Math.Floor((bb[i][1] - r) / cell), cy1 = (long)Math.Floor((bb[i][3] + r) / cell);
+                // 超长折线（跨很多格）限制登记范围，避免病态膨胀
+                if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 4096)
+                { cx1 = Math.Min(cx1, cx0 + 63); cy1 = Math.Min(cy1, cy0 + 63); }
+                for (long cx = cx0; cx <= cx1; cx++)
+                    for (long cy = cy0; cy <= cy1; cy++)
+                    {
+                        long k = Key(cx, cy);
+                        if (!grid.TryGetValue(k, out var l)) grid[k] = l = new List<int>();
+                        l.Add(i);
+                    }
+            }
+            foreach (var kv in grid)
+            {
+                var l = kv.Value;
+                for (int a = 1; a < l.Count; a++)
+                {
+                    int i = l[0], j = l[a];
+                    // 包围盒间距 ≤ r 才合并（同格不等于够近）
+                    double gx = Math.Max(0, Math.Max(bb[i][0] - bb[j][2], bb[j][0] - bb[i][2]));
+                    double gy = Math.Max(0, Math.Max(bb[i][1] - bb[j][3], bb[j][1] - bb[i][3]));
+                    if (Math.Sqrt(gx * gx + gy * gy) <= r) Union(i, j);
+                }
+            }
+
+            var groups = new Dictionary<int, Cluster>();
+            for (int i = 0; i < n; i++)
+            {
+                int root = Find(i);
+                if (!groups.TryGetValue(root, out var c))
+                {
+                    c = new Cluster { X0 = double.MaxValue, Y0 = double.MaxValue, X1 = double.MinValue, Y1 = double.MinValue };
+                    groups[root] = c;
+                }
+                c.Runs.Add(i);
+                c.Length += runs[i].Length;
+                c.X0 = Math.Min(c.X0, bb[i][0]); c.X1 = Math.Max(c.X1, bb[i][2]);
+                c.Y0 = Math.Min(c.Y0, bb[i][1]); c.Y1 = Math.Max(c.Y1, bb[i][3]);
+                if (runs[i].Dir == "removed") c.Dir = "removed";
+            }
+            var outp = new List<Cluster>(groups.Values);
+            outp.Sort((a, b) => b.Length.CompareTo(a.Length));   // 大改动排前
+            return outp;
         }
 
         // 沿线段采样（含两端与中点），要求每个采样点都被对侧线画覆盖。

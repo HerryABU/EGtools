@@ -92,14 +92,35 @@ namespace EGpdf2df.Engine
 
                 // ---- 文字差异 v8：内容流重着色(新增红) + 抽取(删除蓝) ----
                 // 先构造内容流空间包围盒（供后面文字重绘匹配使用）。
+                // 粒度：line=整行墨迹盒（默认）；word=逐词盒（更精确，不牵连同行无关文字）。
+                bool byWord = string.Equals(ann.TextBoxMode, "word", StringComparison.OrdinalIgnoreCase);
                 var addedBoxes = new List<TextRedlineDiff.WordBox>();
                 var removedBoxes = new List<TextRedlineDiff.WordBox>();
+                void AddBoxes(List<TextLine>? lines, List<TextRedlineDiff.WordBox> dst)
+                {
+                    if (lines == null) return;
+                    foreach (var ln in lines)
+                    {
+                        if (byWord && ln.Words is { Count: > 0 })
+                            foreach (var w in ln.Words)
+                            {
+                                double pa = mA * w.X0 + mC * w.Y0 + mE, pb = mB * w.X0 + mD * w.Y0 + mF;
+                                double qa = mA * w.X1 + mC * w.Y1 + mE, qb = mB * w.X1 + mD * w.Y1 + mF;
+                                dst.Add(new TextRedlineDiff.WordBox
+                                {
+                                    Text = w.T,
+                                    X0 = Math.Min(pa, qa), X1 = Math.Max(pa, qa),
+                                    Y0 = Math.Min(pb, qb), Y1 = Math.Max(pb, qb),
+                                });
+                            }
+                        else
+                            dst.Add(ToContentBox(ln, mA, mB, mC, mD, mE, mF));
+                    }
+                }
                 foreach (var it in a.TextItems)
                 {
-                    if ((it.ChangeType == "added" || it.ChangeType == "changed") && it.NewLines != null)
-                        foreach (var ln in it.NewLines) addedBoxes.Add(ToContentBox(ln, mA, mB, mC, mD, mE, mF));
-                    if ((it.ChangeType == "removed" || it.ChangeType == "changed") && it.OldLines != null)
-                        foreach (var ln in it.OldLines) removedBoxes.Add(ToContentBox(ln, mA, mB, mC, mD, mE, mF));
+                    if (it.ChangeType == "added" || it.ChangeType == "changed") AddBoxes(it.NewLines, addedBoxes);
+                    if (it.ChangeType == "removed" || it.ChangeType == "changed") AddBoxes(it.OldLines, removedBoxes);
                 }
 
                 // ---- 图形差异层：标记形式可选（semi / solid / outline）----
@@ -183,7 +204,7 @@ namespace EGpdf2df.Engine
                 // ---- 文字差异重绘（最后绘制，确保红/蓝字形压在图形填充之上，清晰可读）----
                 if (addedBoxes.Count > 0)
                 {
-                    TextRedlineDiff.RecolorAdded(pdf, i, addedBoxes, textAddedCol);
+                    TextRedlineDiff.RecolorAdded(pdf, i, addedBoxes, textAddedCol, ann.TextBoxPadPt);
                     textRenders += addedBoxes.Count;
                 }
                 if (removedBoxes.Count > 0)
@@ -203,7 +224,7 @@ namespace EGpdf2df.Engine
                     }
                     if (ok)
                     {
-                        TextRedlineDiff.DrawRemoved(pdf, baselinePdf, bp, removedBoxes, textRemovedCol);
+                        TextRedlineDiff.DrawRemoved(pdf, baselinePdf, bp, removedBoxes, textRemovedCol, ann.TextBoxPadPt);
                         textRenders += removedBoxes.Count;
                     }
                 }

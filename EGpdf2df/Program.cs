@@ -7,6 +7,7 @@ using EGtools.Core;
 using MuPDFCore;
 using MuPDFCore.StructuredText;
 using System;
+using System.Globalization;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -32,6 +33,8 @@ public static class Program
         string? pagesArg = null;
         string? textAddedColor = null, textRemovedColor = null, textInsertDirection = null;
         string? markStyle = null, markStrokeColor = null;
+        string? graphicMethod = null, reportMode = null;
+        double? vectorTol = null;
         bool readStdin = false;
         bool locateMode = false;
         bool vecDiag = false;
@@ -58,6 +61,9 @@ public static class Program
                 case "--text-insert-direction": textInsertDirection = take(""); break;
                 case "--mark-style": markStyle = take(""); break;
                 case "--mark-stroke-color": markStrokeColor = take(""); break;
+                case "--graphic-method": graphicMethod = take(""); break;
+                case "--vector-tol": if (double.TryParse(take(""), NumberStyles.Float, CultureInfo.InvariantCulture, out var vt)) vectorTol = vt; break;
+                case "--report-mode": reportMode = take(""); break;
                 default:
                     if (a.StartsWith("-")) { L($"Unknown option: {a} (use --help)"); return 2; }
                     if (baseline == null) baseline = a; else if (target == null) target = a; else L($"Ignoring extra argument: {a}");
@@ -133,6 +139,23 @@ public static class Program
         if (!string.IsNullOrWhiteSpace(textRemovedColor)) cfg.Annotation.TextRemovedColor = textRemovedColor;
         if (!string.IsNullOrWhiteSpace(textInsertDirection)) cfg.Annotation.TextInsertDirection = NormalizeDirection(textInsertDirection);
         if (!string.IsNullOrWhiteSpace(o?.TextInsertDirection)) cfg.Annotation.TextInsertDirection = NormalizeDirection(o!.TextInsertDirection);
+        // 图形检测路径与矢量参数（前端 / 命令行可调）。
+        if (!string.IsNullOrWhiteSpace(o?.GraphicMethod)) cfg.GraphicDiff.GraphicMethod = o!.GraphicMethod!;
+        if (!string.IsNullOrWhiteSpace(graphicMethod)) cfg.GraphicDiff.GraphicMethod = graphicMethod;
+        if (o?.VectorTolPt != null) cfg.GraphicDiff.VectorTolPt = Math.Max(0.1, o.VectorTolPt.Value);
+        if (vectorTol != null) cfg.GraphicDiff.VectorTolPt = Math.Max(0.1, vectorTol.Value);
+        if (o?.VectorAngleTolDeg != null) cfg.GraphicDiff.VectorAngleTolDeg = Math.Clamp(o.VectorAngleTolDeg.Value, 1, 60);
+        if (o?.PageMatchMinSim != null) cfg.GraphicDiff.PageMatchMinSim = Math.Clamp(o.PageMatchMinSim.Value, 0.1, 0.999);
+        if (!string.IsNullOrWhiteSpace(o?.ReportMode)) cfg.GraphicDiff.ReportMode = o!.ReportMode!;
+        if (!string.IsNullOrWhiteSpace(reportMode)) cfg.GraphicDiff.ReportMode = reportMode;
+        if (o?.MinRunLengthPt != null) cfg.GraphicDiff.MinRunLengthPt = Math.Max(0, o.MinRunLengthPt.Value);
+        if (o?.ClusterRadiusPt != null) cfg.GraphicDiff.ClusterRadiusPt = Math.Max(0, o.ClusterRadiusPt.Value);
+        if (o?.MinClusterLengthPt != null) cfg.GraphicDiff.MinClusterLengthPt = Math.Max(0, o.MinClusterLengthPt.Value);
+        if (o?.MinClusterRuns != null) cfg.GraphicDiff.MinClusterRuns = Math.Max(0, o.MinClusterRuns.Value);
+        // ---- 文字差异参数 ----
+        if (!string.IsNullOrWhiteSpace(o?.TextBoxMode)) cfg.Annotation.TextBoxMode = o!.TextBoxMode!;
+        if (o?.TextBoxPadPt != null) cfg.Annotation.TextBoxPadPt = Math.Max(0, o.TextBoxPadPt.Value);
+        if (!string.IsNullOrWhiteSpace(o?.TextSerialMatchMode)) cfg.Annotation.TextSerialMatchMode = o!.TextSerialMatchMode!;
         return DiffEngine.Run(req, cfg, L);
     }
 
@@ -281,10 +304,18 @@ public static class Program
             L($"[vec] page {p}:{q}: contentBase={bSrc.Content(p).Length}B contentTgt={tSrc.Content(q).Length}B");
             L($"[vec] page {p}:{q}: baseSegs={b.Count} tgtSegs={t.Count} rotBase={bSrc.Rotation(p)} rotTgt={tSrc.Rotation(q)}");
             L($"[vec] page {p}:{q}: bboxBase={Span(b)}  bboxTgt={Span(t)}");
-            var r = VectorGeomDiff.Compare(b, t, cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, L);
+            var r = VectorGeomDiff.Compare(b, t, cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, L,
+                filter: new VectorGeomDiff.FilterCfg
+                {
+                    MinRunLengthPt = cfg.GraphicDiff.MinRunLengthPt,
+                    ClusterRadiusPt = cfg.GraphicDiff.ClusterRadiusPt,
+                    MinClusterLengthPt = cfg.GraphicDiff.MinClusterLengthPt,
+                    MinClusterRuns = cfg.GraphicDiff.MinClusterRuns,
+                });
             var byDir = r.Runs.GroupBy(x => x.Dir).ToDictionary(g => g.Key, g => g.Count());
             L($"[vec] page {p}:{q}: runs={r.Runs.Count} " +
-              string.Join(" ", byDir.Select(kv => $"{kv.Key}={kv.Value}")));
+              string.Join(" ", byDir.Select(kv => $"{kv.Key}={kv.Value}")) +
+              $"  clusters={r.Clusters.Count}");
             foreach (var run in r.Runs.OrderByDescending(x => x.Length).Take(5))
                 L($"[vec]    {run.Dir,-8} len={run.Length:F1} pts={run.Pts.Count / 2}");
         }
@@ -355,6 +386,9 @@ public static class Program
         Console.WriteLine("  --text-insert-direction D  变更时旧(蓝)文字插入方向 down/up/right/left (default down)");
         Console.WriteLine("  --mark-style M       图形标记形式 semi(半透明填充+深色描边,默认)/solid(实心填充)/outline(仅描边)");
         Console.WriteLine("  --mark-stroke-color H     图形标记描边色 #RRGGBB (default 自动取标记色深色版)");
+        Console.WriteLine("  --graphic-method M   图形检测路径 vector(默认,纯矢量)/pixel(渲染+OpenCV 回退)");
+        Console.WriteLine("  --vector-tol PT      矢量比对容差(pt, default 3.0)：两版同名线画允许的位置偏差");
+        Console.WriteLine("  --report-mode M      图形差异报告粒度 cluster(按区域汇总,默认)/run(逐条折线)");
         Console.WriteLine("  --locate FILE    定位模式：在两份 PDF 指定页查找字符串坐标 (--json 可给路径或名称)");
         Console.WriteLine("  -h, --help       显示帮助 (show help)");
         Console.WriteLine();
