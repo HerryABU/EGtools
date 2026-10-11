@@ -135,7 +135,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     m_gfxMethodCombo->setToolTip(QStringLiteral("矢量：解析 PDF 内容流取线画比对，不做位图渲染。\n像素：旧的两版渲染成位图逐像素比对，对配准误差零容忍。"));
     m_vecTolSpin = new QDoubleSpinBox();
     m_vecTolSpin->setRange(0.5, 30.0); m_vecTolSpin->setSingleStep(0.5);
-    m_vecTolSpin->setValue(3.0); m_vecTolSpin->setSuffix(QStringLiteral(" pt"));
+    m_vecTolSpin->setValue(1.5); m_vecTolSpin->setSuffix(QStringLiteral(" pt"));
     m_vecTolSpin->setToolTip(QStringLiteral("两版同名线画允许的位置偏差。调小更灵敏（可能把导出误差报成差异），调大更钝。"));
     m_vecAngSpin = new QDoubleSpinBox();
     m_vecAngSpin->setRange(1.0, 60.0); m_vecAngSpin->setSingleStep(1.0);
@@ -147,7 +147,39 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     vecRow->addWidget(m_vecTolSpin);
     vecRow->addWidget(new QLabel(QStringLiteral("方向:")));
     vecRow->addWidget(m_vecAngSpin);
+    vecRow->addWidget(new QLabel(QStringLiteral("墨迹重合<:")));
+    m_nearInkSpin = new QDoubleSpinBox();
+    m_nearInkSpin->setRange(0.0, 5.0); m_nearInkSpin->setSingleStep(0.1);
+    m_nearInkSpin->setValue(0.5); m_nearInkSpin->setSuffix(QStringLiteral(" pt"));
+    m_nearInkSpin->setToolTip(QStringLiteral("短线段(圆弧逼近段)方向不可靠，若距对侧墨迹小于此值则仍判未变。\n"
+        "它不是放宽位置容差：只在墨迹实际重合到亚 pt 时生效。0=关闭。"));
+    vecRow->addWidget(m_nearInkSpin);
     vecRow->addStretch();
+
+    // ---- 差异线样式（沿真实变更线段描边：细线 + 半透明，不遮底图） ----
+    auto* stRow = new QHBoxLayout();
+    m_strokeWidthSpin = new QDoubleSpinBox();
+    m_strokeWidthSpin->setRange(0.2, 10.0); m_strokeWidthSpin->setSingleStep(0.1);
+    m_strokeWidthSpin->setValue(1.0); m_strokeWidthSpin->setSuffix(QStringLiteral(" pt"));
+    m_strokeWidthSpin->setToolTip(QStringLiteral("差异线线宽。CAD 一次修订常有上千条线变更，细线更清楚。"));
+    m_strokeOpacitySpin = new QDoubleSpinBox();
+    m_strokeOpacitySpin->setRange(0.05, 1.0); m_strokeOpacitySpin->setSingleStep(0.05);
+    m_strokeOpacitySpin->setValue(0.55);
+    m_strokeOpacitySpin->setToolTip(QStringLiteral("差异线不透明度。调低 → 更淡、底图更可读；1.0 → 实色。"));
+    m_pageModeCombo = new QComboBox();
+    m_pageModeCombo->addItem(QStringLiteral("图号优先（先用图号配对，页码=筛选）"), QStringLiteral("filter"));
+    m_pageModeCombo->addItem(QStringLiteral("索引钉死（页码=按序号硬配）"), QStringLiteral("pin"));
+    m_pageModeCombo->setCurrentIndex(0);
+    m_pageModeCombo->setToolTip(QStringLiteral("选择页码时的语义：\n"
+        "图号优先 = 先按标题栏图号做全本配对，再把所选页码(基准页号)在配对结果里筛选；\n"
+        "索引钉死 = 旧行为，所选页 p 直接与目标第 p 页比（新版插页后会错位，仅排障用）。"));
+    stRow->addWidget(new QLabel(QStringLiteral("差异线宽:")));
+    stRow->addWidget(m_strokeWidthSpin);
+    stRow->addWidget(new QLabel(QStringLiteral("透明度:")));
+    stRow->addWidget(m_strokeOpacitySpin);
+    stRow->addWidget(new QLabel(QStringLiteral("页码语义:")));
+    stRow->addWidget(m_pageModeCombo);
+    stRow->addStretch();
 
     // ---- 报告粒度与差异密度过滤（差异太多/太碎时调这里） ----
     auto* repRow = new QHBoxLayout();
@@ -256,11 +288,15 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
         "● <b>图形标记形式</b>（可切换）：<b>semi</b> 半透明填充+深色描边（默认，底图仍可读）／"
         "<b>solid</b> 实心填充（标记最强）／<b>outline</b> 仅描边（最不遮挡）\n"
         "● <b>红(实线)</b> = 新增图形　<b>红(虚线)</b> = 删除图形　<b>绿</b> = 变更（同位置形状改了）\n"
+        "● <b>差异线样式</b>：沿【真实变更的那几条线】描边（不是填充块），默认 <b>细线 1.0pt + 半透明 0.55</b>"
+        "（上千条变更也不糊成一片、不遮底图）；线宽/透明度可调，1.0 = 实色\n"
         "● <b>页面配对</b>：先按【图号】（标题栏右下角的每页唯一号，如 408.101.P02）1:1 配对，"
         "图号只在一侧的页直接判为新增/删除、<b>不参与比对</b>；无图号的页（封面/总图）用线画指纹兜底\n"
+        "● <b>页码语义</b>：默认「图号优先」——所选页码只用于在配对结果里<b>筛选</b>（不会因新版插页而错配）；"
+        "「索引钉死」为旧行为，仅排障用\n"
         "● <b>文字直接改色（不画圈）</b>：<font color=\"#FF0000\">新增文字 = 红色</font>（覆盖在原黑色文字上，改原字色），"
         "<font color=\"#0000FF\">删除文字 = 蓝色</font>（插入到原文本框，git - 行）；变更则红(新,改原字色)+蓝(旧,按方向插入)\n"
-        "标记色/描边色/线宽/透明度/外扩/标记形式/检测方法/容差/报告粒度/文字框粒度均可自定，色号直接传给内核。")));
+        "记号色/描边色/线宽/透明度/标记形式/差异线宽与透明度/检测方法/容差/报告粒度/文字框粒度/图号区/页码语义均可自定，色号直接传给内核。")));
     legendLay->setSpacing(2);
 
     // ---- 管线号↔材料表一一对应结果 ----
@@ -282,6 +318,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     ctrlLay->addLayout(colRow);
     ctrlLay->addLayout(mkRow);
     ctrlLay->addLayout(vecRow);
+    ctrlLay->addLayout(stRow);
     ctrlLay->addLayout(repRow);
     ctrlLay->addLayout(txtRow);
     ctrlLay->addLayout(shRow);
@@ -475,6 +512,7 @@ void DiffPage::onRun()
     opt[QStringLiteral("graphicMethod")] = m_gfxMethodCombo->currentData().toString();
     opt[QStringLiteral("vectorTolPt")] = m_vecTolSpin->value();
     opt[QStringLiteral("vectorAngleTolDeg")] = m_vecAngSpin->value();
+    opt[QStringLiteral("nearInkTolPt")] = m_nearInkSpin->value();
     // ---- 报告粒度与差异密度过滤 ----
     opt[QStringLiteral("reportMode")] = m_reportModeCombo->currentData().toString();
     opt[QStringLiteral("clusterRadiusPt")] = m_clusterRadiusSpin->value();
@@ -487,6 +525,10 @@ void DiffPage::onRun()
     opt[QStringLiteral("sheetNoRegionX")] = m_sheetNoXSpin->value();
     opt[QStringLiteral("sheetNoRegionY")] = m_sheetNoYSpin->value();
     opt[QStringLiteral("sheetNoMaxDistinct")] = m_sheetNoMaxSpin->value();
+    // ---- 差异线样式 + 页码语义 ----
+    opt[QStringLiteral("strokeWidthPt")] = m_strokeWidthSpin->value();
+    opt[QStringLiteral("strokeOpacity")] = m_strokeOpacitySpin->value();
+    opt[QStringLiteral("pageMode")] = m_pageModeCombo->currentData().toString();
     // 变更旧(蓝)文字插入方向（down/up/right/left），蓝字按方向插入到"新(红)"文字文本框附近。
     if (m_textDirCombo)
         opt[QStringLiteral("textInsertDirection")] = m_textDirCombo->currentData().toString();

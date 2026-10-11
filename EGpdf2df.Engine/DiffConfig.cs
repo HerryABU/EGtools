@@ -32,6 +32,11 @@ namespace EGpdf2df.Engine
         // 不是单张图纸，此时不认它的图号（返回 null，交给线画指纹兜底）。
         // 实测真图纸 ≤10 种、总图 33/124/127 种，25 有很宽裕度。
         public int SheetNoMaxDistinct { get; set; } = 25;
+        // -p/--pages 的语义：
+        //   "filter"(默认) = 先按图号做**全本配对**，再用所给页码（=基准页号, 0基）在配对结果里
+        //                    **筛选**。这样不会因为新版插/删页而把两页不同图纸钉在一起比。
+        //   "pin"          = 旧行为：仅按索引配对（所给页 p ↔ 目标同号页 p），不做全本配对。
+        public string PageMode { get; set; } = "filter";
 
         public sealed class GraphicCfg
         {
@@ -43,14 +48,21 @@ namespace EGpdf2df.Engine
             //   "pixel"         = 旧的两版渲染成位图 + OpenCV 逐像素/逐轮廓比对。
             //                     对 1~2pt 配准误差零容忍，细线整体错位会整图点亮，仅作回退。
             public string GraphicMethod { get; set; } = "vector";
-            // 矢量比对容差(pt)：两版同名线画允许的位置偏差。
-            // 实测两版导出存在 2~4pt 的残余配准差（不只是纯缩放/平移），tol=1 会把大量未变线画
-            // 报成变更：实测某页 5870 条 → tol=3 时 244 条（24×），而"完全相同的页"在任何 tol 下
-            // 都稳定在 2~3 条（不引入误报）。同时真正大改的页在 tol=3 仍保留 3000+ 条，
-            // 到 tol=5 就会被吃掉（824 条）——3.0 是"不漏真差异、不产假差异"的平衡点。
-            public double VectorTolPt { get; set; } = 3.0;
+            // 矢量比对容差(pt)：两版同名线画允许的位置偏差 = "挪多远还算同一根线"。
+            // 1pt ≈ 0.353mm；默认 1.5pt ≈ 0.53mm，是工程图纸复检的合理尺度。
+            // ⚠️ 历史上默认取 3.0 是为了**掩盖两个 bug**：①提取器把连续 `m` 当"追加点"，
+            // 凭空造出渲染中不存在的幻影线段；②标定被"大容差尺度扫描"带偏（tol=15 下任何尺度
+            // 都刷满分）。两者修掉后实测**完全相同的页在任何容差下(含 0.5pt)都是 0 差异**
+            // （页 100:101 / 150:151 / 9:10 在 tol=1.0 均 runs=0），不必再靠大容差压误报。
+            // 容差越小越灵敏：同一页在 tol=1/1.5/2/3 下的变更折线数为 170/103/63/53。
+            public double VectorTolPt { get; set; } = 1.5;
             // 矢量比对方向容差(度)：防止密集区被"横穿而过"的无关线段误判为覆盖。
             public double VectorAngleTolDeg { get; set; } = 12.0;
+            // **墨迹重合**容差(pt)：方向判据在极短线段上不可靠（CAD 圆弧是密排短线逼近的，
+            // 单段可能只有 0.4~0.7pt，方向噪音极大），故若某采样点距对侧墨迹（不限方向）
+            // 小于此值，仍判"未变"。它**不是**放宽位置容差：只在墨迹实际重合到亚 pt 时生效，
+            // 且长线段需全部采样点满足，真正的线画改动不会被放过。0=关闭该豁免（回到纯方向判据）。
+            public double NearInkTolPt { get; set; } = 0.5;
             // 页面配对（按线画指纹）的最小余弦相似度：低于此值视为"不同图纸"，不配对。
             // 实测同图纸≈0.99+、不同图纸≈0.3~0.6，0.85 有很宽的裕度。
             public double PageMatchMinSim { get; set; } = 0.85;
@@ -145,6 +157,12 @@ namespace EGpdf2df.Engine
             public double FillOpacity { get; set; } = 0.40;       // 填充透明度 0~1（semi 模式下会自动再打 5 折）
             public bool Outline { get; set; } = true;             // 是否在填充外再描一条同形边线
             public int HaloPx { get; set; } = 0;                  // 填充向外扩张像素(0=精准贴合形状)
+            // ---- 矢量"差异线"（沿真实变更线段描边）的线宽与不透明度 ----
+            // CAD 图纸一次修订常有成百上千条线变更，粗实线会糊成一片、盖住底图。默认：
+            //   细线(1.0pt) + 半透明(0.55) —— 既看得见是哪几条线，又保留底图可读性。
+            // 注意与上面 LineWidth（填充块/轮廓标记的线宽）区分：那是像素路径的标记。
+            public double StrokeWidthPt { get; set; } = 1.0;
+            public double StrokeOpacity { get; set; } = 0.55;
             // 嵌入 Unicode 字体（默认 Windows Arial，含土耳其语等字形），让"消失/变更文字"
             // 的标注真正渲染；字体文件缺失时回退内置 Helvetica（仅 ASCII）。
             public string FontPathRegular { get; set; } = "C:/Windows/Fonts/arial.ttf";
@@ -166,11 +184,11 @@ namespace EGpdf2df.Engine
 {
   ""precision"": ""medium"",
   ""renderDpi"": 200,
-  ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""graphicMethod"": ""vector"", ""vectorTolPt"": 3.0, ""vectorAngleTolDeg"": 12.0, ""pageMatchMinSim"": 0.85, ""changeRadiusPt"": 20.0, ""reportMode"": ""cluster"", ""minRunLengthPt"": 1.0, ""clusterRadiusPt"": 24.0, ""minClusterLengthPt"": 0.0, ""minClusterRuns"": 0, ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
+  ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""graphicMethod"": ""vector"", ""vectorTolPt"": 1.5, ""vectorAngleTolDeg"": 12.0, ""nearInkTolPt"": 0.5, ""pageMatchMinSim"": 0.85, ""changeRadiusPt"": 20.0, ""reportMode"": ""cluster"", ""minRunLengthPt"": 1.0, ""clusterRadiusPt"": 24.0, ""minClusterLengthPt"": 0.0, ""minClusterRuns"": 0, ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""textBoxMode"": ""word"", ""textBoxPadPt"": 2.0, ""markStyle"": ""semi"", ""markStrokeColor"": """", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
-  ""sheetNoRegionX"": 0.85, ""sheetNoRegionY"": 0.78, ""sheetNoMaxDistinct"": 25,
+  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""textBoxMode"": ""word"", ""textBoxPadPt"": 2.0, ""markStyle"": ""semi"", ""markStrokeColor"": """", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""strokeWidthPt"": 1.0, ""strokeOpacity"": 0.55, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
+  ""sheetNoRegionX"": 0.85, ""sheetNoRegionY"": 0.78, ""sheetNoMaxDistinct"": 25, ""pageMode"": ""filter"",
   ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 

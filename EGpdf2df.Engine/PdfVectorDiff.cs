@@ -184,7 +184,16 @@ namespace EGpdf2df.Engine
                 if (a.Strokes.Count > 0)
                 {
                     overCanvas.SaveState();
-                    float vw = Math.Max(1.0f, (float)ann.LineWidth);
+                    // 细线 + 半透明：CAD 一次修订常有成百上千条线变更，粗实线会糊成一片并盖住底图。
+                    // 用 ExtGState 同时设描边/填充不透明度（/CA、/ca），在 Save/Restore 内作用域受限，
+                    // 不会影响随后追加的文字重绘算子。
+                    float vw = (float)Math.Max(0.2, ann.StrokeWidthPt);
+                    float alpha = (float)Math.Clamp(ann.StrokeOpacity, 0.05, 1.0);
+                    overCanvas.SetExtGState(new PdfExtGState()
+                        .SetStrokeOpacity(alpha)
+                        .SetFillOpacity(alpha));
+                    overCanvas.SetLineCapStyle(PdfCanvasConstants.LineCapStyle.ROUND);
+                    overCanvas.SetLineJoinStyle(PdfCanvasConstants.LineJoinStyle.ROUND);
                     foreach (var run in a.Strokes)
                     {
                         if (run.Pts.Count < 4) continue;

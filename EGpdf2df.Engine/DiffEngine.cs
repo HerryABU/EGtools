@@ -71,10 +71,18 @@ namespace EGpdf2df.Engine
                     List<(int basePno, int tgtPno, string no)> pagePairs;
                     List<(int page, string no)> addedPages = new();    // target-only
                     List<(int page, string no)> removedPages = new();  // baseline-only
-                    if (req.Pages != null && req.Pages.Count > 0)
+                    // -p/--pages 的语义（cfg.PageMode）：
+                    //   "filter"(默认) = 先按图号做**全本配对**，再用所给页码（=基准页号, 0基）在配对
+                    //                    结果里**筛选**。这样 -p 5 比的是"图号与基准第 5 页相同的目标页"，
+                    //                    不会因为新版插/删页而把两页不同的图纸钉在一起比。
+                    //   "pin"          = 旧行为：只按索引配对（所给页 p ↔ 目标同号页 p），不做全本配对。
+                    bool pinPages = string.Equals(cfg.PageMode, "pin", StringComparison.OrdinalIgnoreCase);
+                    bool hasPages = req.Pages != null && req.Pages.Count > 0;
+                    if (pinPages && hasPages)
                     {
-                        pagePairs = req.Pages.Where(p => p >= 0 && p < Math.Min(nBase, nTgt))
-                                              .Select(p => (p, p, "")).ToList();
+                        pagePairs = req.Pages!.Where(p => p >= 0 && p < Math.Min(nBase, nTgt))
+                                              .Select(p => (p, p, "(索引钉死)")).ToList();
+                        L($"  -p 语义=pin(索引钉死): 比对 {pagePairs.Count} 对");
                     }
                     else
                     {
@@ -115,6 +123,18 @@ namespace EGpdf2df.Engine
                         addedPages.Sort((a, b) => a.page.CompareTo(b.page));
                         removedPages.Sort((a, b) => a.page.CompareTo(b.page));
                         L($"  最终配对: 比对 {pagePairs.Count} 对, 新增 {addedPages.Count} 页, 删除 {removedPages.Count} 页");
+
+                        // ③ -p 仅在配对结果上做筛选（不改变配对本身）。
+                        if (hasPages)
+                        {
+                            var want = new HashSet<int>(req.Pages!);
+                            int before = pagePairs.Count;
+                            pagePairs = pagePairs.Where(x => want.Contains(x.basePno)).ToList();
+                            addedPages = addedPages.Where(x => want.Contains(x.page)).ToList();
+                            removedPages = removedPages.Where(x => want.Contains(x.page)).ToList();
+                            L($"  -p 筛选(页码=基准页号,0基): 全本配对 {before} 对 → 仅比对 {pagePairs.Count} 对" +
+                              $"，新增页 {addedPages.Count}、删除页 {removedPages.Count}");
+                        }
                     }
 
                     var resp = new DiffResponse { Output = outPath };
@@ -245,7 +265,8 @@ namespace EGpdf2df.Engine
                             };
                             var vr = VectorGeomDiff.Compare(bLine, tLine,
                                 cfg.GraphicDiff.VectorTolPt, cfg.GraphicDiff.VectorAngleTolDeg, L,
-                                filter: vfilter, changeRadius: cfg.GraphicDiff.ChangeRadiusPt);
+                                filter: vfilter, changeRadius: cfg.GraphicDiff.ChangeRadiusPt,
+                                nearInkTol: cfg.GraphicDiff.NearInkTolPt);
                             pageAnno.Strokes.AddRange(vr.Runs);
                             int rotT = tgtSrc.Rotation(tgtPno);
                             float WcT = tBounds.X1 - tBounds.X0, HcT = tBounds.Y1 - tBounds.Y0;

@@ -69,11 +69,14 @@ namespace EGpdf2df.Engine
         /// <summary>
         /// 求把 baseline 坐标映射到 target 坐标的 (scale,dx,dy)：tgt = base/scale + (dx,dy)。
         ///
-        /// ⚠️ 必须**由粗到细**两级标定，不能只做一次细标定：
-        /// 实测两版导出除了平移，还存在约 0.4% 的尺度差（在 1683pt 宽的页面上，边角处累计
-        /// 漂移可达 6.7pt）。细容差下标定打分面非常崎岖，爬山会卡在局部最优——实测只用
-        /// bbox 初值 + 细标定，长段命中率只有 46%，看起来像"整页都变了"；换成大容差先定
-        /// 尺度、再小容差细化，命中率升到 94%+。这是"误报率极高"的关键一环。
+        /// ⚠️ 标定必须**多候选 + 择优**，不能只做"由粗到细的单路搜索"：
+        ///   ① 恒等候选：大量页面两版共享同一坐标系（同纸张尺寸、同源导出），此时 (1,0,0) 就是
+        ///      精确解——实测多页恒等即 100% 命中。若先跑"大容差尺度扫描"，在 tol=15 下**任何**
+        ///      尺度都能刷出 100% 命中，于是会挑到一个伪尺度（实测某页挑到 scale=0.9912），
+        ///      把整页线画搬歪 10pt，覆盖率从 96% 掉到 56%，凭空产生上千条假差异。
+        ///   ② bbox 候选：两版纸张尺寸/导出比例真的不同时（实测页 0 旧=2.01854×新）用它。
+        ///   ③ 尺度扫描候选：仅当前两者都明显不够好时才启用（避免"任何尺度都 100%"的假象）。
+        /// 三者都在**同一个小容差**下打分比较，选最优；同分优先更简单者（恒等 > bbox > 扫描）。
         /// </summary>
         public static (double s, double dx, double dy, double hitRate) Calibrate(
             List<VectorLinework.Seg> bsegs, List<VectorLinework.Seg> tsegs, double tol, double cosMin,
@@ -83,31 +86,110 @@ namespace EGpdf2df.Engine
             var (tx0, ty0, tx1, ty1) = Span(tsegs);
             double s0 = ((bx1 - bx0) + (by1 - by0)) / Math.Max(1e-9, (tx1 - tx0) + (ty1 - ty0));
             double dx0 = tx0 - bx0 / s0, dy0 = ty0 - by0 / s0;
+            if (s0 <= 0 || double.IsNaN(s0) || double.IsInfinity(s0)) { s0 = 1; dx0 = dy0 = 0; }
 
-            // ---- 粗标定：大容差 + 在 bbox 比例附近扫尺度（吸收导出尺度差）----
-            double coarseTol = Math.Max(5.0, tol * 5);
-            var coarse = CalibrateCore(bsegs, tsegs, coarseTol, cosMin, true, (s0, dx0, dy0), quick);
-            log?.Invoke($"  [vec] 粗标定 tol={coarseTol:F1} → scale={coarse.s:F5} dx={coarse.dx:F2} dy={coarse.dy:F2} " +
-                        $"命中={coarse.hit * 100:F1}%");
+            var probes = CollectProbes(bsegs, tol, quick);
+            if (probes.Count == 0)
+            {
+                log?.Invoke($"  [vec] 标定: 无足够长的基准线段可做基准，退回 bbox 初值 (s={s0:F5})");
+                return (s0, dx0, dy0, 0);
+            }
+            var index = new LineIndex(tsegs, Math.Max(1.0, tol));
 
-            // ---- 细标定：以粗结果为初值，用小步长在目标容差下细化 ----
-            var fine = CalibrateCore(bsegs, tsegs, tol, cosMin, false, (coarse.s, coarse.dx, coarse.dy), quick);
-            log?.Invoke($"  [vec] 细标定 tol={tol:F1} → scale={fine.s:F5} dx={fine.dx:F2} dy={fine.dy:F2} " +
-                        $"命中={fine.hit * 100:F1}%");
-            // 细标定若反而变差（打分面噪声），退回粗结果。
-            return fine.hit >= coarse.hit ? fine : coarse;
+            double Score(double s, double dx, double dy, double atol,
+                         List<VectorLinework.Seg> ps)
+            {
+                int hit = 0;
+                foreach (var g in ps)
+                {
+                    double mx = (g.X0 + g.X1) * 0.5 / s + dx;
+                    double my = (g.Y0 + g.Y1) * 0.5 / s + dy;
+                    if (index.Covered(mx, my, g.X1 - g.X0, g.Y1 - g.Y0, atol, cosMin)) hit++;
+                }
+                return ps.Count == 0 ? 0 : (double)hit / ps.Count;
+            }
+
+            // 候选打分统一用**配置容差**（绝不用大容差，否则任何尺度都满分）。
+            double evalTol = Math.Max(0.5, tol);
+
+            // ---- 候选① 恒等 ----
+            double idScore = Score(1, 0, 0, evalTol, probes);
+            log?.Invoke($"  [vec] 候选·恒等   命中={idScore * 100:F1}%");
+            // 恒等已经几乎全中 → 两版同坐标系，直接采用（省时且避免被伪尺度带偏）。
+            if (idScore >= 0.995)
+            {
+                log?.Invoke("  [vec] 采用恒等变换 (两版同坐标系)");
+                return (1, 0, 0, idScore);
+            }
+
+            // ---- 候选② bbox 初值 + 平移精修（尺度固定）----
+            var bbR = Refine(probes, Score, (s0, dx0, dy0), false, evalTol, tol);
+            log?.Invoke($"  [vec] 候选·bbox   scale={bbR.s:F5} dx={bbR.dx:F2} dy={bbR.dy:F2} 命中={bbR.hit * 100:F1}%");
+
+            // ---- 候选③ 尺度扫描（仅当前两者都不好）----
+            (double s, double dx, double dy, double hit) scR = (s0, dx0, dy0, -1);
+            double gate = quick ? 0.80 : 0.90;
+            if (Math.Max(idScore, bbR.hit) < gate)
+            {
+                var coarse = CollectProbes(bsegs, Math.Max(5.0, tol * 5), quick, quick ? 120 : 400);
+                var scanIndex = index;
+                double ScoreC(double s, double dxx, double dyy, double atol)
+                {
+                    int hit = 0;
+                    foreach (var g in coarse)
+                    {
+                        double mx = (g.X0 + g.X1) * 0.5 / s + dxx;
+                        double my = (g.Y0 + g.Y1) * 0.5 / s + dyy;
+                        if (scanIndex.Covered(mx, my, g.X1 - g.X0, g.Y1 - g.Y0, atol, cosMin)) hit++;
+                    }
+                    return coarse.Count == 0 ? 0 : (double)hit / coarse.Count;
+                }
+                double coarseTol = Math.Max(5.0, tol * 5);
+                int half = quick ? 5 : 50;
+                double rel = quick ? 0.002 : 0.0004;
+                double bs = bbR.s, bxc = bbR.dx, byc = bbR.dy;
+                double bestC = ScoreC(bs, bxc, byc, coarseTol);
+                for (double k = -half; k <= half; k++)
+                {
+                    double s = s0 * (1 + k * rel);
+                    if (s <= 0) continue;
+                    double px = bxc, py = byc, loc = ScoreC(s, px, py, coarseTol);
+                    double st = coarseTol;
+                    for (int it = 0; it < 10; it++)
+                    {
+                        bool moved = false;
+                        foreach (var (ax, ay) in new[] { (st, 0d), (-st, 0d), (0d, st), (0d, -st) })
+                        {
+                            double v = ScoreC(s, px + ax, py + ay, coarseTol);
+                            if (v > loc) { loc = v; px += ax; py += ay; moved = true; }
+                        }
+                        if (!moved) st /= 2;
+                        if (st < coarseTol * 0.05) break;
+                    }
+                    if (loc > bestC) { bestC = loc; bs = s; bxc = px; byc = py; }
+                }
+                // 扫描是在大容差下选出的"形似"解，必须回到配置容差下重新精修+打分才算数。
+                var scRef = Refine(probes, Score, (bs, bxc, byc), true, evalTol, tol);
+                log?.Invoke($"  [vec] 候选·扫描  scale={scRef.s:F5} dx={scRef.dx:F2} dy={scRef.dy:F2} 命中={scRef.hit * 100:F1}%");
+                scR = scRef;
+            }
+
+            // ---- 择优（同分优先更简单者）----
+            var chosen = idScore >= bbR.hit && idScore >= scR.hit
+                ? ("恒等", (s: 1.0, dx: 0.0, dy: 0.0, hit: idScore))
+                : bbR.hit >= scR.hit ? ("bbox", bbR) : ("扫描", scR);
+            log?.Invoke($"  [vec] 标定采用 {chosen.Item1}: scale={chosen.Item2.s:F5} " +
+                        $"dx={chosen.Item2.dx:F2} dy={chosen.Item2.dy:F2} 命中={chosen.Item2.hit * 100:F1}%");
+            return (chosen.Item2.s, chosen.Item2.dx, chosen.Item2.dy, chosen.Item2.hit);
         }
 
-        static (double s, double dx, double dy, double hit) CalibrateCore(
-            List<VectorLinework.Seg> bsegs, List<VectorLinework.Seg> tsegs, double tol, double cosMin,
-            bool scanScale, (double s, double dx, double dy) init, bool quick = false)
+        /// <summary>取"长线段"作为标定探针：方向明确、且不受两版切分粒度差异影响。</summary>
+        static List<VectorLinework.Seg> CollectProbes(List<VectorLinework.Seg> segs, double tol, bool quick, int capOverride = 0)
         {
-            var index = new LineIndex(tsegs, Math.Max(1.0, tol));
-            // 只用长线段打分：方向明确、且不受两版切分粒度差异影响。
             var probes = new List<VectorLinework.Seg>();
             double minLen = Math.Max(20.0, tol * 8);
-            foreach (var g in bsegs) if (g.Len >= minLen) probes.Add(g);
-            int cap = quick ? 300 : 1500;
+            foreach (var g in segs) if (g.Len >= minLen) probes.Add(g);
+            int cap = capOverride > 0 ? capOverride : (quick ? 300 : 1500);
             if (probes.Count > cap)
             {
                 int step = probes.Count / cap;
@@ -115,66 +197,35 @@ namespace EGpdf2df.Engine
                 for (int i = 0; i < probes.Count; i += step) sub.Add(probes[i]);
                 probes = sub;
             }
-            if (probes.Count == 0) return (init.s, init.dx, init.dy, 0);
+            return probes;
+        }
 
-            double Score(double s, double dx, double dy)
-            {
-                int hit = 0;
-                foreach (var g in probes)
-                {
-                    double mx = (g.X0 + g.X1) * 0.5 / s + dx;
-                    double my = (g.Y0 + g.Y1) * 0.5 / s + dy;
-                    if (index.Covered(mx, my, g.X1 - g.X0, g.Y1 - g.Y0, tol, cosMin)) hit++;
-                }
-                return (double)hit / probes.Count;
-            }
-
-            double bs = init.s, bx = init.dx, by = init.dy, best = Score(bs, bx, by);
-
-            if (scanScale)
-            {
-                // 尺度扫描：±2%，步长 0.04%（quick 时 ±1%、步 0.2%）；每个候选尺度只做一次平移对齐。
-                int half = quick ? 5 : 50;
-                double rel = quick ? 0.002 : 0.0004;
-                for (double k = -half; k <= half; k++)
-                {
-                    double s = init.s * (1 + k * rel);
-                    if (s <= 0) continue;
-                    double px = bx, py = by, loc = Score(s, px, py);
-                    double st = tol;
-                    for (int it = 0; it < 12; it++)
-                    {
-                        bool moved = false;
-                        foreach (var (ax, ay) in new[] { (st, 0d), (-st, 0d), (0d, st), (0d, -st) })
-                        {
-                            double v = Score(s, px + ax, py + ay);
-                            if (v > loc) { loc = v; px += ax; py += ay; moved = true; }
-                        }
-                        if (!moved) st /= 2;
-                        if (st < tol * 0.05) break;
-                    }
-                    if (loc > best) { best = loc; bs = s; bx = px; by = py; }
-                }
-                return (bs, bx, by, best);
-            }
-
-            // 精标定：小步长爬山（尺度也比粗结果微调）
-            double stS = Math.Abs(bs) * 0.0008, stD = Math.Max(0.2, tol * 0.5);
-            for (int iter = 0; iter < 200; iter++)
+        /// <summary>
+        /// 固定/微调尺度做平移爬山（目标 = 长段中点被对侧线画覆盖的比例）。
+        /// allowScaleStep=true 时允许尺度在小范围内微调（扫描候选需要）。
+        /// </summary>
+        static (double s, double dx, double dy, double hit) Refine(
+            List<VectorLinework.Seg> probes,
+            Func<double, double, double, double, List<VectorLinework.Seg>, double> score,
+            (double s, double dx, double dy) init, bool allowScaleStep, double atol, double tol)
+        {
+            double bs = init.s, bx = init.dx, by = init.dy;
+            double best = score(bs, bx, by, atol, probes);
+            double stD = Math.Max(0.2, atol * 0.5);
+            double stS = allowScaleStep ? Math.Abs(bs) * 0.0004 : 0;
+            for (int iter = 0; iter < 140; iter++)
             {
                 bool moved = false;
-                foreach (var (ds, ddx, ddy) in new[]
+                var deltas = stS > 0
+                    ? new[] { (stS, 0d, 0d), (-stS, 0d, 0d), (0d, stD, 0d), (0d, -stD, 0d), (0d, 0d, stD), (0d, 0d, -stD) }
+                    : new[] { (0d, stD, 0d), (0d, -stD, 0d), (0d, 0d, stD), (0d, 0d, -stD) };
+                foreach (var (ds, ddx, ddy) in deltas)
                 {
-                    (stS, 0d, 0d), (-stS, 0d, 0d),
-                    (0d, stD, 0d), (0d, -stD, 0d),
-                    (0d, 0d, stD), (0d, 0d, -stD),
-                })
-                {
-                    double v = Score(bs + ds, bx + ddx, by + ddy);
+                    double v = score(bs + ds, bx + ddx, by + ddy, atol, probes);
                     if (v > best + 1e-9) { best = v; bs += ds; bx += ddx; by += ddy; moved = true; }
                 }
-                if (!moved) { stS /= 2; stD /= 2; }
-                if (stS < 1e-7 && stD < 0.02) break;
+                if (!moved) { stD /= 2; stS /= 2; }
+                if (stD < 0.01 && stS < 1e-6) break;
             }
             return (bs, bx, by, best);
         }
@@ -210,27 +261,43 @@ namespace EGpdf2df.Engine
                 {
                     var s = segs[i];
                     double len = s.Len;
-                    // 长线段切成 ≤cell 的 chunk：保证"命中点必然落在其 chunk 的邻域 1 格内"。
-                    int parts = Math.Max(1, (int)Math.Ceiling(len / _cell));
-                    for (int p = 0; p < parts; p++)
+                    int np = Math.Max(1, (int)Math.Ceiling(len / _cell));
+                    for (int p = 0; p < np; p++)
                     {
-                        double t0 = (double)p / parts, t1 = (double)(p + 1) / parts;
+                        double t0 = (double)p / np, t1 = (double)(p + 1) / np;
                         double cx0 = s.X0 + (s.X1 - s.X0) * t0, cy0 = s.Y0 + (s.Y1 - s.Y0) * t0;
                         double cx1 = s.X0 + (s.X1 - s.X0) * t1, cy1 = s.Y0 + (s.Y1 - s.Y0) * t1;
                         int ci = _chunks.Count;
                         _chunks.Add(new[] { cx0, cy0, cx1, cy1 });
-                        long key = Key((cx0 + cx1) * 0.5, (cy0 + cy1) * 0.5);
-                        if (!_grid.TryGetValue(key, out var l)) _grid[key] = l = new List<int>();
-                        l.Add(ci);
+                        // ⚠️ chunk 必须登记到它**覆盖到的所有格子**，而不是只登记中点所在格。
+                        // 只登记中点格 + 查询 ±1 圈，会让"距离 ≤ 容差但中点落在隔 2 格"的线段查不到
+                        // → 明明有线画对得上却被判成新增/删除（实测页 150:151 有 26 条这样的假差异，
+                        // 未匹配段到对侧线画的最近距离中位数只有 0.05pt = 几乎完全重合）。
+                        RegisterCellRange(cx0, cy0, cx1, cy1, ci);
                     }
                 }
             }
 
-            long Key(double x, double y)
+            void RegisterCellRange(double x0, double y0, double x1, double y1, int ci)
             {
-                long cx = (long)Math.Floor(x / _cell), cy = (long)Math.Floor(y / _cell);
-                return (cx + 0x4000000L) * 0x8000000L + (cy + 0x4000000L);
+                long gx0 = (long)Math.Floor(Math.Min(x0, x1) / _cell), gx1 = (long)Math.Floor(Math.Max(x0, x1) / _cell);
+                long gy0 = (long)Math.Floor(Math.Min(y0, y1) / _cell), gy1 = (long)Math.Floor(Math.Max(y0, y1) / _cell);
+                for (long gx = gx0; gx <= gx1; gx++)
+                    for (long gy = gy0; gy <= gy1; gy++)
+                    {
+                        long k = CellKey(gx, gy);
+                        if (!_grid.TryGetValue(k, out var l)) _grid[k] = l = new List<int>();
+                        l.Add(ci);
+                    }
             }
+
+            static long CellKey(long cx, long cy) => (cx + 0x4000000L) * 0x8000000L + (cy + 0x4000000L);
+
+            /// <summary>
+            /// 查询半径 reach 需要搜多少圈格子。chunk 已登记到自身覆盖的所有格子，故只需
+            /// ceil(reach/cell) + 1（+1 是查询点自身格子与坐标量化的裕度）。
+            /// </summary>
+            int Rings(double reach) => Math.Min(24, Math.Max(1, (int)Math.Ceiling(Math.Max(0, reach) / _cell) + 1));
 
             /// <summary>(x,y) 附近 tol 内是否存在与 (ux,uy) 方向相近(cos ≥ cosMin) 的线段。</summary>
             public bool Covered(double x, double y, double ux, double uy, double tol, double cosMin)
@@ -239,10 +306,11 @@ namespace EGpdf2df.Engine
                 if (ul < 1e-12) return false;
                 ux /= ul; uy /= ul;
                 long bx = (long)Math.Floor(x / _cell), by = (long)Math.Floor(y / _cell);
-                for (long gx = bx - 1; gx <= bx + 1; gx++)
-                    for (long gy = by - 1; gy <= by + 1; gy++)
+                int rings = Rings(tol);
+                for (long gx = bx - rings; gx <= bx + rings; gx++)
+                    for (long gy = by - rings; gy <= by + rings; gy++)
                     {
-                        if (!_grid.TryGetValue((gx + 0x4000000L) * 0x8000000L + (gy + 0x4000000L), out var l)) continue;
+                        if (!_grid.TryGetValue(CellKey(gx, gy), out var l)) continue;
                         foreach (int ci in l)
                         {
                             var c = _chunks[ci];
@@ -262,16 +330,17 @@ namespace EGpdf2df.Engine
 
             /// <summary>
             /// 最近线段距离（不限方向），供诊断"未匹配是容差不够还是真的没有对侧线画"。
-            /// 搜索 1 圈格子；找不到返回 cap。
+            /// 找不到返回 cap。
             /// </summary>
             public double Nearest(double x, double y, double cap)
             {
                 double bd = cap;
                 long bx = (long)Math.Floor(x / _cell), by = (long)Math.Floor(y / _cell);
-                for (long gx = bx - 1; gx <= bx + 1; gx++)
-                    for (long gy = by - 1; gy <= by + 1; gy++)
+                int rings = Rings(cap);
+                for (long gx = bx - rings; gx <= bx + rings; gx++)
+                    for (long gy = by - rings; gy <= by + rings; gy++)
                     {
-                        if (!_grid.TryGetValue((gx + 0x4000000L) * 0x8000000L + (gy + 0x4000000L), out var l)) continue;
+                        if (!_grid.TryGetValue(CellKey(gx, gy), out var l)) continue;
                         foreach (int ci in l)
                         {
                             var c = _chunks[ci];
@@ -292,12 +361,12 @@ namespace EGpdf2df.Engine
                 double bd = cap;
                 if (ul < 1e-12) return bd;
                 ux /= ul; uy /= ul;
-                // 搜索半径 cap 对应的圈数（cap ≤ 几格时 1 圈足够）
                 long bx = (long)Math.Floor(x / _cell), by = (long)Math.Floor(y / _cell);
-                for (long gx = bx - 1; gx <= bx + 1; gx++)
-                    for (long gy = by - 1; gy <= by + 1; gy++)
+                int rings = Rings(cap);
+                for (long gx = bx - rings; gx <= bx + rings; gx++)
+                    for (long gy = by - rings; gy <= by + rings; gy++)
                     {
-                        if (!_grid.TryGetValue((gx + 0x4000000L) * 0x8000000L + (gy + 0x4000000L), out var l)) continue;
+                        if (!_grid.TryGetValue(CellKey(gx, gy), out var l)) continue;
                         foreach (int ci in l)
                         {
                             var c = _chunks[ci];
@@ -402,7 +471,7 @@ namespace EGpdf2df.Engine
         /// </summary>
         public static Result Compare(List<VectorLinework.Seg> bsegs, List<VectorLinework.Seg> tsegs,
                                  double tol, double angTolDeg, Action<string>? log = null, bool quick = false,
-                                 FilterCfg? filter = null, double changeRadius = 0)
+                                 FilterCfg? filter = null, double changeRadius = 0, double nearInkTol = 0.5)
         {
             var res = new Result { BaseSegs = bsegs.Count, TgtSegs = tsegs.Count };
             if (bsegs.Count == 0 || tsegs.Count == 0)
@@ -432,14 +501,14 @@ namespace EGpdf2df.Engine
             var tUnmatched = new List<VectorLinework.Seg>();
             int tMatched = 0;
             foreach (var g in tsegs)
-                if (FullyCovered(g, bIndex, tol, cosMin)) tMatched++;
+                if (FullyCovered(g, bIndex, tol, cosMin, nearInkTol)) tMatched++;
                 else tUnmatched.Add(g);
             res.TgtMatched = tMatched;
 
             var bUnmatched = new List<VectorLinework.Seg>();
             int bMatched = 0;
             foreach (var g in bMoved)
-                if (FullyCovered(g, tIndex, tol, cosMin)) bMatched++;
+                if (FullyCovered(g, tIndex, tol, cosMin, nearInkTol)) bMatched++;
                 else bUnmatched.Add(g);
             res.BaseMatched = bMatched;
 
@@ -460,6 +529,26 @@ namespace EGpdf2df.Engine
                 double Near(double q) => dd.Count == 0 ? 0 : dd[(int)Math.Min(dd.Count - 1, q * dd.Count)];
                 log?.Invoke($"  [vec] 未匹配目标段距对侧线画: p10={Near(0.10):F2} p50={Near(0.50):F2} " +
                             $"p90={Near(0.90):F2} (tol={tol:F1}) — p50≈tol 说明容差偏紧，p50≫tol 才是真差异");
+                log?.Invoke($"  [vec] 覆盖率: 目标 {tMatched * 100.0 / tsegs.Count:F2}% 未变, " +
+                            $"基准 {bMatched * 100.0 / bMoved.Count:F2}% 未变");
+            }
+
+            // 详细取样（排障用）：把未匹配段自身长度 / 中点距离 / 两端点距离打出来，
+            // 一眼区分"真差异"与"端点悬垂误报"（后者中点距离≈0 而端点距离≈悬垂长度）。
+            if (Environment.GetEnvironmentVariable("EGPDF2DF_VEC_DUMP") == "1" && tUnmatched.Count > 0)
+            {
+                log?.Invoke($"  [vec] 未匹配目标段取样(最多8条): len | 中点距 | 起点距 | 终点距");
+                int shown = 0, step = Math.Max(1, tUnmatched.Count / 8);
+                for (int i = 0; i < tUnmatched.Count && shown < 8; i += step, shown++)
+                {
+                    var g = tUnmatched[i];
+                    double mx = (g.X0 + g.X1) * 0.5, my = (g.Y0 + g.Y1) * 0.5;
+                    double dm = bIndex.Nearest(mx, my, tol * 4);
+                    double d0 = bIndex.Nearest(g.X0, g.Y0, tol * 4);
+                    double d1 = bIndex.Nearest(g.X1, g.Y1, tol * 4);
+                    log?.Invoke($"  [vec]   len={g.Len,8:F2} | {dm,6:F2} | {d0,6:F2} | {d1,6:F2}   " +
+                                $"({g.X0:F2},{g.Y0:F2})-({g.X1:F2},{g.Y1:F2})");
+                }
             }
 
             // 第三态识别：把"同一位置、形状改了"的线段从 added/removed 里分出来。
@@ -679,17 +768,41 @@ namespace EGpdf2df.Engine
 
         // 沿线段采样（含两端与中点），要求每个采样点都被对侧线画覆盖。
         // 采样步长随长度自适应：短段 2 点即可，长段按 tol×2 加密，避免"跨过一小段缺口"被误判为覆盖。
-        static bool FullyCovered(VectorLinework.Seg g, LineIndex idx, double tol, double cosMin)
+        //
+        // ⚠️ 两级判据（第二级 = "墨迹重合豁免"，不是放宽容差）：
+        //   ① 平行覆盖：该点附近 tol 内存在**方向相近**的对侧线段 → 未变。方向检验用于防止
+        //      密集区被"横穿而过"的交叉线误判为覆盖。
+        //   ② 墨迹重合：若 ① 失败，但该点距**任意方向**的对侧线画 < nearInkTol（默认 0.5pt，
+        //      远小于 tol），仍判未变。理由：CAD 的圆弧是密排短线逼近出来的，单段可能只有
+        //      0.4~0.7pt，**这种长度上的方向本身就不可靠**（实测未匹配段方向 0°/24°/45°/66° 混杂，
+        //      而它们距对侧墨迹只有 0.00~0.27pt = 完全重合）。此时若硬按方向判，会把同一根圆弧
+        //      的两套不同逼近方式判成"新增+删除"，凭空产生成片的假差异（实测页 150:151 有 26 条）。
+        //      注意：这不是把 tol 放宽——② 只在"墨迹实际重合到亚 pt"时才生效，且长线段需全部
+        //      采样点都满足（真正的长线改动必然被 ① 拒掉，不会被②放过）。
+        static bool FullyCovered(VectorLinework.Seg g, LineIndex idx, double tol, double cosMin, double nearInkTol)
         {
             double len = g.Len;
             int n = Math.Max(2, (int)Math.Ceiling(len / Math.Max(0.8, tol * 2)) + 1);
             if (n > 64) n = 64;
             double ux = g.X1 - g.X0, uy = g.Y1 - g.Y0;
+
             for (int i = 0; i < n; i++)
             {
-                double t = n == 1 ? 0 : (double)i / (n - 1);
+                double t = (double)i / (n - 1);
                 double x = g.X0 + ux * t, y = g.Y0 + uy * t;
-                if (!idx.Covered(x, y, ux, uy, tol, cosMin)) return false;
+                if (!idx.Covered(x, y, ux, uy, tol, cosMin)) goto fallback;
+            }
+            return true;
+
+        fallback:
+            if (nearInkTol <= 0) return false;
+            // 稀疏复核（控成本）：每个采样点附近 nearInkTol 内是否都有对侧墨迹（不限方向）。
+            int m = Math.Min(6, n);
+            for (int i = 0; i < m; i++)
+            {
+                double t = m == 1 ? 0 : (double)i / (m - 1);
+                double x = g.X0 + ux * t, y = g.Y0 + uy * t;
+                if (idx.Nearest(x, y, nearInkTol) >= nearInkTol) return false;
             }
             return true;
         }

@@ -89,7 +89,17 @@ namespace EGpdf2df.Engine
                 if (content == null || content.Length == 0 || depth > 12) return _segs;
 
                 var toks = Tokenize(content);
-                var path = new List<double[]>();
+                // ⚠️ 路径必须按【子路径】组织，不能把所有点塞进一个列表：
+                // PDF 里 `m` 表示**开始新子路径**，连续两个 `m`（如
+                //   `640.544 535.322 m 640.516 532.799 m 621.524 532.799 l S`）
+                // 表示前一个单点子路径**什么都不画**（实测旧版 CAD 导出里这种写法大量存在，
+                // 本页 m 比 l 多 154 个）。若把 `m` 当成"追加点"，就会凭空造出一条
+                // (640.544,535.322)→(640.516,532.799) 的 2.5pt 竖线——渲染里根本不存在，
+                // 于是被报成"删除图形"。实测这正是标题栏/表格区成片假差异的根因
+                // （抽样 12 页 188 个差异区域里，21 个纯误报，其中 18 个是 removed，
+                //   位置全在标题栏，且跨页重复同一坐标 = 同一份标题栏样板）。
+                var paths = new List<List<double[]>>();   // 已完成的子路径
+                var path = new List<double[]>();          // 当前子路径
                 double cx = 0, cy = 0, sx = 0, sy = 0;
                 var nums = new List<double>();
 
@@ -106,13 +116,25 @@ namespace EGpdf2df.Engine
                     });
                 }
 
+                void NewSub(double x, double y)
+                {
+                    if (path.Count > 0) paths.Add(path);
+                    path = new List<double[]> { new[] { x, y } };
+                }
+
                 void Flush(byte op)
                 {
-                    if (path.Count < 2) { path.Clear(); return; }
-                    for (int i = 0; i + 1 < path.Count; i++)
-                        AddSeg(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1], op);
-                    path.Clear();
+                    if (path.Count > 0) { paths.Add(path); path = new List<double[]>(); }
+                    foreach (var sp in paths)
+                    {
+                        if (sp.Count < 2) continue;                 // 单点子路径不产生可见线
+                        for (int i = 0; i + 1 < sp.Count; i++)
+                            AddSeg(sp[i][0], sp[i][1], sp[i + 1][0], sp[i + 1][1], op);
+                    }
+                    paths.Clear();
                 }
+
+                void DiscardPath() { paths.Clear(); path = new List<double[]>(); }
 
                 for (int k = 0; k < toks.Count; k++)
                 {
@@ -156,9 +178,9 @@ namespace EGpdf2df.Engine
                             FollowXObject(resources, _lastName, depth, minLen);
                             break;
 
-                        // ---- 路径构造 ----
+                        // ---- 路径构造（m 开始新子路径，绝不能当成"追加点"）----
                         case "m":
-                            if (nums.Count >= 2) { cx = nums[^2]; cy = nums[^1]; sx = cx; sy = cy; path.Add(new[] { cx, cy }); }
+                            if (nums.Count >= 2) { cx = nums[^2]; cy = nums[^1]; sx = cx; sy = cy; NewSub(cx, cy); }
                             break;
                         case "l":
                             if (nums.Count >= 2) { cx = nums[^2]; cy = nums[^1]; path.Add(new[] { cx, cy }); }
@@ -189,9 +211,14 @@ namespace EGpdf2df.Engine
                             if (nums.Count >= 4)
                             {
                                 double rx = nums[^4], ry = nums[^3], rw = nums[^2], rh = nums[^1];
-                                path.Add(new[] { rx, ry }); path.Add(new[] { rx + rw, ry });
-                                path.Add(new[] { rx + rw, ry + rh }); path.Add(new[] { rx, ry + rh });
-                                path.Add(new[] { rx, ry });
+                                // 矩形是**独立子路径**，不能接在当前子路径后面。
+                                if (path.Count > 0) paths.Add(path);
+                                path = new List<double[]>
+                                {
+                                    new[] { rx, ry }, new[] { rx + rw, ry },
+                                    new[] { rx + rw, ry + rh }, new[] { rx, ry + rh },
+                                    new[] { rx, ry },
+                                };
                                 cx = rx; cy = ry; sx = rx; sy = ry;
                             }
                             break;
@@ -205,7 +232,7 @@ namespace EGpdf2df.Engine
                             if (path.Count > 0) path.Add(new[] { sx, sy });
                             Flush((byte)'B');
                             break;
-                        case "n": path.Clear(); break;
+                        case "n": DiscardPath(); break;
                         case "W": case "W*": break;   // 裁剪不改几何
 
                         // ---- 文本/标记：文字另有 TextRedlineDiff 管线，这里不取 ----

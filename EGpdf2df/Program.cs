@@ -34,7 +34,9 @@ public static class Program
         string? textAddedColor = null, textRemovedColor = null, textInsertDirection = null;
         string? markStyle = null, markStrokeColor = null;
         string? graphicMethod = null, reportMode = null;
+        string? nearInkTol = null, strokeWidth = null, strokeOpacity = null, pageMode = null;
         double? vectorTol = null;
+        bool pinPages = false;
         bool readStdin = false;
         bool locateMode = false;
         bool vecDiag = false;
@@ -66,6 +68,11 @@ public static class Program
                 case "--graphic-method": graphicMethod = take(""); break;
                 case "--vector-tol": if (double.TryParse(take(""), NumberStyles.Float, CultureInfo.InvariantCulture, out var vt)) vectorTol = vt; break;
                 case "--report-mode": reportMode = take(""); break;
+                case "--near-ink-tol": nearInkTol = take(""); break;
+                case "--stroke-width": strokeWidth = take(""); break;
+                case "--stroke-opacity": strokeOpacity = take(""); break;
+                case "--page-mode": pageMode = take(""); break;
+                case "--pin-pages": pinPages = true; break;
                 default:
                     if (a.StartsWith("-")) { L($"Unknown option: {a} (use --help)"); return 2; }
                     if (baseline == null) baseline = a; else if (target == null) target = a; else L($"Ignoring extra argument: {a}");
@@ -155,6 +162,15 @@ public static class Program
         if (o?.FillOpacity != null) cfg.Annotation.FillOpacity = Math.Min(1.0, Math.Max(0.0, o.FillOpacity.Value));
         if (o?.Outline != null) cfg.Annotation.Outline = o.Outline.Value;
         if (o?.HaloPx != null) cfg.Annotation.HaloPx = Math.Max(0, o.HaloPx.Value);
+        // 矢量"差异线"线宽 / 不透明度（半透明细线，不遮底图）
+        if (o?.StrokeWidthPt != null) cfg.Annotation.StrokeWidthPt = Math.Max(0.05, o.StrokeWidthPt.Value);
+        if (o?.StrokeOpacity != null) cfg.Annotation.StrokeOpacity = Math.Clamp(o.StrokeOpacity.Value, 0.05, 1.0);
+        if (strokeWidth != null) { if (double.TryParse(strokeWidth, NumberStyles.Float, CultureInfo.InvariantCulture, out var sw)) cfg.Annotation.StrokeWidthPt = Math.Max(0.05, sw); }
+        if (strokeOpacity != null) { if (double.TryParse(strokeOpacity, NumberStyles.Float, CultureInfo.InvariantCulture, out var so)) cfg.Annotation.StrokeOpacity = Math.Clamp(so, 0.05, 1.0); }
+        // -p 语义：filter(默认，全本按图号配对后筛选) / pin(仅按索引配对)
+        if (!string.IsNullOrWhiteSpace(o?.PageMode)) cfg.PageMode = NormalizePageMode(o!.PageMode);
+        if (pageMode != null) cfg.PageMode = NormalizePageMode(pageMode);
+        if (pinPages) cfg.PageMode = "pin";
         if (!string.IsNullOrWhiteSpace(textAddedColor)) cfg.Annotation.TextAddedColor = textAddedColor;
         if (!string.IsNullOrWhiteSpace(textRemovedColor)) cfg.Annotation.TextRemovedColor = textRemovedColor;
         if (!string.IsNullOrWhiteSpace(textInsertDirection)) cfg.Annotation.TextInsertDirection = NormalizeDirection(textInsertDirection);
@@ -165,6 +181,8 @@ public static class Program
         if (o?.VectorTolPt != null) cfg.GraphicDiff.VectorTolPt = Math.Max(0.1, o.VectorTolPt.Value);
         if (vectorTol != null) cfg.GraphicDiff.VectorTolPt = Math.Max(0.1, vectorTol.Value);
         if (o?.VectorAngleTolDeg != null) cfg.GraphicDiff.VectorAngleTolDeg = Math.Clamp(o.VectorAngleTolDeg.Value, 1, 60);
+        if (o?.NearInkTolPt != null) cfg.GraphicDiff.NearInkTolPt = Math.Max(0, o.NearInkTolPt.Value);
+        if (!string.IsNullOrWhiteSpace(nearInkTol)) { if (double.TryParse(nearInkTol, NumberStyles.Float, CultureInfo.InvariantCulture, out var ni)) cfg.GraphicDiff.NearInkTolPt = Math.Max(0, ni); }
         if (o?.PageMatchMinSim != null) cfg.GraphicDiff.PageMatchMinSim = Math.Clamp(o.PageMatchMinSim.Value, 0.1, 0.999);
         if (o?.ChangeRadiusPt != null) cfg.GraphicDiff.ChangeRadiusPt = Math.Max(0, o.ChangeRadiusPt.Value);
         if (!string.IsNullOrWhiteSpace(o?.ReportMode)) cfg.GraphicDiff.ReportMode = o!.ReportMode!;
@@ -336,7 +354,9 @@ public static class Program
                     ClusterRadiusPt = cfg.GraphicDiff.ClusterRadiusPt,
                     MinClusterLengthPt = cfg.GraphicDiff.MinClusterLengthPt,
                     MinClusterRuns = cfg.GraphicDiff.MinClusterRuns,
-                });
+                },
+                changeRadius: cfg.GraphicDiff.ChangeRadiusPt,
+                nearInkTol: cfg.GraphicDiff.NearInkTolPt);
             var byDir = r.Runs.GroupBy(x => x.Dir).ToDictionary(g => g.Key, g => g.Count());
             L($"[vec] page {p}:{q}: runs={r.Runs.Count} " +
               string.Join(" ", byDir.Select(kv => $"{kv.Key}={kv.Value}")) +
@@ -389,6 +409,17 @@ public static class Program
         };
     }
 
+    // -p 语义归一化：filter(默认) / pin；非法值回退 filter。
+    static string NormalizePageMode(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "filter";
+        return s.Trim().ToLowerInvariant() switch
+        {
+            "pin" or "index" or "indexed" or "钉死" or "索引" => "pin",
+            _ => "filter"
+        };
+    }
+
     static void PrintHelp()
     {
         Console.WriteLine("EGpdf2df v1.0.0 - 对比两份图纸 PDF，输出带红色差异标注的新 PDF");
@@ -404,7 +435,13 @@ public static class Program
         Console.WriteLine("  --json FILE      从文件读取 JSON 契约 (read request JSON from file；可给路径或名称)");
         Console.WriteLine("  --stdin          从标准输入读取 JSON 契约 (read JSON from stdin)");
         Console.WriteLine("  -o, --output F   差异 PDF 输出路径 (diff PDF output path)");
-        Console.WriteLine("  -p, --pages L    对比页码(0基,逗号分隔) (0-based pages, comma list)");
+        Console.WriteLine("  -p, --pages L    限定比对页：默认语义 filter = 先按图号全本配对，再用页码(基准页号,0基)筛选");
+        Console.WriteLine("                   --page-mode pin 则退回旧行为(按索引把页序钉死)。");
+        Console.WriteLine("  --page-mode M     -p 语义：filter(默认) / pin(按索引钉死页序)");
+        Console.WriteLine("  --pin-pages       等价 --page-mode pin（保留旧的索引配对行为）");
+        Console.WriteLine("  --stroke-width PT     矢量差异线线宽(pt, default 1.0，细线)");
+        Console.WriteLine("  --stroke-opacity A    矢量差异线不透明度 0~1 (default 0.55，半透明)");
+        Console.WriteLine("  --near-ink-tol PT     墨迹重合容差(pt, default 0.5)：短线段方向不可靠时的豁免");
         Console.WriteLine("  --config FILE    差异检测配置 (pdf2df config JSON)");
         Console.WriteLine("  --text-added-color H    新增文字改色 #RRGGBB (default #FF0000 红)");
         Console.WriteLine("  --text-removed-color H  删除文字改色 #RRGGBB (default #0000FF 蓝)");

@@ -75,6 +75,11 @@ private:
     QComboBox* m_gfxMethodCombo = nullptr;   // vector(默认,纯矢量) / pixel(渲染+OpenCV 回退)
     QDoubleSpinBox* m_vecTolSpin = nullptr;  // 矢量比对容差(pt)
     QDoubleSpinBox* m_vecAngSpin = nullptr;  // 方向容差(度)
+    QDoubleSpinBox* m_nearInkSpin = nullptr; // "墨迹重合"容差(pt)：短线段方向不可靠时的豁免
+    // ---- 差异线样式（沿真实变更线段描边）----
+    QDoubleSpinBox* m_strokeWidthSpin = nullptr;   // 差异线线宽(pt)，细线默认 1.0
+    QDoubleSpinBox* m_strokeOpacitySpin = nullptr; // 差异线不透明度 0~1，默认 0.55
+    QComboBox* m_pageModeCombo = nullptr;          // -p 语义：filter(图号优先+筛选) / pin(索引钉死)
     QComboBox* m_reportModeCombo = nullptr;  // cluster(按区域) / run(逐条)
     QDoubleSpinBox* m_clusterRadiusSpin = nullptr;  // 聚类半径(pt)
     QDoubleSpinBox* m_minClusterLenSpin = nullptr;  // 丢弃小于此总长(pt)的区域

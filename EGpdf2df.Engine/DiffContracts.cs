@@ -57,6 +57,12 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("outline")] public bool? Outline { get; set; }
         // 填充向外扩张像素(0=精准贴合形状，覆盖配置文件 haloPx)。
         [JsonPropertyName("haloPx")] public int? HaloPx { get; set; }
+        // 矢量"差异线"（沿真实变更线段描边）的线宽(pt)与不透明度 0~1。默认 1.0 / 0.55。
+        // 与上面的 lineWidth（填充/轮廓标记线宽）区分：那是像素路径的标记。
+        [JsonPropertyName("strokeWidthPt")] public double? StrokeWidthPt { get; set; }
+        [JsonPropertyName("strokeOpacity")] public double? StrokeOpacity { get; set; }
+        // -p/--pages 的语义：filter(默认，全本按图号配对后筛选) / pin(仅按索引配对，旧行为)。
+        [JsonPropertyName("pageMode")] public string? PageMode { get; set; }
 
         // ---- 图形差异检测路径与矢量参数（前端 / 命令行可调）----
         // 图形检测路径：vector(默认，纯矢量、误报低) / pixel(旧的渲染+OpenCV 回退)。
@@ -65,6 +71,9 @@ namespace EGpdf2df.Engine
         [JsonPropertyName("vectorTolPt")] public double? VectorTolPt { get; set; }
         // 方向容差(度)：防密集区被无关线段误判为覆盖。默认 12。
         [JsonPropertyName("vectorAngleTolDeg")] public double? VectorAngleTolDeg { get; set; }
+        // "墨迹重合"容差(pt)：方向判据在极短线段(0.4~0.7pt，圆弧逼近段)上不可靠，
+        // 若采样点距对侧墨迹(不限方向)小于此值则仍判未变。默认 0.5，0=关闭豁免。
+        [JsonPropertyName("nearInkTolPt")] public double? NearInkTolPt { get; set; }
         // 页面配对最小线画相似度。默认 0.85。
         [JsonPropertyName("pageMatchMinSim")] public double? PageMatchMinSim { get; set; }
         // 第三态"变更"识别半径(pt)：未匹配线画若在此半径内存在方向相近的对侧未匹配线画，
