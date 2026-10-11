@@ -98,6 +98,14 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     colRow->addWidget(m_textAddedColorBtn);
     colRow->addWidget(new QLabel(QStringLiteral("删除文字(-)")));
     colRow->addWidget(m_textRemovedColorBtn);
+    colRow->addWidget(new QLabel(QStringLiteral("变更旧字方向:")));
+    m_textDirCombo = new QComboBox();
+    m_textDirCombo->addItem(QStringLiteral("下 (down)"),   QStringLiteral("down"));
+    m_textDirCombo->addItem(QStringLiteral("上 (up)"),     QStringLiteral("up"));
+    m_textDirCombo->addItem(QStringLiteral("右 (right)"),  QStringLiteral("right"));
+    m_textDirCombo->addItem(QStringLiteral("左 (left)"),   QStringLiteral("left"));
+    m_textDirCombo->setCurrentIndex(0);   // 默认 下
+    colRow->addWidget(m_textDirCombo);
     colRow->addStretch();
 
     // ---- 描红/填充可调参数：线宽粗细 / 填充透明度 / 填充外扩 ----
@@ -140,9 +148,9 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
         "● <b>红填充(实线轮廓)</b> = 新增图形 — 真描红：精确填充变更区域(非描边/非方框/非圈)\n"
         "● <b>红填充(虚线轮廓)</b> = 删除图形 — 原轮廓真填充\n"
         "● <b>绿填充(实线轮廓)</b> = 变更：同序号/同位置但内容改动(绿)\n"
-        "● <b>文字直接改色（不画圈）</b>：<font color=\"#FF0000\">新增文字 = 红色</font>（覆盖在原黑色文字上），"
-        "<font color=\"#0000FF\">删除文字 = 蓝色</font>（在原位置重现，git - 行）；变更则红(新)+蓝(旧下方)\n"
-        "文字比对按<b>序号配对</b>再比内容，位置位移不影响判定；四种颜色与线宽/透明度/外扩均可自定，色号直接传给内核。")));
+        "● <b>文字直接改色（不画圈）</b>：<font color=\"#FF0000\">新增文字 = 红色</font>（覆盖在原黑色文字上，改原字色），"
+        "<font color=\"#0000FF\">删除文字 = 蓝色</font>（插入到原文本框，git - 行）；变更则红(新,改原字色)+蓝(旧,按方向插入)\n"
+        "文字比对按<b>序号配对</b>再比内容，位置位移不影响判定；红/蓝/绿三色与线宽/透明度/外扩/变更旧字方向均可自定，色号直接传给内核。")));
     legendLay->setSpacing(2);
 
     // ---- 管线号↔材料表一一对应结果 ----
@@ -333,6 +341,9 @@ void DiffPage::onRun()
     colors[QStringLiteral("textAdded")]   = m_textAddedColor;
     colors[QStringLiteral("textRemoved")] = m_textRemovedColor;
     opt[QStringLiteral("colors")] = colors;
+    // 变更旧(蓝)文字插入方向（down/up/right/left），蓝字按方向插入到"新(红)"文字文本框附近。
+    if (m_textDirCombo)
+        opt[QStringLiteral("textInsertDirection")] = m_textDirCombo->currentData().toString();
     QJsonObject req;
     req[QStringLiteral("baseline")] = a;
     req[QStringLiteral("target")]   = b;

@@ -35,8 +35,9 @@ namespace EGpdf2df.Engine
     /// (page.NewContentStreamBefore) so they sit BEHIND the drawing and never cover the
     /// original characters (requirement: 红线放在字下面). Text differences are NOT circled:
     /// the text itself is recoloured on a SEPARATE top layer (new PdfCanvas(page)) —
-    /// added / changed-new = RED (overlaid on the target's black text), removed /
-    /// changed-old = BLUE (git "-" line, redrawn at the original position). This is what
+        /// added / changed-new = RED (overlaid on the target's black text — recolor in
+        /// place), removed / changed-old = BLUE (git "-" line, inserted into the original
+        /// text box; changed-old offset by TextInsertDirection: down/up/right/left). This is what
     /// makes the output a true vector drawing (infinite zoom, crisp lines) rather than an
     /// image.
     ///
@@ -121,25 +122,32 @@ namespace EGpdf2df.Engine
                 foreach (var c in a.RemovedContours) FillPoly(overCanvas, c, scale, traceCol, ann.FillOpacity);
                 foreach (var c in a.ChangedContours) FillPoly(overCanvas, c, scale, changeCol, ann.FillOpacity);
                 // (b) 文字差异：直接把文字重绘成对应颜色（不画圈/点，git +/- 风格）。
-                //     新增(added) 与 变更的新内容(changed.NewText) → 红色，覆盖在目标原黑色文字之上；
-                //     删除(removed) 与 变更的旧内容(changed.OldText) → 蓝色，在原位置重现（git - 行）；
-                //     变更时旧(蓝)文字下移一行，避免与红(新)文字重叠不可读。
+                //     新增(added) 与 变更的新内容(changed.NewText) → 红色，覆盖在目标原黑色文字之上（改原字色）；
+                //     删除(removed) 与 变更的旧内容(changed.OldText) → 蓝色，插入到原文本框（git - 行）；
+                //     变更时旧(蓝)文字按 TextInsertDirection 方向插入到"新(红)"文字文本框附近，避免重叠不可读。
+                string dir = (ann.TextInsertDirection ?? "down").Trim().ToLowerInvariant();
                 foreach (var it in a.TextItems)
                 {
                     if (it.ChangeType == "added" || it.ChangeType == "changed")
                     {
                         var tNew = it.NewText;   // added / changed 的新内容（MkItem 已置）
                         if (!string.IsNullOrWhiteSpace(tNew))
-                            DrawColoredText(overCanvas, tNew, it.Bbox, textAddedCol, 0,
+                            DrawColoredText(overCanvas, tNew, it.Bbox, textAddedCol, 0, 0,
                                 tA, tB, tC, tD, mA, mB, mC, mD, mE, mF, italFont, ref textRenders);
                     }
                     if (it.ChangeType == "removed" || it.ChangeType == "changed")
                     {
                         var tOld = it.OldText;
-                        double yOff = it.ChangeType == "changed" ? Math.Max(8.0, it.Bbox.Height * 1.4) : 0;
                         if (!string.IsNullOrWhiteSpace(tOld))
-                            DrawColoredText(overCanvas, tOld, it.Bbox, textRemovedCol, yOff,
+                        {
+                            // 删除: 目标侧无新文字，蓝字直接落入原文本框(无需偏移)；
+                            // 变更: 旧(蓝)文字按方向插入到"新(红)"文字文本框附近，避免重叠。
+                            double dx = 0, dy = 0;
+                            if (it.ChangeType == "changed")
+                                InsertOffset(dir, it.Bbox, out dx, out dy);
+                            DrawColoredText(overCanvas, tOld, it.Bbox, textRemovedCol, dx, dy,
                                 tA, tB, tC, tD, mA, mB, mC, mD, mE, mF, italFont, ref textRenders);
+                        }
                     }
                 }
             }
@@ -228,10 +236,10 @@ namespace EGpdf2df.Engine
         }
 
         // 把一段文字以指定颜色重绘在 OVER 层（DISPLAY 坐标 → 内容空间）。这是"文字改色"
-        // 的核心：新增/变更的新文字覆盖在目标原黑色文字之上（变红），删除/变更的旧文字
-        // 以蓝色在原位置重现（git - 行）。yOffDisp 为显示帧下的额外下移(pt)，用于变更时把
-        // "旧(蓝)"文字挪到"新(红)"文字下方，避免两者重叠不可读。
-        static void DrawColoredText(PdfCanvas c, string text, Bbox bbox, Color col, double yOffDisp,
+        // 的核心：新增/变更的新文字覆盖在目标原黑色文字之上（变红，改原字色），
+        // 删除/变更的旧文字以蓝色插入到原文本框（git - 行）。xOffDisp/yOffDisp 为显示帧
+        // 下的额外偏移(pt)，用于变更时把"旧(蓝)"文字按方向挪到"新(红)"文字文本框附近。
+        static void DrawColoredText(PdfCanvas c, string text, Bbox bbox, Color col, double xOffDisp, double yOffDisp,
             float tA, float tB, float tC, float tD,
             float mA, float mB, float mC, float mD, float mE, float mF,
             PdfFont font, ref int renders)
@@ -239,7 +247,7 @@ namespace EGpdf2df.Engine
             float x = (float)bbox.X, yTop = (float)bbox.Y;
             float h = (float)bbox.Height;
             float fs = Math.Max(6f, h / 2 + 4f);
-            double bx = x, by = Math.Max(1f, yTop + 1f + yOffDisp);   // baseline in DISPLAY y-down
+            double bx = x + xOffDisp, by = Math.Max(1f, yTop + 1f + yOffDisp);   // baseline in DISPLAY y-down
             ApplyMatrix(mA, mB, mC, mD, mE, mF, bx, by, out double pcx, out double pcy);
             c.SaveState();
             c.SetFillColor(col);
@@ -250,6 +258,21 @@ namespace EGpdf2df.Engine
             c.EndText();
             c.RestoreState();
             renders++;
+        }
+
+        // 变更时旧(蓝)文字相对新(红)文字的插入方向偏移（DISPLAY 帧，单位 pt）：
+        // down=下方, up=上方, right=右侧, left=左侧；gap 取字号与框高的较大者，确保不重叠。
+        static void InsertOffset(string dir, Bbox bbox, out double dx, out double dy)
+        {
+            double h = bbox.Height, w = bbox.Width;
+            double gap = Math.Max(8.0, h * 1.4);
+            switch (dir)
+            {
+                case "up":    dx = 0;            dy = -gap;       break;
+                case "right": dx =  (w + 6.0);   dy = 0;          break;
+                case "left":  dx = -(w + 6.0);   dy = 0;          break;
+                default:      dx = 0;            dy =  gap;       break; // down
+            }
         }
 
         static string Escape(string s) => s.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");

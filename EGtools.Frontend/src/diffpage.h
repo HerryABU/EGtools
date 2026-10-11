@@ -65,6 +65,7 @@ private:
     QPushButton* m_changeColorBtn = nullptr;
     QPushButton* m_textAddedColorBtn = nullptr;
     QPushButton* m_textRemovedColorBtn = nullptr;
+    QComboBox* m_textDirCombo = nullptr;   // 变更旧(蓝)文字插入方向 down/up/right/left
     // 描红/填充可调参数（线宽粗细、填充透明度、填充外扩像素）。
     QSpinBox*      m_lwSpin   = nullptr;   // 线宽(描边粗细) 1..10
     QDoubleSpinBox* m_opacSpin = nullptr;  // 填充透明度 0..1

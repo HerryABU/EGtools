@@ -30,7 +30,7 @@ public static class Program
         string? configPath = null;
         string? baseline = null, target = null, output = null;
         string? pagesArg = null;
-        string? textAddedColor = null, textRemovedColor = null;
+        string? textAddedColor = null, textRemovedColor = null, textInsertDirection = null;
         bool readStdin = false;
         bool locateMode = false;
         for (int i = 0; i < args.Length; i++)
@@ -50,6 +50,7 @@ public static class Program
                 case "-p": case "--pages": pagesArg = take(""); break;
                 case "--text-added-color": textAddedColor = take(""); break;
                 case "--text-removed-color": textRemovedColor = take(""); break;
+                case "--text-insert-direction": textInsertDirection = take(""); break;
                 default:
                     if (a.StartsWith("-")) { L($"Unknown option: {a} (use --help)"); return 2; }
                     if (baseline == null) baseline = a; else if (target == null) target = a; else L($"Ignoring extra argument: {a}");
@@ -102,6 +103,8 @@ public static class Program
         if (o?.HaloPx != null) cfg.Annotation.HaloPx = Math.Max(0, o.HaloPx.Value);
         if (!string.IsNullOrWhiteSpace(textAddedColor)) cfg.Annotation.TextAddedColor = textAddedColor;
         if (!string.IsNullOrWhiteSpace(textRemovedColor)) cfg.Annotation.TextRemovedColor = textRemovedColor;
+        if (!string.IsNullOrWhiteSpace(textInsertDirection)) cfg.Annotation.TextInsertDirection = NormalizeDirection(textInsertDirection);
+        if (!string.IsNullOrWhiteSpace(o?.TextInsertDirection)) cfg.Annotation.TextInsertDirection = NormalizeDirection(o!.TextInsertDirection);
         return DiffEngine.Run(req, cfg, L);
     }
 
@@ -187,6 +190,20 @@ public static class Program
         return arg;
     }
 
+    // 把用户传入的方向归一化为合法值；非法值回退 "down"。
+    static string NormalizeDirection(string? d)
+    {
+        if (string.IsNullOrWhiteSpace(d)) return "down";
+        var v = d.Trim().ToLowerInvariant();
+        return v switch
+        {
+            "up" or "above" or "top" => "up",
+            "right" or "r" => "right",
+            "left" or "l" => "left",
+            _ => "down"
+        };
+    }
+
     static void PrintHelp()
     {
         Console.WriteLine("EGpdf2df v1.0.0 - 对比两份图纸 PDF，输出带红色差异标注的新 PDF");
@@ -206,6 +223,7 @@ public static class Program
         Console.WriteLine("  --config FILE    差异检测配置 (pdf2df config JSON)");
         Console.WriteLine("  --text-added-color H    新增文字改色 #RRGGBB (default #FF0000 红)");
         Console.WriteLine("  --text-removed-color H  删除文字改色 #RRGGBB (default #0000FF 蓝)");
+        Console.WriteLine("  --text-insert-direction D  变更时旧(蓝)文字插入方向 down/up/right/left (default down)");
         Console.WriteLine("  --locate FILE    定位模式：在两份 PDF 指定页查找字符串坐标 (--json 可给路径或名称)");
         Console.WriteLine("  -h, --help       显示帮助 (show help)");
         Console.WriteLine();

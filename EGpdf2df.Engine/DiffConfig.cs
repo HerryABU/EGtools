@@ -64,13 +64,17 @@ namespace EGpdf2df.Engine
             //   TextAddedColor → 新增文字的"改色"（默认红）。文字差异不再画圈/点，
             //                   而是直接把文字重绘成该颜色（覆盖在原黑色文字上）。
             //   TextRemovedColor → 删除文字的"改色"（默认蓝）。被删掉的旧文字以该颜色
-            //                   在原位置重现（如同 git 的 - 行）。
+            //                   插入到原文本框（如同 git 的 - 行）。
+            //   TextInsertDirection → 变更(同序号、内容不同)时，"旧(蓝)"文字相对"新(红)"文字
+            //                   的插入方向：down(下,默认) / up(上) / right(右) / left(左)。
+            //                   新增/删除为单侧文字，直接改色/插入在原文本框，无需方向偏移。
             // 三种状态配色：图形 新增=红、删除=红(虚线)、变更=绿；
             //            文字 新增=红、删除=蓝、变更=红(新)+蓝(旧)。
             public string TraceColor { get; set; } = "#FF0000";   // 新增 / 删除 图形描红
             public string ChangeColor { get; set; } = "#16A34A";  // 变更 图形描红（绿）
             public string TextAddedColor { get; set; } = "#FF0000";   // 新增文字改色（红）
             public string TextRemovedColor { get; set; } = "#0000FF";  // 删除文字改色（蓝）
+            public string TextInsertDirection { get; set; } = "down";  // 变更旧文字插入方向 down/up/right/left
             // 线宽（描红轮廓边线粗细，可调参数：前端数值框 / 配置文件）。亦控制填充外扩后的边线。
             public int LineWidth { get; set; } = 3;
             // 真描红：填充实际变更区域（半透明），而非仅描边轮廓。
@@ -101,7 +105,7 @@ namespace EGpdf2df.Engine
   ""graphicDiff"": { ""enabled"": true, ""method"": ""edge"", ""threshold"": 60, ""excludeText"": true, ""gaussianBlur"": 5, ""minComponentArea"": 24, ""tolerancePx"": 0 },
   ""textDiff"": { ""enabled"": true, ""yTolerance"": 12, ""xTolerance"": 40, ""ignoreCase"": true, ""ignoreWhitespace"": true, ""moveTolerance"": 6 },
   ""registration"": { ""method"": ""phase"", ""toleranceMm"": 2.0, ""maxFeatures"": 5000, ""matchRatio"": 0.15, ""ransacThreshold"": 5.0 },
-  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
+  ""annotation"": { ""traceColor"": ""#FF0000"", ""changeColor"": ""#16A34A"", ""textAddedColor"": ""#FF0000"", ""textRemovedColor"": ""#0000FF"", ""textInsertDirection"": ""down"", ""lineWidth"": 3, ""fillOpacity"": 0.40, ""outline"": true, ""haloPx"": 0, ""fontPathRegular"": ""C:/Windows/Fonts/arial.ttf"", ""fontPathItalic"": ""C:/Windows/Fonts/ariali.ttf"" },
   ""pipeMatch"": { ""enabled"": true, ""materialTableYFraction"": 0.62 }
 }";
 

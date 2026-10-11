@@ -45,6 +45,8 @@ namespace EGpdf2df.Engine
         //   textAdded  = 新增文字改色(默认红)；textRemoved = 删除文字改色(默认蓝)。
         // 文字不再画圈/点，而是直接重绘成对应颜色（git +/- 风格：红=新增，蓝=删除）。
         [JsonPropertyName("colors")] public ReqColors? Colors { get; set; }
+        // 变更时"旧(蓝)"文字相对"新(红)"文字的插入方向：down(下) / up(上) / right(右) / left(左)。
+        [JsonPropertyName("textInsertDirection")] public string? TextInsertDirection { get; set; }
         // 线宽（描红边线粗细，可调参数，覆盖配置文件 lineWidth）。
         [JsonPropertyName("lineWidth")] public double? LineWidth { get; set; }
         // 真描红填充透明度 0~1（覆盖配置文件 fillOpacity）。
@@ -119,7 +121,7 @@ namespace EGpdf2df.Engine
         //   "added"    → new-only              → 图形 TraceColor 实线填充(真描红)；文字重绘为 TextAddedColor(红)
         //   "removed"  → old-only              → 图形 TraceColor 虚线填充(真描红)；旧文字重绘为 TextRemovedColor(蓝)
         //   "changed"  → 同序号/同位置、内容不同 → 图形 ChangeColor 实线填充(真描红,绿)；
-        //                                       文字 新内容→红(覆盖)、旧内容→蓝(原位置下方重现)
+        //                                       文字 新内容→红(覆盖原黑字)、旧内容→蓝(按 textInsertDirection 插入原文本框附近)
         //   "modified" → 旧别名，等同 changed（文本按序号配对后发现内容改动）
         //   "moved"    → 文本仅位移、内容相同   → 不报警（仅记录）
         [JsonPropertyName("changeType")] public string? ChangeType { get; set; }
