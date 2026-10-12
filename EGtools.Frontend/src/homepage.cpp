@@ -6,25 +6,29 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QStyle>
 #include <QSizePolicy>
 #include <QVBoxLayout>
 
 namespace {
 
+// 卡片外框：只给 objectName，颜色/圆角/边框全部由主题 QSS 决定。
+// ⚠️ 之前这里写死了 #ffffff/#dfe4ec，导致**深色主题下首页仍然是浅色**（切主题"花脸"）。
 QFrame* cardFrame()
 {
     auto* f = new QFrame();
-    f->setFrameShape(QFrame::StyledPanel);
-    f->setStyleSheet(
-        "QFrame { background:#ffffff; border:1px solid #dfe4ec; border-radius:10px; }");
+    f->setObjectName(QStringLiteral("homeCard"));
     f->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     return f;
 }
 
-QLabel* heading(const QString& text, int pt, const QString& color)
+// 标题：只设 objectName，字号/颜色交给主题（不再在代码里写死颜色）。
+QLabel* heading(const QString& text, const char* objectName)
 {
     auto* l = new QLabel(text);
-    l->setStyleSheet(QStringLiteral("font-size:%1pt; font-weight:600; color:%2; border:none;").arg(pt).arg(color));
+    l->setObjectName(QString::fromLatin1(objectName));
+    l->setWordWrap(true);
+    l->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     return l;
 }
 
@@ -32,20 +36,21 @@ QLabel* heading(const QString& text, int pt, const QString& color)
 
 HomePage::HomePage(QWidget* parent) : QWidget(parent)
 {
-    setStyleSheet("background:#f5f7fb;");
+    setObjectName(QStringLiteral("homePage"));
 
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
 
     auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
-    scroll->setStyleSheet("QScrollArea{background:#f5f7fb;border:none;}");
+    scroll->setFrameShape(QFrame::NoFrame);
 
     auto* page = new QWidget();
-    page->setStyleSheet("background:#f5f7fb;");
+    page->setObjectName(QStringLiteral("homePage"));
     auto* col = new QVBoxLayout(page);
-    col->setContentsMargins(40, 28, 40, 36);
-    col->setSpacing(18);
+    // 8px 节奏：大块之间 24，块内 12/16
+    col->setContentsMargins(32, 24, 32, 32);
+    col->setSpacing(24);
 
     // ---------------- Header ----------------
     auto* header = new QWidget();
@@ -62,14 +67,15 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
     hl->addWidget(logo);
 
     auto* ht = new QVBoxLayout();
-    ht->setSpacing(2);
-    ht->addWidget(heading(QStringLiteral("EGtools"), 22, "#0b5cad"));
+    ht->setSpacing(4);
+    ht->addWidget(heading(QStringLiteral("EGtools"), "homeTitle"));
     auto* subTitle = new QLabel(QStringLiteral("工程图纸材料表提取与对比工具集 · 区域框选 / 图纸差异"));
+    subTitle->setObjectName(QStringLiteral("homeSubtitle"));
     subTitle->setWordWrap(true);
     subTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     ht->addWidget(subTitle);
     m_kernelBadge = new QLabel();
-    m_kernelBadge->setStyleSheet("color:#5a6472;");
+    m_kernelBadge->setObjectName(QStringLiteral("hintText"));
     ht->addWidget(m_kernelBadge);
     hl->addLayout(ht, 1);
     col->addWidget(header);
@@ -78,14 +84,14 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
     {
         auto* box = cardFrame();
         auto* bl = new QVBoxLayout(box);
-        bl->setContentsMargins(22, 18, 22, 20);
-        bl->setSpacing(10);
-        bl->addWidget(heading(QStringLiteral("快速开始"), 14, "#0b5cad"));
+        bl->setContentsMargins(20, 16, 20, 20);
+        bl->setSpacing(12);
+        bl->addWidget(heading(QStringLiteral("快速开始"), "sectionTitle"));
         bl->addWidget(new QLabel(QStringLiteral(
             "四步完成一次区域提取：打开图纸 → 选择框选模式并框住目标区域 → 交给内核解析 → 查看/导出结果。")));
 
         auto* steps = new QHBoxLayout();
-        steps->setSpacing(14);
+        steps->setSpacing(12);
         const char* texts[] = {
             "1  打开 PDF\n   顶部「打开 PDF」选择等轴测图纸",
             "2  框选区域\n   选「全域表 / 细表 / 材料编号区」后拖拽",
@@ -94,12 +100,12 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
         };
         for (const char* t : texts) {
             auto* s = new QFrame();
-            s->setStyleSheet("QFrame{background:#eef3fa;border:none;border-radius:8px;}");
+            s->setObjectName(QStringLiteral("homeStep"));
             s->setMinimumWidth(0);
             auto* sl = new QVBoxLayout(s);
             sl->setContentsMargins(14, 12, 14, 12);
             auto* lbl = new QLabel(QString::fromUtf8(t));
-            lbl->setStyleSheet("border:none;");
+            lbl->setObjectName(QStringLiteral("homeCardDesc"));
             // 四步说明并排一行，若不让它们换行/不忽略宽度诉求，就会把整页最小宽度
             // 顶到 ~1400px（进而绑架主窗口）。允许换行 + 水平 Ignored 后可自由收窄。
             lbl->setWordWrap(true);
@@ -111,10 +117,8 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
 
         auto* actions = new QHBoxLayout();
         auto* primary = new QPushButton(QStringLiteral("开始使用 — 打开 PDF 框选提取"));
-        primary->setMinimumHeight(38);
-        primary->setStyleSheet(
-            "QPushButton{background:#0b5cad;color:white;border:none;border-radius:6px;padding:0 18px;font-size:10.5pt;}"
-            "QPushButton:hover{background:#0a4e93;}");
+        primary->setObjectName(QStringLiteral("primaryBtn"));
+        primary->setMinimumHeight(34);
         connect(primary, &QPushButton::clicked, this, &HomePage::startExtract);
         actions->addWidget(primary);
 
@@ -128,10 +132,10 @@ HomePage::HomePage(QWidget* parent) : QWidget(parent)
     }
 
     // ---------------- Feature entries ----------------
-    col->addWidget(heading(QStringLiteral("全部功能"), 14, "#0b5cad"));
+    col->addWidget(heading(QStringLiteral("全部功能"), "sectionTitle"));
 
     auto* grid = new QGridLayout();
-    grid->setSpacing(14);
+    grid->setSpacing(16);
     grid->setColumnStretch(0, 1);
     grid->setColumnStretch(1, 1);
 
@@ -191,16 +195,16 @@ QWidget* HomePage::makeCard(const QString& iconText, const QString& title,
     auto* box = cardFrame();
     auto* l = new QVBoxLayout(box);
     l->setContentsMargins(20, 16, 20, 16);
-    l->setSpacing(8);
+    l->setSpacing(12);
 
     auto* top = new QHBoxLayout();
     top->setSpacing(12);
     auto* ic = new QLabel(iconText);
     ic->setFixedSize(38, 38);
     ic->setAlignment(Qt::AlignCenter);
-    ic->setStyleSheet("background:#0b5cad;color:white;border-radius:8px;font-size:15pt;border:none;");
+    ic->setObjectName(QStringLiteral("homeCardIcon"));
     top->addWidget(ic);
-    auto* t = heading(title, 12, "#1a2b3c");
+    auto* t = heading(title, "homeCardTitle");
     t->setWordWrap(true);
     t->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     top->addWidget(t, 1);
@@ -209,14 +213,11 @@ QWidget* HomePage::makeCard(const QString& iconText, const QString& title,
     auto* d = new QLabel(desc);
     d->setWordWrap(true);
     d->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    d->setStyleSheet("color:#4a5568;border:none;");
+    d->setObjectName(QStringLiteral("homeCardDesc"));
     l->addWidget(d);
 
     auto* b = new QPushButton(cta);
-    b->setStyleSheet(
-        "QPushButton{background:#eef3fa;color:#0b5cad;border:1px solid #c6d8ef;"
-        "border-radius:6px;padding:7px 12px;text-align:left;}"
-        "QPushButton:hover{background:#e2ecf9;}");
+    b->setObjectName(QStringLiteral("cardCtaBtn"));
     l->addWidget(b);
     *outBtn = b;
     return box;
@@ -226,6 +227,9 @@ void HomePage::setKernelStatus(bool found, const QString& detail)
 {
     if (!m_kernelBadge) return;
     m_kernelBadge->setText(detail);
-    m_kernelBadge->setStyleSheet(found ? QStringLiteral("color:#1b7f3b;")
-                                       : QStringLiteral("color:#c0392b;"));
+    // 颜色 + 文字同时表达状态（不只靠颜色），样式全部来自主题。
+    m_kernelBadge->setObjectName(found ? QStringLiteral("badgeOk") : QStringLiteral("badgeBad"));
+    m_kernelBadge->setStyleSheet(QString());          // 清掉旧的内联样式，交给主题
+    m_kernelBadge->style()->unpolish(m_kernelBadge);
+    m_kernelBadge->style()->polish(m_kernelBadge);
 }

@@ -26,7 +26,7 @@ CharSegmentPanel::CharSegmentPanel(QWidget* parent) : QWidget(parent)
 
     m_hint = new QLabel(QStringLiteral("这些是导出 Excel 的列。默认内置一套；可新增 / 改名 / 删除 / 重排。"));
     m_hint->setWordWrap(true);
-    m_hint->setStyleSheet(QStringLiteral("QLabel{color:#666;font-size:11px;}"));
+    m_hint->setObjectName(QStringLiteral("hintText"));
 
     m_list = new QListWidget();
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -37,7 +37,7 @@ CharSegmentPanel::CharSegmentPanel(QWidget* parent) : QWidget(parent)
     m_downBtn = new QPushButton(QStringLiteral("下移"));
     m_saveBtn = new QPushButton(QStringLiteral("保存到 config.json"));
     m_resetBtn= new QPushButton(QStringLiteral("恢复默认"));
-    m_resetBtn->setStyleSheet(QStringLiteral("QPushButton{background:#b04a2f;color:#fff;padding:4px 10px;border-radius:4px;}"));
+    m_resetBtn->setObjectName(QStringLiteral("dangerBtn"));
 
     auto* row1 = new QHBoxLayout();
     row1->addWidget(m_addBtn);

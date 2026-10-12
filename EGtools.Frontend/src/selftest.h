@@ -45,3 +45,9 @@ int runScreenshot(const QString& cliDir, const QString& pdfPath, const QString& 
 
 // 「图纸比对」页交互自检：差异清单填充 / 筛选 / 跳到某条差异（不依赖真实比对，秒级）。
 int runDiffUiTest();
+
+// 面板自检：侧栏宽度预设 / 折叠展开 / "折叠后顶部页签接管导航" / 结果面板折叠。
+int runPanelsTest();
+
+// 主题自检：深浅主题是否**真实生效**（用首页当探针 —— 它原先把浅色写死在代码里）。
+int runThemeTest();

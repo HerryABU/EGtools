@@ -44,7 +44,7 @@ int main(int argc, char** argv)
     bool wantSelfTest = false, wantMathTest = false, wantRenderTest = false,
          wantContTest = false, wantBatchTest = false, wantLayout = false,
          wantPaintTest = false, wantUiPaintTest = false, wantShot = false,
-         wantDiffUiTest = false;
+         wantDiffUiTest = false, wantPanelsTest = false, wantThemeTest = false;
     for (int i = 1; i < argc; ++i) {
         if (qstrcmp(argv[i], "--selftest") == 0) wantSelfTest = true;
         else if (qstrcmp(argv[i], "--test-math") == 0) wantMathTest = true;
@@ -56,12 +56,14 @@ int main(int argc, char** argv)
         else if (qstrcmp(argv[i], "--test-ui-paint") == 0) wantUiPaintTest = true;
         else if (qstrcmp(argv[i], "--screenshot") == 0) wantShot = true;
         else if (qstrcmp(argv[i], "--test-diffui") == 0) wantDiffUiTest = true;
+        else if (qstrcmp(argv[i], "--test-panels") == 0) wantPanelsTest = true;
+        else if (qstrcmp(argv[i], "--test-theme") == 0) wantThemeTest = true;
         else if (qstrcmp(argv[i], "--out") == 0 && i + 1 < argc) shotOut = QString::fromLocal8Bit(argv[++i]);
     }
     const bool anyTestMode = wantSelfTest || wantMathTest || wantRenderTest
                              || wantContTest || wantBatchTest || wantLayout
                              || wantPaintTest || wantUiPaintTest || wantShot
-                             || wantDiffUiTest;
+                             || wantDiffUiTest || wantPanelsTest || wantThemeTest;
 
 #ifdef EGTOOLS_WIN32
     // 只有测试模式需要 stdout；正常 GUI 模式什么都不做（GUI 子系统本来就没有控制台）。
@@ -130,6 +132,10 @@ int main(int argc, char** argv)
         QStringLiteral("Concurrency for --test-batch (default 3)."), QStringLiteral("n"), QStringLiteral("3"));
     QCommandLineOption optLayout(QStringLiteral("dump-layout"),
         QStringLiteral("Audit the window layout (minimum sizes + per-pane widths) and exit."));
+    QCommandLineOption optTheme(QStringLiteral("test-theme"),
+        QStringLiteral("Self-test themes: light/dark must actually change rendered luminance."));
+    QCommandLineOption optPanels(QStringLiteral("test-panels"),
+        QStringLiteral("Self-test panels: sidebar width presets, collapse/expand, nav hand-over."));
     QCommandLineOption optDiffUi(QStringLiteral("test-diffui"),
         QStringLiteral("Self-test the PDF-compare page: difference list, filters, jump-to-difference."));
     QCommandLineOption optShot(QStringLiteral("screenshot"),
@@ -161,6 +167,8 @@ int main(int argc, char** argv)
     parser.addOption(optUiPaint);
     parser.addOption(optShot);
     parser.addOption(optDiffUi);
+    parser.addOption(optPanels);
+    parser.addOption(optTheme);
     parser.addOption(optOut);
     parser.addOption(optPage);
     parser.addOption(optOpen);
@@ -180,6 +188,16 @@ int main(int argc, char** argv)
     if (parser.isSet(optCont)) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
         return runContinuousTest(parser.value(optCli), parser.value(optPdf));
+    }
+
+    if (parser.isSet(optTheme)) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        return runThemeTest();
+    }
+
+    if (parser.isSet(optPanels)) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        return runPanelsTest();
     }
 
     if (parser.isSet(optDiffUi)) {

@@ -109,7 +109,7 @@ PageNavPanel::PageNavPanel(QWidget* parent) : QWidget(parent)
 
     m_hint = new QLabel(QStringLiteral("未打开 PDF"));
     m_hint->setWordWrap(true);
-    m_hint->setStyleSheet(QStringLiteral("color:#5a6472;font-size:8.5pt;"));
+    m_hint->setObjectName(QStringLiteral("hintText"));
 
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(6, 6, 6, 6);

@@ -24,6 +24,7 @@ class QStackedWidget;
 class QScrollArea;
 class QActionGroup;
 class QTabBar;
+class QToolButton;
 class QGroupBox;
 class QSplitter;
 class HomePage;
@@ -61,6 +62,19 @@ public:
     // 切到「PDF 工具」页 —— `onOpen()` 会做这一步（showPage(1)），
     // 自检若只调 openPdf() 而不导航，画布其实处于隐藏页里，抓图只会得到底色。
     void     showPdfPageForTest() { showPage(PagePdf); }
+
+    // 侧栏状态（自检/布局审计用）：折叠与宽度预设是否真的生效，靠这几个数字核对。
+    bool sidebarVisible() const { return m_sidebarVisible; }
+    int  sidebarWidthForTest() const { return m_sidebarWidth; }
+    bool topNavVisibleForTest() const;   // 定义在 .cpp（QTabBar 此处只是前置声明）
+    bool railVisibleForTest() const;     // 同上
+    // ⚠️ 用 isHidden() 而不是 isVisible()：结果面板在 QStackedWidget 的非当前页里，
+    //    isVisible() 会因为父链被隐藏而恒为 false。isHidden() 只反映控件自身被显式隐藏。
+    bool resultsVisibleForTest() const { return m_tabs && !m_tabs->isHidden(); }
+    // 侧栏/面板的操作在界面上是私有的（只该由菜单触发），测试用这几个转发入口。
+    void setSidebarVisibleForTest(bool v) { setSidebarVisible(v); }
+    void setSidebarWidthForTest(int px)   { setSidebarWidth(px); }
+    void setResultsVisibleForTest(bool v) { setResultsVisible(v); }
 
 public slots:
     void onOpen();
@@ -119,6 +133,11 @@ private:
     // （导航收纳为顶部标签条，缩略图栏下放到底部标签页，画布独占整宽）。
     void setStackedLayout(bool stacked);
     void applyLayoutMode();
+    // ---- 侧栏：固定宽度 + 折叠（替代旧版"拖分割条"）----
+    void setSidebarVisible(bool visible);
+    void setResultsVisible(bool visible);   // 底部结果面板折叠（Ctrl+J）
+    void setSidebarWidth(int px);          // 由预设调用（紧凑/标准/宽）
+    void updateNavSurfaces();              // 决定"导航树 / 顶部页签 / 窄导航条"谁显示
     bool stackedLayout() const { return m_stackedLayout; }
     // 主题切换后需要手动刷新的少数几处（画布视口底色等自绘/局部样式）。
     void refreshTheme();
@@ -169,11 +188,18 @@ private:
 
     // ---- 布局模式（侧栏式 / 竖向堆叠式）----
     bool       m_stackedLayout = false;
-    QTabBar*   m_topNav    = nullptr;   // 堆叠模式下的顶部导航条（取代左侧导航树）
-    QWidget*   m_sidePane  = nullptr;   // 侧栏容器（导航树 + 内核设置）
+    QTabBar*   m_topNav    = nullptr;   // 顶部导航条（侧栏被折叠 / 堆叠模式下接管导航）
+    QWidget*   m_sidePane  = nullptr;   // 侧栏容器（导航树 + 内核设置），**固定宽度**
+    QWidget*   m_sideRail  = nullptr;   // 侧栏折叠后留在左边的窄"导航条"（含展开按钮）
+    QToolButton* m_railExpandBtn = nullptr;
+    QAction*   m_navToggleA = nullptr;   // 视图 → 导航栏（Ctrl+B）
+    QAction*   m_resultsToggleA = nullptr; // 视图 → 结果面板（Ctrl+J）
     QSplitter* m_canvasSplit = nullptr; // 缩略图 | 画布
-    QSplitter* m_navSplit    = nullptr; // 侧栏 | 内容页
     QWidget*   m_kernelBox   = nullptr; // 内核设置（滚动容器；侧栏式在侧栏、堆叠式在底部标签）
+    // 侧栏：**固定宽度、不提供拖动改宽**（专业软件用"折叠/切换"而不是推拉）。
+    // 宽度由预设决定（紧凑/标准/宽），持久化到 QSettings。
+    int        m_sidebarWidth = 220;
+    bool       m_sidebarVisible = true;
     void syncTopNav(int page);
     CharSegmentPanel* m_charPanel = nullptr;
     QTreeWidget* m_nav = nullptr;

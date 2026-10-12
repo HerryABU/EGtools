@@ -3,6 +3,7 @@
 #include "kernelclient.h"
 
 #include <QCheckBox>
+#include <QStyle>
 #include <QSizePolicy>
 #include <QScrollArea>
 #include <QComboBox>
@@ -303,7 +304,7 @@ MaterialExtractPage::MaterialExtractPage(QWidget* parent) : QWidget(parent)
     m_summary->setWordWrap(true);
 
     m_backendLbl = new QLabel();
-    m_backendLbl->setStyleSheet(QStringLiteral("QLabel{color:#5a6472;}"));
+    m_backendLbl->setObjectName(QStringLiteral("hintText"));
 
     auto* runRow = new QHBoxLayout();
     runRow->addWidget(m_startBtn);
@@ -409,8 +410,10 @@ void MaterialExtractPage::setCliDir(const QString& dir)
     m_backendLbl->setText(have
         ? KernelClient::describe(QStringLiteral("EGpdf2excel"))
         : QStringLiteral("未找到 EGpdf2excel 内核 — 请在顶部设置 CLI 目录"));
-    m_backendLbl->setStyleSheet(have ? QStringLiteral("QLabel{color:#5a6472;}")
-                                     : QStringLiteral("QLabel{color:#c0392b;}"));
+    m_backendLbl->setObjectName(have ? QStringLiteral("hintText") : QStringLiteral("badgeBad"));
+    m_backendLbl->setStyleSheet(QString());
+    m_backendLbl->style()->unpolish(m_backendLbl);
+    m_backendLbl->style()->polish(m_backendLbl);
     // 并发能力提示：内嵌后端的 .NET 运行时是进程级单例，融合层会串行化调用，
     // 所以并发数只对命令行后端真正提速 —— 这一点必须明说，否则用户会以为没生效。
     if (m_concHint)

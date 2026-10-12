@@ -6,6 +6,8 @@
 #include "materialextractpage.h"
 #include "mainwindow.h"
 #include "diffpage.h"
+#include "homepage.h"
+#include "theme.h"
 
 #include <QDir>
 #include <QElapsedTimer>
@@ -502,6 +504,11 @@ int runLayoutDump()
         ++shown;
     }
 
+    out << "\n导航面: 侧栏宽=" << w->sidebarWidthForTest() << "px"
+        << "  侧栏可见=" << (w->sidebarVisible() ? 1 : 0)
+        << "  顶部页签可见=" << (w->topNavVisibleForTest() ? 1 : 0)
+        << "  窄导航条可见=" << (w->railVisibleForTest() ? 1 : 0) << "\n";
+
     out << "\n标签页清单（核对「窗口堆叠」是否真的把面板收进来了）:\n";
     for (QWidget* kid : w->findChildren<QWidget*>()) {
         if (auto* tw = qobject_cast<QTabWidget*>(kid)) {
@@ -997,6 +1004,125 @@ int runDiffUiTest()
     out.flush();
     if (fails) { out << "[FAIL] 比对页交互自检（" << fails << " 项）\n"; out.flush(); return 1; }
     out << "[PASS] 比对页交互：清单填充 / 6 种筛选 / 跳转定位 全部正确\n";
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 面板（侧栏 / 结果面板）自检
+//
+// 用户明确要求"侧边不要推拉"，所以侧栏改成了「固定宽度 + 一键折叠 + 宽度预设」。
+// 这套行为是纯状态机，正好可以完全无头验证 —— 而且必须验证，因为"折叠了但导航没接管"
+// 这类问题只有量出来才看得见（用户会直接卡在没法切换页面）。
+// ---------------------------------------------------------------------------
+int runPanelsTest()
+{
+    out << "=== 面板（侧栏 / 结果面板）自检 ===\n";
+
+    MainWindow w;
+    w.resize(1280, 860);
+    w.show();
+    for (int i = 0; i < 20; ++i) { QApplication::processEvents(); QThread::msleep(10); }
+
+    int fails = 0;
+    auto check = [&](const QString& what, bool ok, const QString& detail = QString()) {
+        out << "  " << (ok ? "OK  " : "BAD ") << what
+            << (detail.isEmpty() ? QString() : QStringLiteral("  [%1]").arg(detail)) << "\n";
+        if (!ok) ++fails;
+    };
+
+    // ---- 1. 宽度预设：三种档位都要真的落到控件上（而不是只改了个变量）----
+    struct { int px; const char* label; } presets[] = { {180,"紧凑"}, {220,"标准"}, {280,"宽"} };
+    for (const auto& pr : presets) {
+        w.setSidebarWidthForTest(pr.px);
+        QApplication::processEvents();
+        const bool ok = (w.sidebarWidthForTest() == pr.px);
+        check(QStringLiteral("宽度预设「%1」= %2px").arg(QString::fromUtf8(pr.label)).arg(pr.px), ok,
+              QString::number(w.sidebarWidthForTest()));
+    }
+
+    // ---- 2. 折叠：侧栏消失、窄导航条出现、**顶部页签接管导航** ----
+    w.setSidebarVisibleForTest(false);
+    QApplication::processEvents();
+    check(QStringLiteral("折叠后：侧栏不可见"), !w.sidebarVisible());
+    check(QStringLiteral("折叠后：出现窄导航条"), w.railVisibleForTest());
+    check(QStringLiteral("折叠后：顶部页签接管导航（否则用户无法切页）"), w.topNavVisibleForTest());
+
+    // ---- 3. 展开：恢复原状，且不重复显示两种导航 ----
+    w.setSidebarVisibleForTest(true);
+    QApplication::processEvents();
+    check(QStringLiteral("展开后：侧栏可见"), w.sidebarVisible());
+    check(QStringLiteral("展开后：窄导航条隐藏"), !w.railVisibleForTest());
+    check(QStringLiteral("展开后：顶部页签隐藏（任意时刻只有一处导航入口）"), !w.topNavVisibleForTest());
+
+    // ---- 4. 结果面板折叠 ----
+    w.setResultsVisibleForTest(false);
+    QApplication::processEvents();
+    check(QStringLiteral("折叠后：结果面板不可见"), !w.resultsVisibleForTest());
+    w.setResultsVisibleForTest(true);
+    QApplication::processEvents();
+    check(QStringLiteral("展开后：结果面板可见"), w.resultsVisibleForTest());
+
+    out.flush();
+    if (fails) { out << "[FAIL] 面板自检（" << fails << " 项）\n"; out.flush(); return 1; }
+    out << "[PASS] 面板：宽度预设 / 折叠展开 / 导航面切换 全部正确\n";
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 主题自检：「切到深色，界面必须真的变暗」
+//
+// 这条自检针对一个具体的历史 bug：首页把整套浅色写死在代码里（#f5f7fb / #0b5cad…），
+// 于是切到深色主题时**其它页面变暗、首页还是浅色** —— 典型的"花脸"。
+// 现在颜色全部来自主题，所以可以量化验证：同一控件在两种主题下的平均亮度必须差得够远。
+// ---------------------------------------------------------------------------
+int runThemeTest()
+{
+    out << "=== 主题自检 ===\n";
+    int fails = 0;
+    auto check = [&](const QString& what, bool ok, const QString& detail = QString()) {
+        out << "  " << (ok ? "OK  " : "BAD ") << what
+            << (detail.isEmpty() ? QString() : QStringLiteral("  [%1]").arg(detail)) << "\n";
+        if (!ok) ++fails;
+    };
+    auto avgLum = [](const QImage& img) {
+        const LumaStats s = imageLuminanceStats(img);
+        return s.avg;
+    };
+
+    // 1) 调色板本身：窗口底色必须一浅一深（不是只改了 QSS 变量）。
+    Theme::apply(Theme::Light);
+    const QString lt = Theme::color(Theme::Light, Theme::WindowBg);
+    Theme::apply(Theme::Dark);
+    const QString dt = Theme::color(Theme::Dark, Theme::WindowBg);
+    check(QStringLiteral("浅/深主题的窗口底色不同"), lt != dt, lt + QStringLiteral(" vs ") + dt);
+    check(QStringLiteral("深色窗口底色确实偏暗"), QColor(dt).lightness() < 80,
+          QStringLiteral("lightness=%1").arg(QColor(dt).lightness()));
+
+    // 2) 真实控件：同一张首页分别在两种主题下渲染，亮度必须拉开差距。
+    //    （首页是"写死浅色"的重灾区，用它当探针最有意义。）
+    double lumLight = 0, lumDark = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        const Theme::Mode mode = (pass == 0) ? Theme::Light : Theme::Dark;
+        Theme::apply(mode);
+        HomePage page;
+        page.resize(900, 620);
+        page.show();
+        for (int i = 0; i < 12; ++i) { QApplication::processEvents(); QThread::msleep(10); }
+        const double l = avgLum(page.grab().toImage());
+        if (pass == 0) lumLight = l; else lumDark = l;
+        out << "    " << (mode == Theme::Dark ? "深色" : "浅色")
+            << "主题下首页平均亮度 = " << QString::number(l, 'f', 1) << "\n";
+    }
+    check(QStringLiteral("深色主题下首页明显变暗（修复前首页恒定浅色）"),
+          lumDark + 60.0 < lumLight,
+          QStringLiteral("%1 -> %2").arg(lumLight, 0, 'f', 1).arg(lumDark, 0, 'f', 1));
+
+    Theme::apply(Theme::current());   // 还原用户设置
+    out.flush();
+    if (fails) { out << "[FAIL] 主题自检（" << fails << " 项）\n"; out.flush(); return 1; }
+    out << "[PASS] 主题：深浅两套都真实生效（含首页等原先写死颜色的页面）\n";
     out.flush();
     return 0;
 }

@@ -23,12 +23,14 @@ public:
         CanvasBg,      // 画布底（PDF 页面周围）
         Text,          // 主文字
         TextMuted,     // 次要文字
-        Accent,        // 主色（按钮/选中）
+        Accent,        // 主色（**全界面唯一的强调色**：选中/主操作/焦点）
         AccentHover,
         Border,        // 分隔线/边框
         Success,       // 成功
         Danger,        // 失败
-        Warning        // 进行中
+        Warning,       // 进行中
+        HeaderBg,      // 表头 / 面板标题栏 / 次级表面
+        SelBg          // 选中/悬停的浅色底
     };
 
     static Mode    current();

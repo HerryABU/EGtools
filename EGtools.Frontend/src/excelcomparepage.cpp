@@ -36,7 +36,7 @@ ExcelComparePage::ExcelComparePage(QWidget* parent) : QWidget(parent)
     newRow->addWidget(newBtn);
 
     m_runBtn = new QPushButton(QStringLiteral("开始比对（输出变化清单 .xlsx）"));
-    m_runBtn->setStyleSheet(QStringLiteral("QPushButton{background:#2d5d8a;color:#fff;padding:6px 12px;border-radius:5px;font-weight:600;}"));
+    m_runBtn->setObjectName(QStringLiteral("primaryBtn"));
 
     m_status = new QLabel(QStringLiteral("内核状态：未探测"));
     m_status->setWordWrap(true);

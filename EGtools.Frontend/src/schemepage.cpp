@@ -54,7 +54,7 @@ SchemePage::SchemePage(SchemeStore* store, QWidget* parent)
     auto* title = new QLabel(QStringLiteral("框选方案 — 保存 / 复用 / 修改 / 导出"));
     title->setWordWrap(true);
     title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    title->setStyleSheet("font-size:13pt;font-weight:600;color:#0b5cad;");
+    title->setObjectName(QStringLiteral("sectionTitle"));
     root->addWidget(title);
 
     auto* split = new QSplitter(Qt::Horizontal);
@@ -106,7 +106,7 @@ SchemePage::SchemePage(SchemeStore* store, QWidget* parent)
     auto* hint = new QLabel(QStringLiteral(
         "直接在表格里改「类型 / 页 / X / Y / 宽 / 高」即可修改字段（无需编辑 JSON）。\n"
         "坐标单位为 PDF 点，左上原点、y 向下；「重写框选」会回到画布重新框一次。"));
-    hint->setStyleSheet("color:#5a6472;");
+    hint->setObjectName(QStringLiteral("hintText"));
     // 允许换行 + 忽略宽度诉求：否则这段说明会把整个方案页（进而主窗口）顶宽。
     hint->setWordWrap(true);
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -134,7 +134,7 @@ SchemePage::SchemePage(SchemeStore* store, QWidget* parent)
     root->addWidget(split, 1);
 
     m_current = new QLabel(QStringLiteral("未选中方案"));
-    m_current->setStyleSheet("color:#5a6472;");
+    m_current->setObjectName(QStringLiteral("hintText"));
     root->addWidget(m_current);
 
     // ---- wiring ----

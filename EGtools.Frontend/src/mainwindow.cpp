@@ -18,6 +18,8 @@
 #include <QSizePolicy>
 #include <QAction>
 #include <QActionGroup>
+#include <QSignalBlocker>
+#include <QToolButton>
 #include <QFutureWatcher>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QComboBox>
@@ -269,6 +271,38 @@ void MainWindow::buildUi()
         }
 
         mView->addSeparator();
+        // ---- 面板显示：导航栏 / 结果面板（折叠式，不靠推拉）----
+        m_navToggleA = mView->addAction(QStringLiteral("导航栏(&N)"));
+        m_navToggleA->setCheckable(true);
+        m_navToggleA->setShortcut(QKeySequence(QStringLiteral("Ctrl+B")));
+        m_navToggleA->setToolTip(QStringLiteral("折叠/展开左侧导航栏（Ctrl+B）。\n"
+                                               "折叠后导航改用顶部页签，画布获得整幅宽度。"));
+        connect(m_navToggleA, &QAction::toggled, this, [this](bool on){ setSidebarVisible(on); });
+
+        m_resultsToggleA = mView->addAction(QStringLiteral("结果面板(&R)"));
+        m_resultsToggleA->setCheckable(true);
+        m_resultsToggleA->setShortcut(QKeySequence(QStringLiteral("Ctrl+J")));
+        m_resultsToggleA->setToolTip(QStringLiteral("折叠/展开底部结果面板（Ctrl+J）。"));
+        connect(m_resultsToggleA, &QAction::toggled, this, [this](bool on){ setResultsVisible(on); });
+
+        // 侧栏宽度预设：用"选一档"替代"拖分割条"。
+        auto* widthMenu = mView->addMenu(QStringLiteral("导航栏宽度"));
+        auto* widthGroup = new QActionGroup(this);
+        widthGroup->setExclusive(true);
+        const int widthNow = QSettings().value(QStringLiteral("ui/sidebarWidth"), 220).toInt();
+        struct { const char* label; int px; } widths[] = {
+            { "紧凑 (180)", 180 }, { "标准 (220)", 220 }, { "宽 (280)", 280 },
+        };
+        for (const auto& w : widths) {
+            auto* a = widthMenu->addAction(QString::fromUtf8(w.label));
+            a->setCheckable(true);
+            a->setChecked(w.px == widthNow);
+            const int px = w.px;
+            widthGroup->addAction(a);
+            connect(a, &QAction::triggered, this, [this, px]{ setSidebarWidth(px); });
+        }
+
+        mView->addSeparator();
         auto* themeGroup = new QActionGroup(this);
         themeGroup->setExclusive(true);
         const Theme::Mode cur = Theme::current();
@@ -291,12 +325,15 @@ void MainWindow::buildUi()
         }
     }
 
-    auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));    auto* manualA = mHelp->addAction(QStringLiteral("使用说明书(&M)"));
-    manualA->setShortcut(QKeySequence::HelpContents); // F1
+    auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));    auto* manualA = mHelp->addAction(QStringLiteral("使用说明书(&M)"));    manualA->setShortcut(QKeySequence::HelpContents); // F1
     connect(manualA, &QAction::triggered, this, &MainWindow::onManual);
     mHelp->addSeparator();
     auto* aboutA = mHelp->addAction(QStringLiteral("关于(&A)"));
     connect(aboutA, &QAction::triggered, this, &MainWindow::onAbout);
+
+    // 面板折叠按钮常驻工具栏（放在视图菜单之后：动作此时才创建）——
+    // 这是"不用推拉"的关键：想腾地方点一下就行。
+    if (m_navToggleA) { tb->addSeparator(); tb->addAction(m_navToggleA); }
 
     // Center: view (left) + results (right).
     // 画布走工厂：探测到可用的硬件 OpenGL 就用 GPU 壳，否则用 CPU 光栅壳 —— GPU
@@ -319,7 +356,7 @@ void MainWindow::buildUi()
     scroll->setWidget(m_view.widget);
     scroll->setWidgetResizable(false);
     scroll->setAlignment(Qt::AlignCenter);
-    scroll->viewport()->setStyleSheet(QStringLiteral("background:#3a3e44;"));
+    scroll->viewport()->setObjectName(QStringLiteral("canvasViewport"));
 
     // 连续滚动视图（Adobe 式）：一屏多页 + 懒渲染 + 任意页框选。
     m_contView = new ContinuousPdfView();
@@ -342,7 +379,7 @@ void MainWindow::buildUi()
     m_contScroll->setWidget(m_contView);
     m_contScroll->setWidgetResizable(false);
     m_contScroll->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-    m_contScroll->viewport()->setStyleSheet(QStringLiteral("background:#16191d;"));
+    m_contScroll->viewport()->setObjectName(QStringLiteral("canvasViewport"));
     m_contView->attachScrollArea(m_contScroll);
 
     // 两种视图叠在同一个位置，靠 QStackedWidget 切换 —— 其余界面（缩放/框选/结果面板）
@@ -611,7 +648,9 @@ void MainWindow::buildUi()
     m_nav->setMinimumWidth(140);
     m_nav->setMaximumWidth(400);
     m_nav->setHeaderHidden(true);
-    m_nav->setStyleSheet(QStringLiteral("QTreeWidget{font-size:13px;} QTreeWidget::item{padding:7px 6px;} QTreeWidget::item:has-children{font-weight:bold;}"));
+    // 样式全部来自主题（QTreeWidget#navTree）：行高、选中色、去掉连接线，
+    // 代码里不再写死字号/内边距（写死就必然在某个主题下不协调）。
+    m_nav->setObjectName(QStringLiteral("navTree"));
     auto mkNav = [&](const QString& label, int page, int ocrMode = 0) {
         auto* it = new QTreeWidgetItem(QStringList(label));
         it->setData(0, Qt::UserRole, page);
@@ -656,17 +695,55 @@ void MainWindow::buildUi()
     m_stack->addWidget(m_schemes);  // PageScheme
     m_stack->addWidget(m_materialPage); // PageMaterials (batch PDF → material tables)
 
-    // 侧栏 = 导航树（占满剩余高度）+ 底部「内核设置」（两行竖排）。
-    // 设置类控件放在侧栏底部，既不占画布的纵向空间，也不再把窗口横向撑宽。
+    // ---- 侧栏：固定宽度（**不提供拖动改宽**）----
+    // 为什么不做拖拽：专业软件里靠拖分割条来"推拉"侧栏并不好用（宽度每次都要重新找，
+    // 小窗口下还容易把内容挤变形）。AutoCAD/Revit 的 Palette 用的是「折叠 / 自动隐藏」，
+    // VS Code 用的是「Ctrl+B + 固定宽度 + 活动栏」。这里同款：宽度由预设给（紧凑/标准/宽），
+    // 想腾地方就一键折叠（Ctrl+B），折叠后左边只留一条窄"导航条"。
     auto* sidePane = new QWidget();
+    sidePane->setObjectName(QStringLiteral("sidePane"));
     auto* sideLay = new QVBoxLayout(sidePane);
     sideLay->setContentsMargins(0, 0, 0, 0);
-    sideLay->setSpacing(6);
+    sideLay->setSpacing(0);
+
+    // 面板标题栏：标题 + 折叠按钮（专业软件每个面板都有标题栏，标题栏上放折叠/关闭）。
+    auto* sideHeader = new QWidget();
+    sideHeader->setObjectName(QStringLiteral("panelHeader"));
+    auto* sideHeaderLay = new QHBoxLayout(sideHeader);
+    sideHeaderLay->setContentsMargins(10, 6, 6, 6);
+    sideHeaderLay->setSpacing(6);
+    auto* sideTitle = new QLabel(QStringLiteral("导航"));
+    sideTitle->setObjectName(QStringLiteral("panelTitle"));
+    auto* sideCollapseBtn = new QToolButton();
+    sideCollapseBtn->setObjectName(QStringLiteral("panelToolBtn"));
+    sideCollapseBtn->setText(QStringLiteral("«"));
+    sideCollapseBtn->setToolTip(QStringLiteral("折叠导航栏（Ctrl+B）"));
+    sideCollapseBtn->setAutoRaise(true);
+    connect(sideCollapseBtn, &QToolButton::clicked, this, [this]{ setSidebarVisible(false); });
+    sideHeaderLay->addWidget(sideTitle);
+    sideHeaderLay->addStretch(1);
+    sideHeaderLay->addWidget(sideCollapseBtn);
+    sideLay->addWidget(sideHeader);
     sideLay->addWidget(m_nav, 1);
     sideLay->addWidget(kernelScroll);
-    sidePane->setMinimumWidth(190);
-    sidePane->setMaximumWidth(380);
     m_kernelBox = kernelScroll;      // 布局模式切换时搬动的就是这层滚动容器
+
+    // 折叠后留在左边的窄"导航条"：只放一个展开按钮（与 AutoCAD 折叠成标题条同款思路，
+    // 但更明确 —— 用户一眼能看到"这里可以展开回去"）。
+    m_sideRail = new QWidget();
+    m_sideRail->setObjectName(QStringLiteral("sideRail"));
+    auto* railLay = new QVBoxLayout(m_sideRail);
+    railLay->setContentsMargins(0, 6, 0, 0);
+    railLay->setSpacing(0);
+    m_railExpandBtn = new QToolButton();
+    m_railExpandBtn->setObjectName(QStringLiteral("railBtn"));
+    m_railExpandBtn->setText(QStringLiteral("»"));
+    m_railExpandBtn->setToolTip(QStringLiteral("展开导航栏（Ctrl+B）"));
+    m_railExpandBtn->setAutoRaise(true);
+    connect(m_railExpandBtn, &QToolButton::clicked, this, [this]{ setSidebarVisible(true); });
+    railLay->addWidget(m_railExpandBtn, 0, Qt::AlignHCenter);
+    railLay->addStretch(1);
+    m_sideRail->setFixedWidth(30);
 
     // 顶部导航条：**竖向堆叠模式**下用它取代左侧导航列 —— 导航从"横着占一列"
     // 变成"竖着占一条"，把整块横向空间让给画布。条目与左侧导航树一致。
@@ -694,13 +771,15 @@ void MainWindow::buildUi()
         });
     }
 
-    m_navSplit = new QSplitter(Qt::Horizontal);
-    m_navSplit->addWidget(sidePane);
-    m_navSplit->addWidget(m_stack);
-    m_navSplit->setStretchFactor(0, 0);
-    m_navSplit->setStretchFactor(1, 1);
-    m_navSplit->setChildrenCollapsible(false);
-    m_navSplit->setSizes({210, 1060});   // 侧栏初始 210，之后用户可随意拖
+    // ---- 主体：侧栏（固定宽）+ 窄导航条 + 内容页 ----
+    // 用普通 QHBoxLayout，**不是 QSplitter**：侧栏宽度不给拖，改由预设 + 折叠控制。
+    auto* bodyRow = new QWidget();
+    auto* bodyLay = new QHBoxLayout(bodyRow);
+    bodyLay->setContentsMargins(0, 0, 0, 0);
+    bodyLay->setSpacing(0);
+    bodyLay->addWidget(sidePane);
+    bodyLay->addWidget(m_sideRail);
+    bodyLay->addWidget(m_stack, 1);
 
     // 中央 = 顶部导航条（堆叠模式可见）+ 主体。放在同一个 QVBox 里，
     // 于是"竖向堆叠"只是切换可见性/位置，不需要重建控件树。
@@ -709,7 +788,7 @@ void MainWindow::buildUi()
     centralLay->setContentsMargins(0, 0, 0, 0);
     centralLay->setSpacing(0);
     centralLay->addWidget(m_topNav);
-    centralLay->addWidget(m_navSplit, 1);
+    centralLay->addWidget(bodyRow, 1);
     setCentralWidget(central);
     m_sidePane = sidePane;
 
@@ -728,6 +807,31 @@ void MainWindow::buildUi()
     connect(m_home, &HomePage::schemesRequested,     this, [this]{ navTo(PageScheme); });
     connect(m_home, &HomePage::manualRequested,      this, &MainWindow::onManual);
     connect(m_home, &HomePage::aboutRequested,       this, &MainWindow::onAbout);
+
+    // ---- 启动时恢复侧栏状态（可见性 + 宽度预设），再据此决定导航面 ----
+    // 环境变量可强制（排障/审计用，与 EGTOOLS_LAYOUT 同一套思路）：
+    //   EGTOOLS_SIDEBAR=0/1 折叠或展开；EGTOOLS_SIDEBAR_WIDTH=180/220/280 指定宽度。
+    {
+        QSettings st;
+        m_sidebarWidth = qBound(160, st.value(QStringLiteral("ui/sidebarWidth"), 220).toInt(), 360);
+        m_sidebarVisible = st.value(QStringLiteral("ui/sidebarVisible"), true).toBool();
+        const QByteArray envW = qgetenv("EGTOOLS_SIDEBAR_WIDTH");
+        if (!envW.isEmpty()) m_sidebarWidth = qBound(160, envW.toInt(), 360);
+        const QByteArray envV = qgetenv("EGTOOLS_SIDEBAR");
+        if (!envV.isEmpty()) m_sidebarVisible = (envV.toInt() != 0);
+        if (m_sidePane) m_sidePane->setFixedWidth(m_sidebarWidth);
+        if (m_navToggleA) { QSignalBlocker b(m_navToggleA); m_navToggleA->setChecked(m_sidebarVisible); }
+        bool resultsVisible = st.value(QStringLiteral("ui/resultsVisible"), true).toBool();
+        const QByteArray envR = qgetenv("EGTOOLS_RESULTS");
+        if (!envR.isEmpty()) resultsVisible = (envR.toInt() != 0);
+        if (m_tabs) m_tabs->setVisible(resultsVisible);
+        if (m_resultsToggleA) { QSignalBlocker b(m_resultsToggleA); m_resultsToggleA->setChecked(resultsVisible); }
+        updateNavSurfaces();
+        log(QStringLiteral("面板：导航栏%1（宽 %2px）· 结果面板%3")
+                .arg(m_sidebarVisible ? QStringLiteral("展开") : QStringLiteral("折叠"))
+                .arg(m_sidebarWidth)
+                .arg(resultsVisible ? QStringLiteral("展开") : QStringLiteral("折叠")));
+    }
 
     refreshTheme();      // 视口底色按当前主题初始化
 
@@ -1170,10 +1274,8 @@ void MainWindow::setContinuousMode(bool continuous)
 
 void MainWindow::refreshTheme()
 {
-    // 画布周围一圈底色是自绘/视口级样式，QSS 覆盖不到，只能显式刷。
-    const QString canvasBg = Theme::color(Theme::CanvasBg);
-    if (m_scroll)     m_scroll->viewport()->setStyleSheet(QStringLiteral("background:%1;").arg(canvasBg));
-    if (m_contScroll) m_contScroll->viewport()->setStyleSheet(QStringLiteral("background:%1;").arg(canvasBg));
+    // 画布视口底色走主题 QSS 的 QWidget#canvasViewport（见 theme.cpp），
+    // 这里只负责让自绘画布重新绘制（QSS 覆盖不到自绘内容）。
     if (m_view.widget) m_view.widget->update();
     if (m_contView)    m_contView->update();
 }
@@ -1188,6 +1290,72 @@ void MainWindow::clearRegionsAll()
 {
     if (m_view.canvas) m_view.canvas->clearRegions();
     if (m_contView)    m_contView->clearRegions();
+}
+
+bool MainWindow::topNavVisibleForTest() const
+{
+    return m_topNav && m_topNav->isVisible();
+}
+
+bool MainWindow::railVisibleForTest() const
+{
+    return m_sideRail && m_sideRail->isVisible();
+}
+
+// ---------------------------------------------------------------- 侧栏（固定宽 + 折叠）
+//
+// 设计取舍：**不做拖拽改宽**。理由见 buildUi 里的注释 —— 专业软件（AutoCAD/Revit Palette、
+// VS Code）都是"固定宽度 + 折叠/自动隐藏"，想腾地方就一键收起来，不需要反复推拉。
+
+void MainWindow::setSidebarVisible(bool visible)
+{
+    m_sidebarVisible = visible;
+    QSettings().setValue(QStringLiteral("ui/sidebarVisible"), visible);
+    updateNavSurfaces();
+    if (m_navToggleA) {
+        QSignalBlocker blk(m_navToggleA);
+        m_navToggleA->setChecked(visible);
+    }
+    log(visible ? QStringLiteral("导航栏已展开") : QStringLiteral("导航栏已折叠（导航改用顶部页签）"));
+}
+
+void MainWindow::setSidebarWidth(int px)
+{
+    m_sidebarWidth = qBound(160, px, 360);
+    QSettings().setValue(QStringLiteral("ui/sidebarWidth"), m_sidebarWidth);
+    if (m_sidePane) {
+        // 固定宽度：既不拉伸也不被内容顶宽 —— 这是"不推拉"的前提。
+        m_sidePane->setFixedWidth(m_sidebarWidth);
+    }
+}
+
+// 决定三种导航面谁显示。**任何时刻只有一个导航入口**（避免重复、也避免布局被顶宽）：
+//   侧栏树  ← 侧栏式 + 侧栏展开
+//   顶部页签 ← 侧栏折叠，或竖向堆叠式
+//   窄导航条 ← 侧栏式 + 侧栏折叠（仅一个展开按钮）
+void MainWindow::updateNavSurfaces()
+{
+    const bool showSide  = !m_stackedLayout && m_sidebarVisible;
+    const bool showRail  = !m_stackedLayout && !m_sidebarVisible;
+    const bool showTop   = m_stackedLayout || !m_sidebarVisible;
+
+    if (m_sidePane) m_sidePane->setVisible(showSide);
+    if (m_sideRail) m_sideRail->setVisible(showRail);
+    if (m_topNav)   m_topNav->setVisible(showTop);
+    if (showTop)    syncTopNav(m_stack ? m_stack->currentIndex() : 0);
+}
+
+// 底部「结果面板」折叠：与侧栏同一套思路（面板要么用，要么收起来，不靠推拉）。
+void MainWindow::setResultsVisible(bool visible)
+{
+    if (m_tabs) m_tabs->setVisible(visible);
+    QSettings().setValue(QStringLiteral("ui/resultsVisible"), visible);
+    if (m_resultsToggleA) {
+        QSignalBlocker blk(m_resultsToggleA);
+        m_resultsToggleA->setChecked(visible);
+    }
+    log(visible ? QStringLiteral("已显示底部结果面板")
+                : QStringLiteral("已折叠底部结果面板（视图 → 结果面板 或 Ctrl+J 可恢复）"));
 }
 
 void MainWindow::setStackedLayout(bool stacked)
@@ -1205,8 +1373,7 @@ void MainWindow::setStackedLayout(bool stacked)
 // 布局模式落地：只切换"可见性 / 宿主"，不重建控件树，所以随时来回切都不会丢状态。
 void MainWindow::applyLayoutMode()
 {
-    if (m_topNav)   m_topNav->setVisible(m_stackedLayout);
-    if (m_sidePane) m_sidePane->setVisible(!m_stackedLayout);
+    updateNavSurfaces();
 
     auto moveIntoTabs = [this](QWidget* w, const QString& title, int at) {
         if (!w || !m_tabs) return;
@@ -1252,9 +1419,7 @@ void MainWindow::applyLayoutMode()
         if (m_canvasSplit) m_canvasSplit->setSizes({180, 900});
     }
     refreshTheme();
-    if (m_topNav) syncTopNav(m_stack ? m_stack->currentIndex() : 0);
-    if (m_navSplit) m_navSplit->setSizes(m_stackedLayout ? QList<int>{0, 1200}
-                                                         : QList<int>{210, 1060});
+    updateNavSurfaces();
 }
 
 void MainWindow::syncTopNav(int page)
