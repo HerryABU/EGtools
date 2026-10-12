@@ -129,10 +129,13 @@ private:
         bool   known   = false; // sizePt 是否来自真实渲染
     };
 
+    void   adoptDocumentSizes(int pageCount);   // 各页 pt 尺寸取自渲染服务（PDFium）
     void   relayout();
     void   updateVisiblePages();
     void   pumpQueue();
     void   startRender(int page);
+    // 渲染服务（PDFium）某页有新块可用 —— 拿到覆盖整页的图后填进槽位、继续队列。
+    void   onRegionReady(int page);
     void   evictFarPages(int firstVisible, int lastVisible);
     // 把某页插到渲染队首（用户明确要看的页必须优先，哪怕视口还没更新）。
     void   ensurePageQueued(int page);

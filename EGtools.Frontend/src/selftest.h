@@ -51,3 +51,7 @@ int runPanelsTest();
 
 // 主题自检：深浅主题是否**真实生效**（用首页当探针 —— 它原先把浅色写死在代码里）。
 int runThemeTest();
+
+// 矢量渲染自检：断言"按目标分辨率重绘 / 明显更锐（含与旧内核位图路径对比）/ 不黑"，
+// 并核对 PDFium 与内核的页面 pt 尺寸一致（否则框选与词盒会整体偏移）。
+int runVectorRenderTest(const QString& cliDir, const QString& pdfPath);

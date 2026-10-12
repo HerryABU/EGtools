@@ -114,10 +114,14 @@ private:
     void refreshKernelStatus();
     void showPage(int index);
 
-    // Render one page via the CLI; returns the loaded image + geometry.
-    bool renderPage(int page, QImage& img, double& scale, double& pwPt, double& phPt);
-    // 后台预取相邻页（并行/异步渲染），使用户翻页近乎瞬时。
-    void prefetchPage(int page);
+    // PDFium 把文档加载好之后的收尾（页数 / 各页 pt 尺寸 / 交给各视图）。
+    // 打开文档是异步的：这样"打开大图纸"不会卡住界面。
+    void onPdfDocumentReady(const QString& path, int pageCount);
+    void onPdfOpenFailed(const QString& message);
+    // 把 PdfRenderService 的信号接到本窗口（只接一次；两个都是成员函数，
+    // 所以可以用 Qt::UniqueConnection —— ⚠️ lambda 配 UniqueConnection 是无效的，
+    // Qt 会打印 "unique connections require a pointer to member function" 并**放弃连接**）。
+    void wirePdfRenderer();
     // 当前生效的画布（单页精看 或 连续滚动）—— 两者都实现 IRegionCanvas，
     // 于是框选/语义/缩放/叠加层这些操作对视图类型无感。
     IRegionCanvas* activeCanvas() const;
@@ -228,12 +232,6 @@ private:
     QLabel*      m_pageLabel = nullptr;
     QLabel*      m_zoomLabel = nullptr;   // 当前缩放百分比（Ctrl+滚轮 / 适合宽度）
     QScrollArea* m_scroll    = nullptr;   // 画布滚动容器（"适合宽度"需要视口宽度）
-    // 预取缓存与后台池（maxThreadCount=1：只在空闲时占一个线程，不抢 CPU）。
-    struct PageCache { int page = -1; bool ok = false; QImage img;
-                       double scale = 1.0, pwPt = 0, phPt = 0; };
-    PageCache m_cache;
-    bool m_prefetchBusy = false;
-    std::shared_ptr<QThreadPool> m_prefetchPool;
     QLabel*      m_recogLabel = nullptr;  // live in-canvas text recognition readout
     QTabWidget*  m_tabs = nullptr;
     QTableWidget* m_table = nullptr;

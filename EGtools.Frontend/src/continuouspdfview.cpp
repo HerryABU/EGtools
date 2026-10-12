@@ -1,6 +1,8 @@
 #include "continuouspdfview.h"
 
 #include "kernelclient.h"
+#include "pdfrender.h"
+#include "pdfview.h"   // imageLuminanceStats
 #include "pagerender.h"
 #include "theme.h"
 
@@ -34,7 +36,21 @@ ContinuousPdfView::ContinuousPdfView(QWidget* parent) : QWidget(parent)
     setAutoFillBackground(false);          // 由 paintEvent 负责底色
 
     m_pool = new QThreadPool(this);
-    m_pool->setMaxThreadCount(1);          // 内核调用已全局串行；串行排队顺序更可预期
+    m_pool->setMaxThreadCount(1);          // 词盒提取仍走内核（全局串行），排队顺序更可预期
+
+    // 页面图像改由 **Qt PDF（PDFium）** 渲染：在它自己的线程里按目标分辨率重绘，
+    // 不再"每页起一次内核进程"——那是连续视图不稳定、翻页慢的主因。
+    auto* svc = PdfRenderService::instance();
+    connect(svc, &PdfRenderService::regionReady, this, &ContinuousPdfView::onRegionReady);
+    connect(svc, &PdfRenderService::documentReady, this,
+            [this](const QString& path, int count) {
+        if (path != m_pdfPath) return;
+        adoptDocumentSizes(count);
+        relayout();
+        ensurePageQueued(0);
+        updateVisiblePages();
+        update();
+    });
 }
 
 ContinuousPdfView::~ContinuousPdfView()
@@ -73,6 +89,29 @@ void ContinuousPdfView::setCliDir(const QString& dir)
 // ---------------------------------------------------------------------------
 // 文档
 // ---------------------------------------------------------------------------
+// 各页 pt 尺寸直接从渲染服务（PDFium）取 —— 顺带解决旧实现的"探测式尺寸"问题：
+// 旧版要等第 0 页渲染完才知道真实尺寸，期间版面用的是默认占位尺寸。
+void ContinuousPdfView::adoptDocumentSizes(int pageCount)
+{
+    auto* svc = PdfRenderService::instance();
+    if (!svc->ready() || svc->path() != m_pdfPath) return;
+    m_pageCount = qMax(1, qMin(pageCount, svc->pageCount()));
+    if (m_slots.size() != m_pageCount) {
+        m_slots.resize(m_pageCount);
+        for (int i = 0; i < m_pageCount; ++i) m_slots[i].page = i;
+        m_bundleScale = bundleScaleForZoom(m_zoom);
+    }
+    for (int i = 0; i < m_pageCount; ++i) {
+        const QSizeF sz = svc->pagePointSize(i);
+        if (sz.width() > 1.0 && sz.height() > 1.0) {
+            m_slots[i].sizePt = sz;
+            m_slots[i].known  = true;
+        }
+    }
+    const QSizeF p0 = svc->pagePointSize(0);
+    if (p0.width() > 1.0) m_defaultPtSize = p0;
+}
+
 void ContinuousPdfView::setDocument(const QString& pdfPath, int pageCount)
 {
     clearDocument();
@@ -80,6 +119,12 @@ void ContinuousPdfView::setDocument(const QString& pdfPath, int pageCount)
 
     m_pdfPath   = pdfPath;
     m_pageCount = pageCount;
+
+    // 文档由渲染服务持有（PDFium）。这里主动确保它已打开 —— 否则"直接调 setDocument"
+    // 的调用方（自检、或任何不走主窗口流程的用法）会因为服务没加载文档而永远渲染不出来。
+    auto* svc0 = PdfRenderService::instance();
+    if (svc0->path() != pdfPath || !svc0->ready()) svc0->openDocument(pdfPath);
+
     m_slots.resize(pageCount);
     for (int i = 0; i < pageCount; ++i) {
         Slot& s = m_slots[i];
@@ -87,9 +132,11 @@ void ContinuousPdfView::setDocument(const QString& pdfPath, int pageCount)
         s.sizePt  = m_defaultPtSize;
         s.bundleScale = 0;
     }
+    adoptDocumentSizes(pageCount);      // 各页 pt 尺寸（PDFium 直接给，无需逐页渲染探测）
     m_bundleScale = bundleScaleForZoom(m_zoom);
     relayout();
-    ensurePageQueued(0);        // 首屏必须立刻开始渲染（同上，别只靠滚动条信号）
+    // 文档就绪后再入队（未就绪时页尺寸还是占位值，见 startRender 的说明）。
+    if (svc0->ready() && svc0->path() == pdfPath) ensurePageQueued(0);
     updateVisiblePages();
     scrollToPage(0);
     emit currentPageChanged(0);
@@ -291,65 +338,97 @@ void ContinuousPdfView::pumpQueue()
 void ContinuousPdfView::startRender(int page)
 {
     if (page < 0 || page >= m_slots.size()) return;
-    if (m_slots[page].img.isNull() == false && m_slots[page].bundleScale == m_bundleScale) {
+    if (!m_slots[page].img.isNull() && m_slots[page].bundleScale == m_bundleScale) {
         m_slots[page].pending = false;
         pumpQueue();
         return;
     }
 
-    m_renderInFlight = true;
-    m_inFlightPage = page;
-    const QString pdf = m_pdfPath;
-    const double bs = m_bundleScale;
-    trace(QStringLiteral("start p%1 bs=%2").arg(page).arg(bs));
+    auto* svc = PdfRenderService::instance();
 
-    auto* watcher = new QFutureWatcher<RenderedPage>(this);
-    connect(watcher, &QFutureWatcher<RenderedPage>::finished, this, [this, watcher, page, bs]{
-        const RenderedPage r = watcher->result();
-        watcher->deleteLater();
+    // ⚠️⚠️ 文档还没就绪时**绝不能**发请求：此时页尺寸还是占位值，算出的矩形与真实
+    //   页面尺寸对不上；等真实尺寸到位后，结果回来会被"覆盖判定"拒收 ——
+    //   表现就是这一页**永远渲染不出来**（实测踩过：调度轨迹停在 "start p0"）。
+    //   正确做法是保持 pending，等 documentReady 里重排后再入队。
+    if (!svc->ready() || svc->path() != m_pdfPath) {
         m_renderInFlight = false;
         m_inFlightPage = -1;
-        trace(QStringLiteral("done p%1 ok=%2").arg(page).arg(r.ok ? 1 : 0));
+        trace(QStringLiteral("wait-doc p%1").arg(page));
+        return;
+    }
 
-        if (page < m_slots.size()) {
-            Slot& s = m_slots[page];
-            s.pending = false;
-            if (r.ok) {
-                s.img = r.img;
-                s.bundleScale = bs;
-                s.failed = false;
-                if (!s.known && r.pwPt > 0 && r.phPt > 0) {
-                    // 首次拿到真实页尺寸：若与其他页不同，需要重排（图纸集通常同尺寸）。
-                    const QSizeF sz(r.pwPt, r.phPt);
-                    if (qAbs(sz.width() - s.sizePt.width()) > 0.5 ||
-                        qAbs(sz.height() - s.sizePt.height()) > 0.5) {
-                        s.sizePt = sz;
-                        if (page == 0) m_defaultPtSize = sz;
-                        s.known = true;
-                        relayout();
-                    } else {
-                        s.known = true;
-                    }
-                }
-                m_lastDiag = QStringLiteral("第 %1 页 %2x%3 px 平均亮度 %4 / max %5")
-                                 .arg(page + 1).arg(r.img.width()).arg(r.img.height())
-                                 .arg(r.meanLum).arg(r.maxLum);
-                if (r.maxLum >= 0 && r.maxLum < 24)
-                    emit statusMessage(QStringLiteral("第 %1 页几乎全黑（max 亮度 %2）——"
-                                                      "该页可能确实无内容").arg(page + 1).arg(r.maxLum));
-            } else {
-                s.failed = true;
-                emit statusMessage(QStringLiteral("第 %1 页渲染失败：%2")
-                                       .arg(page + 1).arg(r.error));
-            }
+    const double bs = m_bundleScale;
+    const QSizeF pt = m_slots[page].sizePt;
+    const QRect devRect(0, 0, qMax(1, qRound(pt.width() * bs)),
+                                qMax(1, qRound(pt.height() * bs)));
+
+    // 命中渲染服务缓存 ⇒ 立刻可用（来回缩放时几乎瞬时）。
+    if (svc->hasRegionCovering(page, bs, devRect)) {
+        Slot& s = m_slots[page];
+        const QImage img = svc->cachedImageForTest(page, bs, devRect);
+        if (!img.isNull()) {
+            s.img = img; s.bundleScale = bs; s.failed = false; s.pending = false;
+            trace(QStringLiteral("cache hit p%1 bs=%2").arg(page).arg(bs));
+            update();
+            pumpQueue();
+            return;
         }
-        update();
-        pumpQueue();       // 继续下一张
-    });
+    }
 
-    watcher->setFuture(QtConcurrent::run(m_pool, [pdf, page, bs]{
-        return renderPageViaKernel(pdf, page, bs);
-    }));
+    if (!svc->requestRegion(page, bs, devRect)) {
+        // 请求没被受理（页码越界等）：别把自己标记成"在途"，否则队列会永久卡住。
+        m_slots[page].pending = false;
+        trace(QStringLiteral("reject p%1").arg(page));
+        pumpQueue();
+        return;
+    }
+    m_renderInFlight = true;
+    m_inFlightPage = page;
+    trace(QStringLiteral("start p%1 bs=%2").arg(page).arg(bs));
+    // 结果经 regionReady → onRegionReady 回来（服务在自己的线程里渲染）。
+}
+
+// 渲染服务某页有新块可用：只处理"在途那一页"，拿到整页图后继续队列。
+void ContinuousPdfView::onRegionReady(int page)
+{
+    if (page != m_inFlightPage || page < 0 || page >= m_slots.size()) return;
+    auto* svc = PdfRenderService::instance();
+    const double bs = m_bundleScale;
+    const QSizeF pt = m_slots[page].sizePt;
+    const QRect devRect(0, 0, qMax(1, qRound(pt.width() * bs)),
+                                qMax(1, qRound(pt.height() * bs)));
+    const QImage img = svc->cachedImageForTest(page, bs, devRect);
+    if (img.isNull()) {
+        // 可能是"只到了一部分"（等着覆盖整页的那块）；但也可能是矩形对不上。
+        // 无论哪种，**不能把在途标记一直挂着** —— 那会让整条渲染队列永久停住。
+        // 这里只解除在途并继续队列；真正的重排在下次绘制/滚动时自然发生。
+        m_renderInFlight = false;
+        m_inFlightPage = -1;
+        trace(QStringLiteral("miss p%1 （未取到覆盖整页的图，解除在途）").arg(page));
+        pumpQueue();
+        return;
+    }
+
+    m_renderInFlight = false;
+    m_inFlightPage = -1;
+
+    Slot& s = m_slots[page];
+    s.pending = false;
+    s.img = img;
+    s.bundleScale = bs;
+    s.failed = false;
+    {
+        const LumaStats st = imageLuminanceStats(img);
+        m_lastDiag = QStringLiteral("第 %1 页 %2x%3 px 平均亮度 %4 / max %5（PDFium 矢量）")
+                         .arg(page + 1).arg(img.width()).arg(img.height())
+                         .arg(st.avg, 0, 'f', 1).arg(st.maxLum);
+        if (st.maxLum < 24)
+            emit statusMessage(QStringLiteral("第 %1 页几乎全黑（max 亮度 %2）——该页可能确实无内容")
+                                   .arg(page + 1).arg(st.maxLum));
+    }
+    trace(QStringLiteral("done p%1 ok=1").arg(page));
+    update();
+    pumpQueue();
 }
 
 void ContinuousPdfView::invalidateImages()

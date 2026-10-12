@@ -176,12 +176,66 @@ if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake
         # For a Qt Widgets app the needed set is exactly: Qt6Core/Gui/Widgets + the
         # qwindows platform plugin (+ styles/imageformats) + the MSVC runtime.
         Step 'Deploy Qt runtime (DLLs + qwindows plugin + MSVC runtime)'
-        # ⚠️ 清单必须覆盖链接期用到的**全部** Qt 模块：Core/Gui/Widgets 之外，
-        # 页面画布走 GPU 需要 Qt6OpenGLWidgets + Qt6OpenGL，预取/缩略图并发用到
-        # Qt6Concurrent。少拷一个的表现是启动即报"找不到 Qt6Xxx.dll"。
-        foreach ($dll in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll',
+        # ⚠️ 清单必须覆盖链接期用到的**全部** Qt 模块（含**传递依赖**）：Core/Gui/Widgets 之外，
+        # **Qt6Pdf**（Qt PDF / 内置 PDFium）—— 预览的矢量渲染全靠它；它还依赖 **Qt6Network**！
+        # 少拷一个的表现是发布产物**启动即 0xC0000135（缺 DLL）**，而开发机上因为 PATH 里有
+        # Qt 目录完全看不出来（实测漏了 Qt6Network.dll，就是下面这段"依赖闭环"自证抓出来的）。
+        # 页面画布走 GPU 需要 Qt6OpenGLWidgets + Qt6OpenGL，并发渲染用到 Qt6Concurrent。
+        foreach ($dll in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll','Qt6Network.dll','Qt6Pdf.dll',
                            'Qt6OpenGL.dll','Qt6OpenGLWidgets.dll','Qt6Concurrent.dll')) {
             Copy-Item "$qtRoot\bin\$dll" $out -Force -EA SilentlyContinue
+        }
+        # ---- 依赖闭环自证（手工清单一定会漏，所以别再只靠手工）----------------
+        # 判据：**凡是存在于我们自己的 Qt / redist 目录里的依赖，都必须出现在 DIST**。
+        # （只看这两个目录，能精准抓住"忘了拷某个 Qt 模块"这类错，又不会被
+        #  KERNEL32/api-ms-win-* / System32 里的系统组件干扰。）
+        $binutils = (Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe' -EA SilentlyContinue |
+                     Sort-Object FullName -Descending | Select-Object -First 1).FullName
+        $qtBin = Get-ChildItem "$qtRoot\bin\*.dll" -EA SilentlyContinue | ForEach-Object { $_.Name }
+        $redist = Get-ChildItem "$root\redist\vc143_x64\*.dll" -EA SilentlyContinue | ForEach-Object { $_.Name }
+        $ours = @{}
+        foreach ($n in ($qtBin + $redist)) { if ($n -notmatch 'd\.dll$') { $ours[$n.ToLower()] = $true } }
+        $have = @{}
+        Get-ChildItem "$out\*.dll","$out\*.exe" -EA SilentlyContinue | ForEach-Object { $have[$_.Name.ToLower()] = $true }
+
+        $missing = New-Object System.Collections.Generic.List[string]
+        foreach ($f in (Get-ChildItem "$out\*.dll","$out\*.exe" -EA SilentlyContinue)) {
+            $deps = & $binutils /dependents $f.FullName 2>$null |
+                    Select-String -Pattern '^\s+([A-Za-z0-9_\-\.]+\.dll)$' |
+                    ForEach-Object { $_.Matches[0].Groups[1].Value }
+            foreach ($d in $deps) {
+                $dl = $d.ToLower()
+                if (-not $ours.ContainsKey($dl)) { continue }        # 不属于我们分发的（系统 DLL）→ 跳过
+                if (-not $have.ContainsKey($dl)) { $missing.Add("$($f.Name) -> $d") }
+            }
+        }
+        if ($missing.Count -gt 0) {
+            throw ("依赖不闭环（发布产物会启动失败，典型报错 0xC0000135 缺 DLL）：`n  " +
+                   (($missing | Sort-Object -Unique) -join "`n  "))
+        }
+        Write-Host ("OK  Qt 依赖闭环：DIST 内 " + $have.Count + " 个模块的自有依赖全部就位")
+
+        # ---- 终审：**真的把发布产物跑起来**（能启动才算打包成功）----------------
+        # 前面所有清单检查都只是"推理"，只有这一步是事实。缺 DLL 的表现是
+        # 进程立刻退出、exit=0xC0000135(-1073741515)，日志里什么都没有。
+        $published = "$out\EGtoolsFrontend.exe"
+        if (Test-Path $published) {
+            # 故意**不给** PATH 里加 Qt 目录：模拟干净机器上只有 DIST 的情况。
+            $savedPath = $env:PATH
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            $vp = Start-Process -FilePath $published -ArgumentList @('--version') -Wait -PassThru `
+                                -RedirectStandardOutput "$root\.build_trash\published_version.txt" `
+                                -RedirectStandardError  "$root\.build_trash\published_version_e.txt"
+            $env:PATH = $savedPath
+            $vtext = (Get-Content "$root\.build_trash\published_version.txt" -Raw -EA SilentlyContinue)
+            if ($vp.ExitCode -ne 0) {
+                throw ("发布产物无法启动（exit=$($vp.ExitCode)，" +
+                       "0xC0000135/-1073741515 表示缺 DLL）：$published")
+            }
+            if ($vtext -notmatch 'Release') {
+                throw "发布产物自报构建配置异常：$vtext"
+            }
+            Write-Host ("OK  发布产物可独立启动：" + $vtext.Trim())
         }
         # 软件 OpenGL 兜底（Mesa llvmpipe，Qt 自带）：某些机器只有微软的 GDI Generic
         # OpenGL 1.1，QOpenGLWidget 起不来（表现是**一块黑画布**）。带上它之后，

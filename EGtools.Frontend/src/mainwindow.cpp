@@ -2,6 +2,7 @@
 #include "clirunner.h"
 #include "kernelclient.h"
 #include "pdfcanvas.h"
+#include "pdfrender.h"
 #include "manualdialog.h"
 #include "homepage.h"
 #include "schemes.h"
@@ -83,8 +84,6 @@ MainWindow::MainWindow(const QString& cliDir, QWidget* parent) : QMainWindow(par
     buildUi();
     // 预取用单线程池：只在空闲时占用一个后台线程渲染相邻页（并行/异步渲染），
     // 不把 CPU 吃满，也不与用户操作争抢内核（内核调用在融合层内部串行）。
-    m_prefetchPool = std::make_shared<QThreadPool>();
-    m_prefetchPool->setMaxThreadCount(1);
     log(QStringLiteral("EGtools Qt 前端已就绪（CLI 目录：%1）")
             .arg(m_cliDir.isEmpty() ? QStringLiteral("<未设置>") : m_cliDir));
     // 明确告诉用户/日志当前走的是 GPU 还是 CPU 光栅 —— 排查"画面不对"时第一条线索。
@@ -1085,145 +1084,69 @@ QString MainWindow::cliExe(const QString& name) const
 
 // ---------------------------------------------------------------- open / render
 
-namespace {
-
-// 一次页面渲染的结果（含几何）。用于后台预取缓存。
-struct RenderedPage
-{
-    bool   ok = false;
-    QImage img;
-    double scale = 1.0, pwPt = 0, phPt = 0;
-    int    meanLum = -1, maxLum = -1;   // 亮度诊断（见下）
-};
-
-// 纯函数式的渲染（不含任何 UI 状态），因此可以安全地在后台线程调用。
-// 内核调用在 KernelClient 内部有全局串行保护（内嵌运行时是进程级单例），
-// 所以后台预取与用户操作并发时不会互相踩踏，只是排队执行。
-RenderedPage renderPageViaKernel(const QString& pdfPath, int page)
-{
-    RenderedPage r;
-    if (pdfPath.isEmpty()) return r;
-    QTemporaryDir tmp;
-    const QString bmp = QDir(tmp.path()).filePath(QStringLiteral("page.bmp"));
-    const KernelClient::Result kr = KernelClient::run(
-        QStringLiteral("EGpdf2excel"),
-        {QStringLiteral("--render"), QStringLiteral("--page"), QString::number(page),
-         QStringLiteral("--scale"), QStringLiteral("1"),
-         QStringLiteral("--render-out"), bmp, pdfPath},
-        QString(), KernelClient::defaultBackend());
-    if (kr.rc != 0) return r;
-
-    QImage img = QImageReader(bmp).read();
-    if (img.isNull()) return r;
-    r.img = img.copy();                    // 脱离临时目录（否则可能延迟解码失效）
-    r.ok = true;
-
-    const QJsonObject o = QJsonDocument::fromJson(kr.out.toUtf8()).object();
-    r.pwPt = o.value(QStringLiteral("pageWidthPt")).toDouble();
-    r.phPt = o.value(QStringLiteral("pageHeightPt")).toDouble();
-    r.scale = o.value(QStringLiteral("scale")).toDouble(1.0);
-    if (r.scale <= 0) r.scale = 1.0;
-    if (r.pwPt <= 0) r.pwPt = r.img.width();
-    if (r.phPt <= 0) r.phPt = r.img.height();
-
-    // 亮度诊断：把"黑屏"变成可判定的事实 —— 若整页近乎全黑，是内核渲染出的图本身
-    // 就是黑的（PDF 内容/背景问题）；若亮度正常却看不到图，则是显示侧的问题。
-    {
-        const QImage probe = img.scaled(48, 48, Qt::IgnoreAspectRatio, Qt::FastTransformation);
-        quint64 lum = 0; int maxL = 0;
-        for (int y = 0; y < probe.height(); ++y)
-            for (int x = 0; x < probe.width(); ++x) {
-                const QRgb c = probe.pixel(x, y);
-                const int l = (qRed(c) * 299 + qGreen(c) * 587 + qBlue(c) * 114) / 1000;
-                lum += static_cast<quint64>(l);
-                maxL = qMax(maxL, l);
-            }
-        r.meanLum = static_cast<int>(lum / static_cast<quint64>(probe.width() * probe.height()));
-        r.maxLum  = maxL;
-    }
-    return r;
-}
-
-} // namespace
-
-// 后台预取下一页：翻页时直接用缓存，做到"点下一页几乎瞬时"。
-// 串行池（maxThreadCount=1）：预取只该在空闲时占一个后台线程，不应把 CPU 吃满。
-void MainWindow::prefetchPage(int page)
-{
-    if (m_pdfPath.isEmpty() || page < 0 || page >= m_pageCount) return;
-    if (m_cache.page == page && m_cache.ok) return;
-    if (m_prefetchBusy) return;
-
-    const QString pdf = m_pdfPath;
-    m_prefetchBusy = true;
-    auto* watcher = new QFutureWatcher<RenderedPage>(this);
-    connect(watcher, &QFutureWatcher<RenderedPage>::finished, this, [this, watcher, page]{
-        const RenderedPage r = watcher->result();
-        watcher->deleteLater();
-        m_prefetchBusy = false;
-        if (r.ok) {
-            m_cache.page = page;
-            m_cache.ok = true;
-            m_cache.img = r.img;
-            m_cache.scale = r.scale;
-            m_cache.pwPt = r.pwPt;
-            m_cache.phPt = r.phPt;
-        }
-    });
-    watcher->setFuture(QtConcurrent::run(m_prefetchPool.get(), [pdf, page]{
-        return renderPageViaKernel(pdf, page);
-    }));
-}
-
 bool MainWindow::openPdf(const QString& path)
 {
     m_pdfPath = path;
     m_pageIndex = 0;
-    m_cache = PageCache{};          // 换文档 ⇒ 预取缓存必须作废
     clearRegionsAll();
 
-    // Page count: render page 0 to learn geometry, then probe via kernel render
-    // loop is overkill; instead ask the kernel by rendering page 0 and reading
-    // its summary. For page count we probe upward until the kernel errors.
-    QImage img; double scale = 1, pw = 0, ph = 0;
-    if (!renderPage(0, img, scale, pw, ph)) {
-        log(QStringLiteral("打开失败：无法渲染第 1 页"));
-        return false;
-    }
+    // 预览渲染交给 **Qt PDF（PDFium）**：按目标分辨率矢量重绘，任意倍率都清晰。
+    // 旧做法是"打开时先让内核渲染一整页位图（1px/pt）"，那既慢又糊，还会因为
+    // 渲染结果的透明背景在单页画布上表现为"黑页面"。现在打开文档 = 只加载文档
+    // （异步，几十毫秒），页面图像由画布按可视区+目标分辨率按需取。
+    wirePdfRenderer();                    // 只接一次（见 wirePdfRenderer 的说明）
+    PdfRenderService::instance()->openDocument(path);
 
-    // Discover page count with a single cheap kernel call (--page-count) instead
-    // of probing each page. Robust and fast even for hundreds-of-page documents.
-    // 同样走融合层，与渲染/抽取保持同一条通道。
-    const KernelClient::Result pcRes = KernelClient::run(
-        QStringLiteral("EGpdf2excel"),
-        {QStringLiteral("--page-count"), m_pdfPath},
-        QString(), KernelClient::defaultBackend());
-    m_pageCount = 1;
-    if (pcRes.rc == 0) {
-        QJsonParseError pe{};
-        QJsonDocument doc = QJsonDocument::fromJson(pcRes.out.toUtf8(), &pe);
-        if (pe.error == QJsonParseError::NoError && doc.isObject())
-            m_pageCount = qMax(1, doc.object().value(QStringLiteral("pageCount")).toInt());
-    } else {
-        log(QStringLiteral("页码探测失败，默认按 1 页处理: %1").arg(pcRes.err.trimmed()));
-    }
+    // 文档加载是异步的，真正的收尾（页数 / 标签 / 交给各视图）在 onPdfDocumentReady 里。
+    log(QStringLiteral("正在打开 %1 …").arg(QFileInfo(path).fileName()));
+    return true;
+}
 
-    // 单页视图用这一次渲染出图；连续视图只需要页尺寸信息（它会自己懒渲染）。
-    m_view.canvas->setPage(img, scale, 0);
-    m_view.canvas->setPageIndex(0);
-    m_pwPt = pw; m_phPt = ph; m_scale = scale;
+// 渲染服务的信号 → 本窗口。放在一个函数里，保证"只接一次"且用的是成员函数
+// （⚠️ Qt::UniqueConnection 只对成员函数指针有效；配 lambda 时 Qt 会**放弃连接**并打警告，
+//   症状就是"打开 PDF 失败"这类提示永远不出现 —— 实测被这条警告抓出来的）。
+void MainWindow::wirePdfRenderer()
+{
+    auto* svc = PdfRenderService::instance();
+    connect(svc, &PdfRenderService::documentReady, this,
+            &MainWindow::onPdfDocumentReady, Qt::UniqueConnection);
+    connect(svc, &PdfRenderService::failed, this,
+            &MainWindow::onPdfOpenFailed, Qt::UniqueConnection);
+}
+
+void MainWindow::onPdfOpenFailed(const QString& message)
+{
+    log(QStringLiteral("打开 PDF 失败：%1").arg(message));
+    if (m_view.canvas) m_view.canvas->setRenderFailed(message);
+}
+
+// PDFium 把文档打开好之后：拿到页数与各页 pt 尺寸，再交给三个视图。
+void MainWindow::onPdfDocumentReady(const QString& path, int pageCount)
+{
+    if (path != m_pdfPath) return;               // 期间又换了文档
+    m_pageCount = qMax(1, pageCount);
+
+    const QSizeF pt0 = PdfRenderService::instance()->pagePointSize(0);
+    m_pwPt = pt0.width(); m_phPt = pt0.height(); m_scale = 1.0;
+
+    // 单页视图：进入矢量模式（按需渲染可视区，不再需要预渲染整页）。
+    if (m_view.canvas) {
+        m_view.canvas->setDocument(path, m_pageCount);
+        m_view.canvas->setPageIndex(0);
+        // 首屏默认"适合宽度"，与主流阅读器一致（避免一打开就是巨大页面）。
+        if (m_scroll) m_view.canvas->fitToWidth(m_scroll->viewport()->width() - 4);
+    }
     loadPageWords(0);
-    // 连续视图：整本文档交给它，滚动到哪渲染哪。
     if (m_contView) m_contView->setDocument(path, m_pageCount);
-    m_pageLabel->setText(QStringLiteral("%1 / %2").arg(1).arg(m_pageCount));
-    // 缩略图栏：一次性告知文档与页数，后台逐页补缩略图。
     if (m_pageNav) { m_pageNav->setDocument(path, m_pageCount); m_pageNav->setCurrentPage(0); }
-    log(QStringLiteral("已打开 %1（%2 页，%3 x %4 pt）")
-            .arg(QFileInfo(path).fileName()).arg(m_pageCount).arg(pw).arg(ph));
+    m_pageLabel->setText(QStringLiteral("%1 / %2").arg(1).arg(m_pageCount));
+
+    log(QStringLiteral("已打开 %1（%2 页，%3 x %4 pt；矢量渲染）")
+            .arg(QFileInfo(path).fileName()).arg(m_pageCount)
+            .arg(m_pwPt, 0, 'f', 1).arg(m_phPt, 0, 'f', 1));
     // 打开成功就把用户带到看图的页 —— 否则从命令行/文件关联打开时会停在首页，
     // 画布处于 QStackedWidget 的隐藏页里，看起来像"什么都没打开"。
     navTo(PagePdf);
-    return true;
 }
 
 // ---------------------------------------------------------------- 视图分派
@@ -1593,32 +1516,6 @@ void MainWindow::syncTopNav(int page)
     }
 }
 
-bool MainWindow::renderPage(int page, QImage& img, double& scale, double& pwPt, double& phPt)
-{
-    if (m_pdfPath.isEmpty()) { log(QStringLiteral("未打开 PDF")); return false; }
-    // 命中后台预取缓存 ⇒ 立即出图（翻页体感的关键）。
-    if (m_cache.ok && m_cache.page == page) {
-        img = m_cache.img;
-        scale = m_cache.scale; pwPt = m_cache.pwPt; phPt = m_cache.phPt;
-        log(QStringLiteral("第 %1 页来自预取缓存 (%2x%3 px)").arg(page + 1).arg(img.width()).arg(img.height()));
-        return true;
-    }
-
-    const RenderedPage r = renderPageViaKernel(m_pdfPath, page);
-    if (!r.ok) {
-        log(QStringLiteral("渲染第 %1 页失败（详见内核日志）").arg(page + 1));
-        return false;
-    }
-    img = r.img; scale = r.scale; pwPt = r.pwPt; phPt = r.phPt;
-    log(QStringLiteral("渲染第 %1 页: %2x%3 px, 格式#%4, 平均亮度 %5 / max %6")
-            .arg(page + 1).arg(img.width()).arg(img.height())
-            .arg(static_cast<int>(img.format())).arg(r.meanLum).arg(r.maxLum));
-    if (r.maxLum >= 0 && r.maxLum < 24)
-        log(QStringLiteral("警告: 第 %1 页渲染结果几乎全黑（max 亮度 %2）——"
-                           "该页可能确实无内容，或 PDF 背景被画成黑色。").arg(page + 1).arg(r.maxLum));
-    return true;
-}
-
 void MainWindow::onOpen()
 {
     QString p = QFileDialog::getOpenFileName(this, QStringLiteral("选择 PDF"), QString(),
@@ -1653,22 +1550,16 @@ void MainWindow::onRenderPage()
         return;
     }
 
-    QImage img; double scale = 1, pw = 0, ph = 0;
-    if (renderPage(m_pageIndex, img, scale, pw, ph)) {
-        m_view.canvas->setPage(img, scale, m_pageIndex);
-        m_scale = scale; m_pwPt = pw; m_phPt = ph;
-        loadPageWords(m_pageIndex);
-        m_pageLabel->setText(QStringLiteral("%1 / %2").arg(m_pageIndex + 1).arg(m_pageCount));
-        if (m_pageNav) m_pageNav->setCurrentPage(m_pageIndex);
-        log(QStringLiteral("渲染第 %1 页 (%2 x %3 px)").arg(m_pageIndex + 1).arg(img.width()).arg(img.height()));
-        // 后台预取下一页（并行/异步）：等用户点"下一页"时直接命中缓存。
-        prefetchPage(m_pageIndex + 1);
-    } else if (m_view.canvas) {
-        // 渲染失败时把原因推到画布上，界面给出可读提示而不是一块深灰（"黑屏"）。
-        // setRenderFailed 是单页画布专有的（连续视图自己画"渲染失败"占位），故动态转换。
-        if (auto* pc = dynamic_cast<PdfCanvas*>(m_view.canvas))
-            pc->setRenderFailed(QStringLiteral("见「内核日志」页"));
+    // 单页视图：翻页 = 换页号。页面图像由画布按"可视区 + 目标分辨率"异步取，
+    // 换页时立即要一版低倍率整页预览 ⇒ 内容马上出现，随后被高清块覆盖。
+    // （旧版在这里同步调内核渲染整页位图，翻页要等几百毫秒到几秒，且出的是糊图。）
+    if (m_view.canvas) {
+        m_view.canvas->setPageIndex(m_pageIndex);
+        if (auto* pc = dynamic_cast<PdfCanvas*>(m_view.canvas)) pc->clearRenderFailed();
     }
+    loadPageWords(m_pageIndex);
+    m_pageLabel->setText(QStringLiteral("%1 / %2").arg(m_pageIndex + 1).arg(m_pageCount));
+    if (m_pageNav) m_pageNav->setCurrentPage(m_pageIndex);
 }
 
 void MainWindow::onPrevPage() { if (m_pageIndex > 0) { --m_pageIndex; onRenderPage(); } }

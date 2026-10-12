@@ -38,6 +38,9 @@ protected:
     void wheelEvent(QWheelEvent*) override;
 
 private:
+    // 视口当前可见范围在本控件坐标系里的矩形。画布据此决定"要渲染哪一块" ——
+    // 不区分 exposed/visible 就会按整块画布请求，4x 下等于把整页全部排队渲染。
+    QRect visibleCanvasRect() const;
     PdfCanvas* m_c = nullptr;
 };
 
@@ -71,6 +74,7 @@ protected:
     void wheelEvent(QWheelEvent*) override;
 
 private:
+    QRect visibleCanvasRect() const;
     PdfCanvas* m_c = nullptr;
     QString    m_glInfo;
     bool       m_selfCheckPending = true;   // 还没做过"首帧有没有画出东西"的检查

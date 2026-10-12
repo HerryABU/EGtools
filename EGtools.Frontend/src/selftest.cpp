@@ -1,5 +1,10 @@
 #include "selftest.h"
 #include "pdfcanvas.h"
+#include "pdfrender.h"
+#include "pagerender.h"
+#include <QPainter>
+#include <functional>
+
 #include "pdfview.h"          // createPdfViewHost / frameLooksBlank / gpuBackendDescription
 #include "continuouspdfview.h"
 #include "kernelclient.h"
@@ -312,7 +317,15 @@ int runContinuousTest(const QString& cliDirIn, const QString& pdfIn)
     };
 
     if (!waitFor(view, 0, 60000)) {
-        out << "[FAIL] 第 1 页在 60s 内未渲染完成（连续视图懒渲染）\n"; out.flush();
+        out << "[FAIL] 第 1 页在 60s 内未渲染完成（连续视图懒渲染）\n";
+        out << "        调度状态: 队列=" << view->debugQueueDepth()
+            << " 渲染中=" << view->debugInFlightPage()
+            << " 已出图页数=" << view->debugRenderedCount()
+            << " pending=" << (view->debugPending(0) ? 1 : 0)
+            << " failed=" << (view->debugFailed(0) ? 1 : 0) << "\n";
+        out << "        调度轨迹:\n";
+        for (const QString& t : view->debugTrace()) out << "          " << t << "\n";
+        out.flush();
         return 22;
     }
     const QSizeF s0 = view->pageSizePt(0);
@@ -1178,6 +1191,207 @@ int runThemeTest()
     out.flush();
     if (fails) { out << "[FAIL] 主题自检（" << fails << " 项）\n"; out.flush(); return 1; }
     out << "[PASS] 主题：深浅两套都真实生效（含首页等原先写死颜色的页面）\n";
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 矢量渲染自检（--test-vector）
+//
+// 针对用户的三条投诉："黑 / 糊 / 不是矢量"。这三条都必须变成**可量化的断言**，
+// 否则改完只能靠肉眼，下次又悄悄退化。
+//   ① 不是矢量 ⇒ 断言"渲染图的像素尺寸 = 页面 pt × 缩放"（按目标分辨率重绘，
+//      而不是把固定倍率位图放大）；并与**旧路径（内核 1x 位图放大）**比锐度（倍数）。
+//   ② 糊     ⇒ 同上，锐度用平均 |Laplacian| 度量（同分辨率下比较）。
+//   ③ 黑     ⇒ 断言画布绘制结果"既不是黑屏也不是纯白"（有纸面白底、且确有墨迹）。
+// 另外断言 PDFium 与内核下发的 pt 尺寸一致 —— 否则框选框/词盒会整体偏移。
+// ---------------------------------------------------------------------------
+namespace {
+
+// 平均 |Laplacian|：同分辨率下越大越锐（模糊图的二阶差分必然被削平）。
+double vectorSharpness(const QImage& in)
+{
+    const QImage img = in.convertToFormat(QImage::Format_Grayscale8);
+    if (img.width() < 3 || img.height() < 3) return 0.0;
+    double sum = 0.0; quint64 n = 0;
+    for (int y = 1; y < img.height() - 1; ++y) {
+        const uchar* r0 = img.constScanLine(y - 1);
+        const uchar* r1 = img.constScanLine(y);
+        const uchar* r2 = img.constScanLine(y + 1);
+        for (int x = 1; x < img.width() - 1; ++x) {
+            const int L = 4 * int(r1[x]) - int(r0[x]) - int(r2[x]) - int(r1[x - 1]) - int(r1[x + 1]);
+            sum += std::abs(L); ++n;
+        }
+    }
+    return n ? sum / double(n) : 0.0;
+}
+
+// 转成不透明（合成白底）：PDFium 的渲染结果背景是**透明**的，不合成就会把
+// "透明"当成"黑"来统计（这正是历史上误判"发黑"的原因之一）。
+QImage vectorOpaque(const QImage& in)
+{
+    if (in.isNull()) return in;
+    QImage out(in.size(), QImage::Format_RGB32);
+    out.fill(Qt::white);
+    QPainter p(&out);
+    p.drawImage(0, 0, in);
+    p.end();
+    return out;
+}
+
+} // namespace
+
+int runVectorRenderTest(const QString& cliDir, const QString& pdfPath)
+{
+    out << "=== 矢量渲染自检（PDFium 按目标分辨率重绘）===\n";
+    out.flush();
+    if (pdfPath.isEmpty()) {
+        out << "[SKIP] 未提供 --pdf（本项需要一个真实 PDF）\n";
+        out.flush();
+        return 0;
+    }
+
+    int fails = 0;
+    auto check = [&](const QString& what, bool ok, const QString& detail = QString()) {
+        out << "  " << (ok ? "OK  " : "BAD ") << what
+            << (detail.isEmpty() ? QString() : QStringLiteral("  [%1]").arg(detail)) << "\n";
+        out.flush();
+        if (!ok) ++fails;
+    };
+    // 异步渲染要等结果：转事件循环（渲染在服务自己的线程里跑）。
+    auto waitUntil = [](const std::function<bool()>& cond, int timeoutMs) {
+        QElapsedTimer t; t.start();
+        while (!cond() && t.elapsed() < timeoutMs) {
+            QApplication::processEvents();
+            QThread::msleep(5);
+        }
+        return cond();
+    };
+
+    auto* svc = PdfRenderService::instance();
+    // 内核通道要显式给 CLI 目录，否则 renderPageViaKernel 会因为没有可用后端而失败
+    // ⇒ "新旧锐度对比"会被静默跳过（第一次就栽在这：内核其实完全可用）。
+    if (!cliDir.isEmpty()) KernelClient::setCliDir(cliDir);
+    svc->clearCacheForTest();
+    svc->openDocument(pdfPath);
+    const bool opened = waitUntil([svc]{ return svc->ready(); }, 30000);
+    check(QStringLiteral("PDFium 打开文档"), opened,
+          opened ? QString() : svc->lastError());
+    if (!opened) { out << "[FAIL] 矢量渲染自检\n"; out.flush(); return 1; }
+
+    const int pageCount = svc->pageCount();
+    const QSizeF pt = svc->pagePointSize(0);
+    check(QStringLiteral("页数 > 0"), pageCount > 0, QString::number(pageCount));
+    check(QStringLiteral("第 1 页 pt 尺寸合理"), pt.width() > 10 && pt.height() > 10,
+          QStringLiteral("%1 x %2 pt").arg(pt.width(), 0, 'f', 1).arg(pt.height(), 0, 'f', 1));
+
+    // ---- ① 与内核下发的 pt 尺寸必须一致（否则框选/词盒整体偏移）----------
+    RenderedPage kr;                       // 旧路径（内核渲染，1x），同时提供 pt 尺寸
+    bool kernelOk = false;
+    if (!cliDir.isEmpty()) {
+        kr = renderPageViaKernel(pdfPath, 0, 1.0);
+        kernelOk = kr.ok;
+        if (kernelOk) {
+            const double dw = qAbs(kr.pwPt - pt.width()), dh = qAbs(kr.phPt - pt.height());
+            check(QStringLiteral("PDFium 与内核的页面 pt 尺寸一致（框选/词盒不会偏移）"),
+                  dw <= 1.0 && dh <= 1.0,
+                  QStringLiteral("PDFium %1x%2 vs 内核 %3x%4")
+                      .arg(pt.width(), 0, 'f', 2).arg(pt.height(), 0, 'f', 2)
+                      .arg(kr.pwPt, 0, 'f', 2).arg(kr.phPt, 0, 'f', 2));
+        } else {
+            out << "  --  内核不可用，跳过「pt 尺寸一致性」与「新旧锐度对比」\n";
+        }
+    } else {
+        out << "  --  未给 --cli-dir，跳过内核对照\n";
+    }
+
+    // ---- ② 按目标分辨率重绘：4x 下取一块，断图像尺寸与内容 ---------------
+    const double s = 4.0;
+    // 取页面中部一块（避开图框边缘，落在真实图元上）。
+    const QRectF regPt(pt.width() * 0.20, pt.height() * 0.20,
+                       qMin(400.0, pt.width() * 0.25), qMin(300.0, pt.height() * 0.25));
+    const QRect regDev(qRound(regPt.x() * s), qRound(regPt.y() * s),
+                       qRound(regPt.width() * s), qRound(regPt.height() * s));
+
+    svc->requestRegion(0, s, regDev);
+    const bool gotTile = waitUntil([&]{ return svc->hasRegionCovering(0, s, regDev); }, 30000);
+    check(QStringLiteral("4x 可视区瓦片渲染完成"), gotTile,
+          QStringLiteral("耗时约 %1 ms/块").arg(svc->lastRenderMs()));
+    const QImage img4 = vectorOpaque(svc->cachedImageForTest(0, s, regDev));
+    check(QStringLiteral("4x 瓦片存在"), !img4.isNull());
+
+    if (!img4.isNull()) {
+        // ★ 核心断言一：图像尺寸 = 请求的设备像素尺寸 ⇒ 是**按目标分辨率重绘**的，
+        //   而不是"某个固定倍率的位图被放大"（后者尺寸与内容都会对不上）。
+        check(QStringLiteral("4x 图像尺寸 = 页面 pt × 4（证明按目标分辨率重绘）"),
+              qAbs(img4.width() - regDev.width()) <= 2 && qAbs(img4.height() - regDev.height()) <= 2,
+              QStringLiteral("%1x%2 vs 期望 %3x%4")
+                  .arg(img4.width()).arg(img4.height()).arg(regDev.width()).arg(regDev.height()));
+
+        // ★ 核心断言二：不黑、也不是空白（白底 + 有墨）。
+        const LumaStats st = imageLuminanceStats(img4);
+        check(QStringLiteral("4x 瓦片不是黑屏"), st.avg > 120 && st.maxLum > 200,
+              QStringLiteral("平均亮度 %1 / 最大 %2").arg(st.avg, 0, 'f', 1).arg(st.maxLum));
+        check(QStringLiteral("4x 瓦片确有图元（明暗范围大）"), st.range() > 40,
+              QStringLiteral("明暗范围 %1").arg(st.range()));
+
+        // ★ 核心断言三：比"旧路径（内核 1x 位图放大到 4x）"明显更锐。
+        if (kernelOk && !kr.img.isNull()) {
+            const QRect reg1(qRound(regPt.x()), qRound(regPt.y()),
+                             qRound(regPt.width()), qRound(regPt.height()));
+            const QImage old1 = vectorOpaque(kr.img).copy(reg1);
+            if (!old1.isNull()) {
+                const QImage oldUp = old1.scaled(img4.size(), Qt::IgnoreAspectRatio,
+                                                Qt::SmoothTransformation);
+                const double sv = vectorSharpness(img4);
+                const double so = vectorSharpness(oldUp);
+                const double ratio = (so > 0) ? sv / so : 0.0;
+                check(QStringLiteral("矢量 4x 明显比旧路径（1x 位图放大）清晰"),
+                      ratio > 1.3,
+                      QStringLiteral("矢量 %1 vs 旧的位图放大 %2 = %3 倍")
+                          .arg(sv, 0, 'f', 3).arg(so, 0, 'f', 3).arg(ratio, 0, 'f', 2));
+            }
+        }
+    }
+
+    // ---- ③ 画布绘制：不是黑屏，且"先出内容再去糊"（渐进式细化）----------
+    {
+        PdfCanvas canvas;
+        canvas.setDocument(pdfPath, pageCount);
+        canvas.setZoom(1.0);
+        const QRect view(0, 0, 800, 600);
+
+        auto paintOnce = [&](const QRect& r) {
+            QImage frame(r.width(), r.height(), QImage::Format_RGB32);
+            frame.fill(Qt::black);
+            QPainter g(&frame);
+            g.translate(-r.x(), -r.y());
+            canvas.paint(g, r, r);      // 首帧：瓦片还没回来，应看到纸面白底而不是黑
+            g.end();
+            return frame;
+        };
+
+        const QImage first = paintOnce(view);
+        const LumaStats f1 = imageLuminanceStats(first);
+        check(QStringLiteral("首帧不是黑屏（纸面白底立刻可见）"),
+              f1.avg > 150, QStringLiteral("平均亮度 %1").arg(f1.avg, 0, 'f', 1));
+        check(QStringLiteral("绘制时确实发起了渲染请求"), canvas.tileRequestsForTest() > 0,
+              QStringLiteral("请求数 %1").arg(canvas.tileRequestsForTest()));
+
+        const bool ready = waitUntil([&]{ return canvas.visibleTilesReadyForTest(); }, 30000);
+        const QImage second = paintOnce(view);
+        const LumaStats f2 = imageLuminanceStats(second);
+        check(QStringLiteral("可视区高清瓦片全部就绪"), ready,
+              QStringLiteral("缓存块数 %1").arg(canvas.cachedRegionCountForTest()));
+        check(QStringLiteral("细化后画面里有图元（不是一张白纸/黑屏）"),
+              f2.range() > 40 && f2.avg > 120,
+              QStringLiteral("平均亮度 %1 / 明暗范围 %2").arg(f2.avg, 0, 'f', 1).arg(f2.range()));
+    }
+
+    svc->clearCacheForTest();
+    out.flush();
+    if (fails) { out << "[FAIL] 矢量渲染自检（" << fails << " 项）\n"; out.flush(); return 1; }
+    out << "[PASS] 矢量渲染：按目标分辨率重绘 + 明显更锐 + 不黑（且首帧即见纸面）\n";
     out.flush();
     return 0;
 }

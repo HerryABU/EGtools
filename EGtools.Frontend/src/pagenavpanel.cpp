@@ -1,9 +1,11 @@
 #include "pagenavpanel.h"
 
 #include "kernelclient.h"
+#include "pdfrender.h"
 
 #include <QDir>
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QHBoxLayout>
 #include <QImageReader>
 #include <QLabel>
@@ -46,21 +48,41 @@ public:
 public slots:
     void run()
     {
-        QTemporaryDir tmp;
-        for (int p = 0; p < m_pages; ++p)
-        {
+        // 缩略图改由 **PDFium** 在进程内渲染：不再"每页起一次内核进程"（旧做法在
+        // 上百页的图纸集上要起上百个进程，慢且容易被环境问题打断）。
+        // 仍然顺序逐页、渲染完一页就发一页（进度可预期，用户不用等全本）。
+        auto* svc = PdfRenderService::instance();
+
+        // ⚠️ 本函数跑在后台线程，而 pagePointSize() 读的是服务在 GUI 线程维护的数据。
+        //    所以在**开始渲染之前**一次性取一份本地副本，之后只用副本 —— 避免跨线程读。
+        QVector<QSizeF> sizes(m_pages);
+        for (int p = 0; p < m_pages; ++p) sizes[p] = svc->pagePointSize(p);
+
+        // 目标：长边约 320px 的缩略图（够看清版式，又不必把大图送进内存）。
+        const double fullW = (sizes.value(0).width() > 1.0) ? sizes.value(0).width() : 842.0;
+        const double scale = qBound(0.03, 320.0 / fullW, 0.5);
+
+        auto devRectFor = [&sizes, scale](int p) {
+            const QSizeF pt = sizes.value(p);
+            if (pt.width() < 1.0) return QRect();
+            return QRect(0, 0, qMax(1, qRound(pt.width() * scale)),
+                               qMax(1, qRound(pt.height() * scale)));
+        };
+
+        for (int p = 0; p < m_pages; ++p) {
             if (m_cancel.loadRelaxed()) break;
-            const QString bmp = QDir(tmp.path()).filePath(QStringLiteral("t%1.bmp").arg(p));
-            const KernelClient::Result r = KernelClient::run(
-                QStringLiteral("EGpdf2excel"),
-                {QStringLiteral("--render"), QStringLiteral("--page"), QString::number(p),
-                 QStringLiteral("--scale"), QStringLiteral("0.12"),
-                 QStringLiteral("--render-out"), bmp, m_pdf},
-                QString(), KernelClient::backendFromString(m_backend));
-            if (r.rc != 0) continue;      // 某页渲染失败就跳过，不中断整批
-            QImage img = QImageReader(bmp).read();
-            if (img.isNull()) continue;
-            emit thumbReady(p, img.copy());
+            const QRect dev = devRectFor(p);
+            if (dev.isEmpty()) continue;
+            svc->requestRegion(p, scale, dev);      // 命中缓存时请求是空操作
+            // 等这一页渲染好（或超时）：保持"逐页推进、可取消"的既有语义。
+            QElapsedTimer t; t.start();
+            while (!svc->hasRegionCovering(p, scale, dev)
+                   && !m_cancel.loadRelaxed() && t.elapsed() < 20000) {
+                QThread::msleep(15);
+            }
+            if (m_cancel.loadRelaxed()) break;
+            const QImage img = svc->cachedImageForTest(p, scale, dev);
+            if (!img.isNull()) emit thumbReady(p, img);
         }
         emit finished();
     }

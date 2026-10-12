@@ -22,7 +22,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent)
+# Pdf = Qt PDF（内置 PDFium，与 Chrome/Acrobat 同引擎）。
+# 用途：预览按**目标分辨率矢量重绘**（任意缩放都清晰），取代"渲染固定倍率位图再放大"。
+find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent Pdf)
 
 # GUI subsystem on purpose (WIN32_EXECUTABLE): a console-subsystem binary makes
 # Windows create a console window on launch, which for a windowed app means the
@@ -40,6 +42,8 @@ add_executable(EGtoolsFrontend
     src/pdfcanvas.cpp
     src/pagerender.h
     src/pagerender.cpp
+    src/pdfrender.h
+    src/pdfrender.cpp
     src/iregioncanvas.h
     src/continuouspdfview.h
     src/continuouspdfview.cpp
@@ -95,7 +99,19 @@ qt_add_resources(EGtoolsFrontend "appres"
           res/app_icon.png
 )
 
-target_link_libraries(EGtoolsFrontend PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Concurrent)
+target_link_libraries(EGtoolsFrontend PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Concurrent Qt6::Pdf)
+
+# ---------------------------------------------------------------------------
+# PDFium 渲染探针（控制台；无 GUI，沙箱可跑）
+#   pdfium_probe <pdf> [输出目录]
+# 用数字确认三件事：scaledClipRect 语义（局部渲染==整页裁剪）、pagePointSize、
+# 以及"矢量重绘 vs 1x 位图放大"的清晰度倍数 —— 改 GUI 之前先把事实钉死。
+# ---------------------------------------------------------------------------
+add_executable(pdfium_probe tools/pdfium_probe.cpp)
+target_link_libraries(pdfium_probe PRIVATE Qt6::Pdf Qt6::Gui)
+if(MSVC)
+    target_compile_options(pdfium_probe PRIVATE /utf-8)
+endif()
 
 # ---------------------------------------------------------------------------
 # 宿主自己的 .NET 运行时配置（内嵌调用用）。

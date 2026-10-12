@@ -26,10 +26,21 @@ PdfView::PdfView(QWidget* parent) : QWidget(parent)
     connect(m_c, &PdfCanvas::repaintNeeded, this, qOverload<>(&QWidget::update));
 }
 
-void PdfView::paintEvent(QPaintEvent*)
+QRect PdfView::visibleCanvasRect() const
+{
+    // 画布通常被塞进 QScrollArea，其直接父对象就是视口（QAbstractScrollArea 的行为）。
+    // 视口可见区在画布坐标里 = mapFrom(视口, (0,0)) 为左上角 + 视口尺寸。
+    if (QWidget* vp = parentWidget()) {
+        if (vp->size().isValid() && !vp->size().isEmpty())
+            return QRect(mapFrom(vp, QPoint(0, 0)), vp->size());
+    }
+    return rect();
+}
+
+void PdfView::paintEvent(QPaintEvent* e)
 {
     QPainter g(this);
-    m_c->paint(g, rect());
+    m_c->paint(g, e->rect(), visibleCanvasRect());
 }
 
 void PdfView::mousePressEvent(QMouseEvent* e)
@@ -97,6 +108,15 @@ void GpuPdfView::resizeGL(int, int)
     // 无需处理：QPainter 在本控件上绘制时会自行按当前 FBO 尺寸设视口/投影。
 }
 
+QRect GpuPdfView::visibleCanvasRect() const
+{
+    if (QWidget* vp = parentWidget()) {
+        if (vp->size().isValid() && !vp->size().isEmpty())
+            return QRect(mapFrom(vp, QPoint(0, 0)), vp->size());
+    }
+    return rect();
+}
+
 void GpuPdfView::paintGL()
 {
     // 复现开关：旧版把绘制写在 paintEvent 里，paintGL 里什么都不做 ⇒ 画面全黑。
@@ -111,7 +131,7 @@ void GpuPdfView::paintGL()
         // QPainter 析构时才把 GL 命令 flush 出去，所以首帧抓图必须在它作用域之外。
         QPainter g(this);
         g.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        m_c->paint(g, rect());
+        m_c->paint(g, rect(), visibleCanvasRect());
     }
 
     // ---- 首帧健全性检查 ----
@@ -155,7 +175,7 @@ void GpuPdfView::paintEvent(QPaintEvent* e)
     if (qEnvironmentVariableIsSet("EGTOOLS_GL_LEGACY_PAINT")) {
         QPainter g(this);                     // 旧写法（必然画不出，见文档注释）
         g.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        m_c->paint(g, rect());
+        m_c->paint(g, rect(), visibleCanvasRect());
         return;
     }
     QOpenGLWidget::paintEvent(e);
@@ -313,6 +333,17 @@ bool gpuRenderingAvailable()
         return false;
     }
 
+    // ⚠️ Auto 默认走 **CPU 光栅**（2026-10-12 改）：
+    //   预览已改为 Qt PDF（PDFium）**矢量分块渲染** —— 每帧只贴几张小图，CPU 光栅
+    //   完全够用；而 GPU 壳（QOpenGLWidget）在远程桌面 / 虚拟机 / 无厂商驱动的机器上
+    //   会因 GL 版本不足变成**纯黑画布**，长期是"预览发黑"投诉的主要来源之一。
+    //   所以默认不再启用 GPU；用户显式选「GPU」时仍然可用（见下面的真探测）。
+    if (backendPref() == RenderBackend::Auto) {
+        p.desc = QStringLiteral("CPU 光栅（矢量分块渲染，不需要 GPU，也不会黑屏）");
+        p.ok = false;
+        return false;
+    }
+
     // 显式关闭开关（排查显卡驱动问题时用）。
     if (qEnvironmentVariableIsSet("EGTOOLS_NO_GPU")) {
         p.desc = QStringLiteral("已按 EGTOOLS_NO_GPU 关闭 GPU，使用 CPU 光栅");
@@ -415,7 +446,8 @@ PdfViewHost createPdfViewHost(QWidget* parent)
 bool gpuShellUsable()
 {
     const RenderBackend saved = renderBackendPreference();
-    if (saved == RenderBackend::Raster) setRenderBackendPreference(RenderBackend::Auto);
+    // ⚠️ 必须临时设成 Gpu 而不是 Auto：Auto 现在语义是"默认光栅"，拿它探测永远为假。
+    if (saved != RenderBackend::Gpu) setRenderBackendPreference(RenderBackend::Gpu);
     const bool ok = gpuRenderingAvailable();
     setRenderBackendPreference(saved);
     return ok;
