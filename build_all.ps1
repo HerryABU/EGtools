@@ -157,6 +157,18 @@ if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake
         $out = "$root\DIST\EGtoolsFrontend"
         New-Item -ItemType Directory -Path $out -Force | Out-Null
         Copy-Item $qtExe $out -Force
+        # ⚠️ 必须把**宿主自己的** runtimeconfig 一起部署，否则打包出来的程序里
+        # 「内嵌调库」通道直接失效：hostfxr 找不到 <exe>.runtimeconfig.json 会退用内核那份
+        # （内核是 self-contained，等于把内核当宿主）⇒ 实测报
+        #   "Initialization for self-contained components is not supported" (hr=0x80008093)
+        # 然后静默回退命令行。这个 bug 只在**跑发布产物**时才暴露（build/ 目录里有这份文件）。
+        $hostCfg = "$root\EGtools.Frontend\build\EGtoolsFrontend.runtimeconfig.json"
+        if (Test-Path $hostCfg) {
+            Copy-Item $hostCfg $out -Force
+            Write-Host 'OK  host runtimeconfig -> DIST/EGtoolsFrontend'
+        } else {
+            Write-Warning "Missing $hostCfg — the embedded kernel backend will NOT work in the package."
+        }
         # Deploy the Qt runtime so the folder runs on a CLEAN machine (no Qt and no
         # VC++ redist installed). We copy the required DLLs/plugins EXPLICITLY rather
         # than shelling out to windeployqt: windeployqt must spawn qtpaths, which is
