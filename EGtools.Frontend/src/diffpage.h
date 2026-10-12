@@ -1,21 +1,38 @@
 #pragma once
 
 #include <QWidget>
+#include <QRectF>
 #include <QString>
+
+#include "diffsettings.h"
 
 class QLabel;
 class QLineEdit;
 class QTextEdit;
 class QPushButton;
-class QSpinBox;
-class QDoubleSpinBox;
-class QCheckBox;
 class QComboBox;
-class QGroupBox;
+class QTabWidget;
+class QTableWidget;
+class QScrollArea;
+class ContinuousPdfView;
 
-// Dedicated "PDF 比对 / 图纸差异" page (drives EGpdf2df).
-// 图形红/绿差异 + 文字直接改色(新增红/删除蓝，git +/- 风格) + 管线号↔材料表一一对应。
-// 持有 no PDF 逻辑——所有实质工作都在 CLI 内核。
+// ---------------------------------------------------------------------------
+// 「图纸比对（PDF2DF）」页
+//
+// 按专业比对软件的范式组织（Bluebeam Compare Documents / Acrobat Compare Files）：
+//
+//   ① 顶部只放"要什么"：基准图 / 目标图 / 输出 / 材料表 + [比对设置…] + [开始比对]。
+//      几十个参数收进设置对话框，并给**预设（比对类型）** —— 不再让人在左侧
+//      一列控件里上下"推拉"。
+//   ② 结果是**真正的查看器**：内嵌 Adobe 式连续滚动视图直接看差异 PDF（默认适合宽度、
+//      Ctrl+滚轮缩放、滚动即翻页），而不是把第 1 页拍成一张静态图片。
+//   ③ **差异清单**（＝Bluebeam 的 Markups List）：每条差异一行，双击/回车即把查看器
+//      跳到该差异并高亮它；带"上一个/下一个差异"与类型筛选 —— 这才是效率核心。
+//   ④ 明细（JSON / 管线号↔材料表 / 图例）降级到底部标签页，不占主视区。
+//
+// 另修一个真 bug：差异 PDF 以前写在 onRun 的局部 QTemporaryDir 中，函数一返回就被
+// 删除，用户其实**拿不到结果文件**。现在落到用户可见的输出目录，并支持"打开输出目录"。
+// ---------------------------------------------------------------------------
 class DiffPage : public QWidget
 {
     Q_OBJECT
@@ -27,6 +44,17 @@ public:
     // 内核调用方式（auto/embedded/cli）—— 由 MainWindow 下发，融合层据此选路。
     void setKernelBackend(const QString& mode) { m_kernelBackend = mode; }
 
+    // ---- 自检钩子（只给无头测试用，不参与业务逻辑）----
+    // 直接喂一份内核返回样式的 JSON，验证「差异清单 / 筛选 / 跳转」这套逻辑。
+    // 这样不必每次跑几分钟的真实比对就能回归核心交互。
+    void   feedDiffResultForTest(const QJsonObject& root);
+    int    diffRowCountForTest() const;
+    int    diffVisibleCountForTest() const;
+    void   setFilterForTest(const QString& id);
+    void   selectDiffRowForTest(int row);
+    int    lastGotoPageForTest() const { return m_lastGotoPage; }
+    QRectF lastGotoRectForTest() const { return m_lastGotoRect; }
+
 signals:
     void statusMessage(const QString& msg);
 
@@ -35,72 +63,55 @@ private slots:
     void onPickTarget();
     void onPickCsv();
     void onClearCsv();
+    void onPickOutDir();
+    void onOpenOutDir();
+    void onOpenSettings();
+    void updateSettingsSummary();
     void onRun();
-    void onBrowsePreview();
-    void onPickTraceColor();
-    void onPickChangeColor();
-    void onPickTextAddedColor();
-    void onPickTextRemovedColor();
-    void onPickMarkStrokeColor();
+    void onDiffRowActivated(int row, int col);
+    void onNextDiff();
+    void onPrevDiff();
 
 private:
     QString cliExe(const QString& name) const;
     void refreshKernelStatus();
+    bool outDirReady(bool createIfNeeded);
+    // 把 JSON 里的 diffs[] 填进清单表；返回条数。
+    int  fillDiffList(const QJsonObject& root);
     void showPipeMatch(const QJsonObject& root);
-    // 弹出颜色选择器；确认后更新按钮色块与颜色值。返回是否改动。
-    bool pickColor(const QString& title, QString& color, QPushButton* btn);
-    // 同步按钮色块（背景=当前颜色，深色底用白字）。
-    static void paintSwatch(QPushButton* btn, const QString& hex);
+    void gotoDiff(int listRow);
+    void updateDiffNav();
+    void applyFilter();
 
     QString m_cliDir;
     QString m_kernelBackend = QStringLiteral("auto");
+    DiffParams m_params;
+
     QLineEdit* m_baseEdit = nullptr;
     QLineEdit* m_tgtEdit  = nullptr;
     QLineEdit* m_csvEdit  = nullptr;
-    QSpinBox*  m_dpiSpin = nullptr;
-    QCheckBox* m_pipeChk = nullptr;
-    QComboBox* m_precCombo = nullptr;            // 精细度 fine/medium/coarse
-    // 可自定义标注色（传给内核 options.colors）：图形描红 / 变更绿 / 新增文字(红) / 删除文字(蓝)。
-    QString m_traceColor  = QStringLiteral("#FF0000");  // 描红线（新增/删除图形）
-    QString m_changeColor = QStringLiteral("#16A34A");  // 变更绿（内容改动的图形）
-    QString m_textAddedColor  = QStringLiteral("#FF0000");  // 新增文字改色（红，git +）
-    QString m_textRemovedColor = QStringLiteral("#0000FF"); // 删除文字改色（蓝，git -）
-    QPushButton* m_traceColorBtn  = nullptr;
-    QPushButton* m_changeColorBtn = nullptr;
-    QPushButton* m_textAddedColorBtn = nullptr;
-    QPushButton* m_textRemovedColorBtn = nullptr;
-    QComboBox* m_textDirCombo = nullptr;   // 变更旧(蓝)文字插入方向 down/up/right/left
-    // 图形标记形式 + 描边色：这类图信息密度很高，实心块会盖住底图，故默认"淡填充+深色描边"。
-    QComboBox* m_markStyleCombo = nullptr;  // semi(半透明+描边) / solid(实心) / outline(仅描边)
-    QString m_markStrokeColor = QString();   // 留空 = 内核自动取标记色深色版
-    QPushButton* m_markStrokeBtn = nullptr;
-    // ---- 矢量检测参数（可调）----
-    QComboBox* m_gfxMethodCombo = nullptr;   // vector(默认,纯矢量) / pixel(渲染+OpenCV 回退)
-    QDoubleSpinBox* m_vecTolSpin = nullptr;  // 矢量比对容差(pt)
-    QDoubleSpinBox* m_vecAngSpin = nullptr;  // 方向容差(度)
-    QDoubleSpinBox* m_nearInkSpin = nullptr; // "墨迹重合"容差(pt)：短线段方向不可靠时的豁免
-    // ---- 差异线样式（沿真实变更线段描边）----
-    QDoubleSpinBox* m_strokeWidthSpin = nullptr;   // 差异线线宽(pt)，细线默认 1.0
-    QDoubleSpinBox* m_strokeOpacitySpin = nullptr; // 差异线不透明度 0~1，默认 0.55
-    QComboBox* m_pageModeCombo = nullptr;          // -p 语义：filter(图号优先+筛选) / pin(索引钉死)
-    QComboBox* m_reportModeCombo = nullptr;  // cluster(按区域) / run(逐条)
-    QDoubleSpinBox* m_clusterRadiusSpin = nullptr;  // 聚类半径(pt)
-    QDoubleSpinBox* m_minClusterLenSpin = nullptr;  // 丢弃小于此总长(pt)的区域
-    QDoubleSpinBox* m_changeRadiusSpin = nullptr;   // 第三态"变更"识别半径(pt)
-    // ---- 文字差异参数 ----
-    QComboBox* m_textBoxModeCombo = nullptr; // word(逐词框,更精确) / line(整行框)
-    QComboBox* m_textSerialCombo = nullptr;  // loose(含行首纯数字) / strict(只认管段号/NOTE n)
-    // ---- 图号配对参数（标题栏图号 = 每页唯一号，同图号才比对）----
-    QDoubleSpinBox* m_sheetNoXSpin = nullptr;   // 图号区 右侧起点比例
-    QDoubleSpinBox* m_sheetNoYSpin = nullptr;   // 图号区 下方起点比例
-    QSpinBox* m_sheetNoMaxSpin = nullptr;       // 总图判定：单页管段号种类数上限
-    // 描红/填充可调参数（线宽粗细、填充透明度、填充外扩像素）。
-    QSpinBox*      m_lwSpin   = nullptr;   // 线宽(描边粗细) 1..10
-    QDoubleSpinBox* m_opacSpin = nullptr;  // 填充透明度 0..1
-    QSpinBox*      m_haloSpin = nullptr;   // 填充外扩像素 0..20
-    QTextEdit* m_jsonView = nullptr;
-    QTextEdit* m_pipeView = nullptr;
-    QLabel*   m_preview   = nullptr;
-    QLabel*   m_status    = nullptr;
-    QPushButton* m_runBtn  = nullptr;
+    QLineEdit* m_outEdit  = nullptr;
+    QLabel*    m_status   = nullptr;
+    QLabel*    m_settingsSummary = nullptr;
+    QPushButton* m_runBtn = nullptr;
+    QPushButton* m_openOutBtn = nullptr;
+
+    // 结果：查看器 + 差异清单
+    ContinuousPdfView* m_viewer = nullptr;
+    QScrollArea*       m_viewScroll = nullptr;
+    QTableWidget*      m_diffTable = nullptr;
+    QComboBox*         m_filterCombo = nullptr;
+    QLabel*            m_diffCountLabel = nullptr;
+    QPushButton*       m_prevBtn = nullptr;
+    QPushButton*       m_nextBtn = nullptr;
+    QLabel*            m_zoomLabel = nullptr;
+
+    QTabWidget* m_detailTabs = nullptr;
+    QTextEdit*  m_jsonView = nullptr;
+    QTextEdit*  m_pipeView = nullptr;
+
+    QString m_outPdfPath;      // 上一次比对产出的差异 PDF（真实路径，不是临时目录）
+    int     m_curDiffRow = -1; // 当前定位到的清单行（-1 = 无）
+    int     m_lastGotoPage = -1;   // 最近一次定位到的页（自检/状态显示用）
+    QRectF  m_lastGotoRect;        // 最近一次定位到的区域（pt）
 };

@@ -125,6 +125,7 @@ bool PdfCanvas::wheelZoom(int angleDeltaY)
 // ---------------------------------------------------------------------------
 void PdfCanvas::paint(QPainter& g, const QRect& widgetRect)
 {
+    ++m_paintCalls;
     // 底色：渲染失败时给出**可读原因**而不是一块深灰（避免"黑屏但不知为何"）。
     const QColor bg(0x3A, 0x3E, 0x44);
     g.fillRect(widgetRect, bg);

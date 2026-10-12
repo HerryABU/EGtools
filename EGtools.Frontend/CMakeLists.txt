@@ -5,10 +5,31 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
+# ---------------------------------------------------------------------------
+# 构建配置：交付物必须是 Release。
+#
+# Ninja 是单配置生成器，不指定 CMAKE_BUILD_TYPE 时**既不是 Debug 也不是 Release**
+# （/O0 无优化、无 NDEBUG，等于一个"三不像"），这是最容易被忽略的一种"发了调试版"
+# 的形态。所以：未指定时默认 Release；显式要求 Debug 时也拒绝并改为 Release
+# （本工程以发布为目的；真需要调试请用 RelWithDebInfo 并自行加断点信息）。
+# ---------------------------------------------------------------------------
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE 未指定 → 默认 Release")
+endif()
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(WARNING "检测到 CMAKE_BUILD_TYPE=Debug —— 已强制改为 Release（本工程只发布 Release）。")
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent)
 
-# Console subsystem (no WIN32 flag) on purpose: the app drives CLI child
-# processes and offers a --selftest mode whose stdout is used for headless QA.
+# GUI subsystem on purpose (WIN32_EXECUTABLE): a console-subsystem binary makes
+# Windows create a console window on launch, which for a windowed app means the
+# user sees a black window **flash** past at startup. The self-test modes still
+# print to stdout — main.cpp attaches to the parent console, but ONLY when the
+# standard handles were not already provided (i.e. no redirection), so
+# `--selftest > out.txt` and `... | Out-String` keep working unchanged.
 add_executable(EGtoolsFrontend
     src/main.cpp
     src/mainwindow.h
@@ -38,6 +59,8 @@ add_executable(EGtoolsFrontend
     src/schemepage.cpp
     src/diffpage.h
     src/diffpage.cpp
+    src/diffsettings.h
+    src/diffsettings.cpp
     src/excelcomparepage.h
     src/excelcomparepage.cpp
     src/materialextractpage.h
@@ -51,6 +74,15 @@ add_executable(EGtoolsFrontend
     src/types.h
     res/app_icon.rc
 )
+
+set_target_properties(EGtoolsFrontend PROPERTIES WIN32_EXECUTABLE TRUE)
+
+# 构建配置进二进制：Release 断言 + 一个常量，便于日志/诊断自证版本。
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    target_compile_definitions(EGtoolsFrontend PRIVATE EGTOOLS_BUILD_CONFIG="Release")
+else()
+    target_compile_definitions(EGtoolsFrontend PRIVATE EGTOOLS_BUILD_CONFIG="${CMAKE_BUILD_TYPE}")
+endif()
 
 # Embed the in-app manual + the window/taskbar icon as Qt resources so they
 # travel inside the binary.

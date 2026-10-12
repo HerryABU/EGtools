@@ -33,6 +33,7 @@
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QSettings>
+#include <QSysInfo>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -67,6 +68,15 @@ MainWindow::MainWindow(const QString& cliDir, QWidget* parent) : QMainWindow(par
         if (!env.isEmpty()) mode = QString::fromLocal8Bit(env);
         KernelClient::setDefaultBackend(KernelClient::backendFromString(mode));
     }
+    // 渲染后端偏好：环境变量 > QSettings > 自动。必须在 buildUi()（会建画布壳）之前设好。
+    // 这是"画布黑屏"的用户侧兜底开关：任何异常观感都能一键切到 CPU 光栅。
+    {
+        QString mode = QSettings().value(QStringLiteral("render/backend"),
+                                         QStringLiteral("auto")).toString();
+        const QByteArray env = qgetenv("EGTOOLS_RENDER_BACKEND");
+        if (!env.isEmpty()) mode = QString::fromLocal8Bit(env);
+        setRenderBackendPreference(renderBackendFromString(mode));
+    }
     buildUi();
     // 预取用单线程池：只在空闲时占用一个后台线程渲染相邻页（并行/异步渲染），
     // 不把 CPU 吃满，也不与用户操作争抢内核（内核调用在融合层内部串行）。
@@ -76,6 +86,32 @@ MainWindow::MainWindow(const QString& cliDir, QWidget* parent) : QMainWindow(par
             .arg(m_cliDir.isEmpty() ? QStringLiteral("<未设置>") : m_cliDir));
     // 明确告诉用户/日志当前走的是 GPU 还是 CPU 光栅 —— 排查"画面不对"时第一条线索。
     log(QStringLiteral("渲染路径：%1").arg(gpuBackendDescription()));
+
+    // 构建配置进日志：交付的必须是 Release（用户能一眼确认，而不是只看文件名）。
+    // QT_NO_DEBUG 由 Qt 在非 Debug 配置下定义（等价于 NDEBUG），是可靠的判据。
+    {
+#if defined(QT_NO_DEBUG)
+        const QString cfg = QStringLiteral("Release");
+#else
+        const QString cfg = QStringLiteral("Debug");
+#endif
+#if defined(_MSC_VER)
+        const QString cc = QStringLiteral("MSVC %1").arg(_MSC_VER);
+#elif defined(__clang__)
+        const QString cc = QStringLiteral("Clang %1").arg(__clang_major__);
+#elif defined(__GNUC__)
+        const QString cc = QStringLiteral("GCC %1").arg(__GNUC__);
+#else
+        const QString cc = QStringLiteral("unknown compiler");
+#endif
+#if defined(Q_OS_WIN64) || defined(Q_OS_WIN32)
+        const QString plat = QStringLiteral("Windows %1-bit").arg(QString::number(QSysInfo::WordSize));
+#else
+        const QString plat = QStringLiteral("non-Windows");
+#endif
+        log(QStringLiteral("构建配置：%1 · %2 · Qt %3 · %4")
+                .arg(cfg, cc, QString::fromLatin1(qVersion()), plat));
+    }
 }
 
 // ---------------------------------------------------------------- UI
@@ -209,6 +245,30 @@ void MainWindow::buildUi()
         connect(layStack, &QAction::triggered, this, [this]{ setStackedLayout(true); });
 
         mView->addSeparator();
+        // ---- 渲染后端：自动 / GPU / CPU 光栅 ----
+        // 这一项直接对应"画布是不是黑的"：老驱动、远程桌面、虚拟机上的 OpenGL 往往是
+        // 微软的 GDI Generic 1.1，QOpenGLWidget 需要 GL 2.0+，那种环境必黑。
+        // 探测已经把关（GL 版本不足自动走光栅），这里再给一个**一键手动兜底**，
+        // 用户在任何异常观感下都能立刻切到 CPU 光栅并永久生效。
+        auto* beGroup = new QActionGroup(this);
+        beGroup->setExclusive(true);
+        const QString beNow = QSettings().value(QStringLiteral("render/backend"),
+                                               QStringLiteral("auto")).toString();
+        struct { const char* label; const char* id; } backends[] = {
+            { "渲染后端：自动（探测通过用 GPU，否则光栅）", "auto"   },
+            { "渲染后端：GPU 加速",                          "gpu"    },
+            { "渲染后端：CPU 光栅（最稳，任何机器都不黑屏）", "raster" },
+        };
+        for (const auto& b : backends) {
+            auto* a = mView->addAction(QString::fromUtf8(b.label));
+            a->setCheckable(true);
+            a->setChecked(beNow == QLatin1String(b.id));
+            const QString id = QString::fromLatin1(b.id);
+            beGroup->addAction(a);
+            connect(a, &QAction::triggered, this, [this, id]{ setRenderBackend(id); });
+        }
+
+        mView->addSeparator();
         auto* themeGroup = new QActionGroup(this);
         themeGroup->setExclusive(true);
         const Theme::Mode cur = Theme::current();
@@ -242,12 +302,17 @@ void MainWindow::buildUi()
     // 画布走工厂：探测到可用的硬件 OpenGL 就用 GPU 壳，否则用 CPU 光栅壳 —— GPU
     // 是"加分项"，探测失败绝不会变成黑屏。
     m_view = createPdfViewHost();
+    if (m_view.gpu) {
+        // GPU 壳首帧自检失败 → 热切换到光栅壳（见 useRasterBackend）。
+        // 用 QueuedConnection：切换发生在 paintGL() 内部的信号里，必须等本帧画完再动控件。
+        if (auto* gpu = dynamic_cast<GpuPdfView*>(m_view.widget)) {
+            connect(gpu, &GpuPdfView::frameSuspect, this, [this](const QString& why){
+                useRasterBackend(why);
+            }, Qt::QueuedConnection);
+        }
+    }
     activeCanvas()->setKind(QStringLiteral("detail_table"));
-    connect(m_view.canvas, &PdfCanvas::regionSelected, this, &MainWindow::onRegionSelected);
-    connect(m_view.canvas, &PdfCanvas::textPreview, this, &MainWindow::onTextPreview);
-    connect(m_view.canvas, &PdfCanvas::zoomChanged, this, [this](double z){
-        if (m_zoomLabel) m_zoomLabel->setText(QStringLiteral("缩放 %1%").arg(qRound(z * 100)));
-    });
+    wirePdfCanvas();
 
     auto* scroll = new QScrollArea();
     m_scroll = scroll;
@@ -968,6 +1033,9 @@ bool MainWindow::openPdf(const QString& path)
     if (m_pageNav) { m_pageNav->setDocument(path, m_pageCount); m_pageNav->setCurrentPage(0); }
     log(QStringLiteral("已打开 %1（%2 页，%3 x %4 pt）")
             .arg(QFileInfo(path).fileName()).arg(m_pageCount).arg(pw).arg(ph));
+    // 打开成功就把用户带到看图的页 —— 否则从命令行/文件关联打开时会停在首页，
+    // 画布处于 QStackedWidget 的隐藏页里，看起来像"什么都没打开"。
+    navTo(PagePdf);
     return true;
 }
 
@@ -986,6 +1054,94 @@ QScrollArea* MainWindow::activeScroll() const
 {
     if (m_continuousMode && m_contScroll) return m_contScroll;
     return m_scroll;
+}
+
+void MainWindow::wirePdfCanvas()
+{
+    if (!m_view.canvas) return;
+    connect(m_view.canvas, &PdfCanvas::regionSelected, this, &MainWindow::onRegionSelected);
+    connect(m_view.canvas, &PdfCanvas::textPreview,    this, &MainWindow::onTextPreview);
+    connect(m_view.canvas, &PdfCanvas::zoomChanged, this, [this](double z){
+        if (m_zoomLabel) m_zoomLabel->setText(QStringLiteral("缩放 %1%").arg(qRound(z * 100)));
+    });
+}
+
+// 换画布壳：把"当前状态"整体搬过去，用户无感。两条触发路径共用（自愈 / 手动切后端）。
+void MainWindow::rebuildCanvasShell(bool wantGpu, const QString& why)
+{
+    if (!m_scroll) return;
+    if (wantGpu && !gpuShellUsable()) {
+        log(QStringLiteral("GPU 渲染在当前环境不可用 —— 继续使用 CPU 光栅。"));
+        wantGpu = false;
+    }
+    if (m_view.gpu == wantGpu) return;      // 目标壳与现状一致，不必重建
+
+    PdfCanvas* old = m_view.canvas;
+
+    // 1) 抄状态 —— 换壳必须"无感"。
+    const QImage  img    = old ? old->image() : QImage();
+    const double  rscale = old ? old->renderScale() : 1.0;
+    const int     page   = old ? old->pageIndex() : 0;
+    const double  zoom   = old ? old->zoom() : 1.0;
+    const QString kind   = old ? old->kind() : QStringLiteral("detail_table");
+    const QVector<Region>  regions = old ? old->regions() : QVector<Region>();
+    const QVector<WordBox> words   = old ? old->pageWords() : QVector<WordBox>();
+    const bool    failed = old ? old->lastRenderFailed() : false;
+
+    // 2) 换壳（先摘旧的，再装新的，避免 QScrollArea 短暂持空指针）。
+    QWidget* dead = m_scroll->takeWidget();   // 摘掉旧壳（不删除）
+    PdfViewHost next = wantGpu ? createPdfViewHost() : createRasterPdfViewHost();
+    if (next.gpu) {
+        // 新一轮 GPU 壳同样接上首帧自检 → 若仍画不出，继续自愈回光栅。
+        if (auto* gpu = dynamic_cast<GpuPdfView*>(next.widget)) {
+            connect(gpu, &GpuPdfView::frameSuspect, this, [this](const QString& r){
+                useRasterBackend(r);
+            }, Qt::QueuedConnection);
+        }
+    }
+    PdfCanvas* nc = next.canvas;
+    if (!img.isNull()) nc->setPage(img, rscale, page);
+    nc->setKind(kind);
+    for (const Region& r : regions) nc->addRegion(r);
+    nc->setPageWords(words);
+    nc->setZoom(zoom);
+    if (failed) nc->setRenderFailed(QStringLiteral("见「内核日志」页"));
+
+    m_view = next;
+    m_scroll->setWidget(m_view.widget);
+    wirePdfCanvas();
+    m_view.widget->update();
+    if (dead) dead->deleteLater();
+
+    if (!why.isEmpty())
+        log(QStringLiteral("⚠ 已切换到 CPU 光栅壳（原因：%1）；页面/缩放/框选均保留。").arg(why));
+}
+
+// GPU 壳"画不出东西"的自愈路径。
+void MainWindow::useRasterBackend(const QString& reason)
+{
+    if (!m_view.gpu) return;                 // 已经是光栅壳
+    rebuildCanvasShell(false, reason);
+    log(QStringLiteral("提示：可用 EGTOOLS_NO_GPU=1 或「视图 → 渲染后端 → CPU 光栅」永久跳过 GPU。"));
+}
+
+// 用户在菜单里切渲染后端：持久化 + 立即生效。
+void MainWindow::setRenderBackend(const QString& mode)
+{
+    const RenderBackend b = renderBackendFromString(mode);
+    setRenderBackendPreference(b);
+    QSettings().setValue(QStringLiteral("render/backend"), renderBackendToString(b));
+
+    if (b == RenderBackend::Raster) {
+        rebuildCanvasShell(false, QString());
+        log(QStringLiteral("渲染后端：CPU 光栅（最保底，任何机器都不会黑屏）"));
+    } else if (b == RenderBackend::Gpu) {
+        rebuildCanvasShell(true, QString());
+        log(QStringLiteral("渲染后端：GPU —— %1").arg(gpuBackendDescription()));
+    } else {
+        rebuildCanvasShell(true, QString());     // Auto：可用则 GPU，否则光栅
+        log(QStringLiteral("渲染后端：自动 —— %1").arg(gpuBackendDescription()));
+    }
 }
 
 void MainWindow::setContinuousMode(bool continuous)

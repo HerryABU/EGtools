@@ -15,6 +15,9 @@
     <Company>HerryABU</Company>
     <Product>EGtools</Product>
     <Copyright>Copyright © 2026 HerryABU</Copyright>
+    <!-- 发布目录不带符号文件：交付的是 Release，产物里不该混着 *.pdb。 -->
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+    <DebugType>portable</DebugType>
   </PropertyGroup>
 
   <ItemGroup>

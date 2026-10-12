@@ -49,6 +49,19 @@ public:
     // Loads a PDF and renders page 0. Returns false (and logs) on failure.
     bool openPdf(const QString& path);
 
+    // ---- 自检钩子（只给无头/自动化测试用，不参与任何业务逻辑）----
+    // 端到端画布绘制自检必须能拿到"真实主窗口里那个画布控件"：只有这样才能复现
+    // "渲染正常但界面全黑"这类故障（画布控件在 QScrollArea/QStackedWidget 里的
+    // 真实处境，与单独 new 一个壳测试并不等价）。
+    QWidget* canvasWidgetForTest() const { return m_view.widget; }
+    PdfCanvas* canvasForTest() const { return m_view.canvas; }
+    bool     canvasIsGpuForTest() const { return m_view.gpu; }
+    int      pageCountForTest() const { return m_pageCount; }
+    QString  continuousBackendForTest() const { return gpuBackendDescription(); }
+    // 切到「PDF 工具」页 —— `onOpen()` 会做这一步（showPage(1)），
+    // 自检若只调 openPdf() 而不导航，画布其实处于隐藏页里，抓图只会得到底色。
+    void     showPdfPageForTest() { showPage(PagePdf); }
+
 public slots:
     void onOpen();
     void onPrevPage();
@@ -90,6 +103,16 @@ private:
     // 于是框选/语义/缩放/叠加层这些操作对视图类型无感。
     IRegionCanvas* activeCanvas() const;
     QScrollArea*   activeScroll() const;
+    // 把画布信号接到本窗口（构造与"热换壳"两处都要用，故抽成函数）。
+    void wirePdfCanvas();
+    // 换画布壳（携带当前页图/缩放/框选/词盒，用户无感）。
+    //   wantGpu=false → 一定用光栅；true → 机器可用才用 GPU，否则回落并记日志。
+    // 两种触发：GPU 壳首帧画不出内容时自愈（useRasterBackend），
+    // 以及用户在「视图 → 渲染后端」里手动切换（setRenderBackend）。
+    void rebuildCanvasShell(bool wantGpu, const QString& why);
+    void useRasterBackend(const QString& reason);
+    // 渲染后端偏好（auto/gpu/raster）：持久化 + 立即重建画布。
+    void setRenderBackend(const QString& mode);
     // 切换视图模式：true = 连续滚动（Adobe 式），false = 单页精看。
     void setContinuousMode(bool continuous);
     // 布局模式：false = 侧栏式（导航树在左列）；true = 竖向堆叠式

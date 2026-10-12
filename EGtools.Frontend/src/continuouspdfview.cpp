@@ -742,6 +742,20 @@ void ContinuousPdfView::paintEvent(QPaintEvent* ev)
             g.setBrush(Qt::NoBrush);
         }
 
+        // ---- 差异定位高亮（跳到某条差异时用，瞬态、不参与导出）----
+        if (m_focusDiffPage == i && !m_focusDiffRectPt.isNull()) {
+            const QRectF rr(pageRect.topLeft() + QPointF(m_focusDiffRectPt.x() * m_zoom,
+                                                         m_focusDiffRectPt.y() * m_zoom),
+                            QSizeF(m_focusDiffRectPt.width()  * m_zoom,
+                                   m_focusDiffRectPt.height() * m_zoom));
+            // 内外两层：浅色光晕 + 醒目的橙色虚线，缩放到任何倍率都能一眼看到。
+            g.setBrush(Qt::NoBrush);
+            g.setPen(QPen(QColor(255, 140, 0, 90), 6));
+            g.drawRect(rr.adjusted(-3, -3, 3, 3));
+            g.setPen(QPen(QColor(255, 90, 0), 2, Qt::DashLine));
+            g.drawRect(rr);
+        }
+
         // ---- 进行中的橡皮筋 ----
         if (m_dragging && m_dragPage == i) {
             const QRectF band = QRectF(m_pressPt, m_curPt).normalized();
@@ -751,4 +765,42 @@ void ContinuousPdfView::paintEvent(QPaintEvent* ev)
             g.setBrush(Qt::NoBrush);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 差异定位：把某条差异滚到视口中央并高亮（"跳到下一个差异"的实现基础）
+// ---------------------------------------------------------------------------
+void ContinuousPdfView::focusRegion(int page, const QRectF& rectPt)
+{
+    if (page < 0 || page >= m_slots.size()) return;
+    m_focusDiffPage = page;
+    m_focusDiffRectPt = rectPt;
+
+    // 先把目标页放进渲染队首（与 scrollToPage 同理：滚动条 range 可能还没算出来）。
+    m_focusPage = page;
+    ensurePageQueued(page);
+
+    if (m_scroll) {
+        const QRectF slot = m_slots[page].rect;
+        // 有区域时把"区域中心"对准视口中心；否则把页顶对齐视口顶。
+        int target;
+        if (!rectPt.isNull()) {
+            const double cy = slot.top() + (rectPt.y() + rectPt.height() / 2.0) * m_zoom;
+            target = qRound(cy - m_scroll->viewport()->height() / 2.0);
+        } else {
+            target = qRound(slot.top() - kMarginY);
+        }
+        m_scroll->verticalScrollBar()->setValue(target);
+    }
+    updateVisiblePages();
+    update();
+    emit currentPageChanged(page);
+}
+
+void ContinuousPdfView::clearFocusRegion()
+{
+    if (m_focusDiffPage < 0) return;
+    m_focusDiffPage = -1;
+    m_focusDiffRectPt = QRectF();
+    update();
 }

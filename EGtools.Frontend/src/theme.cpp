@@ -162,6 +162,15 @@ QLabel#recogBar { background: %(headerBg)s; border: 1px solid %(warning)s;
 QLabel#sectionTitle { color: %(accent)s; font-weight: 600; }
 QLabel#mutedHint { color: %(textMuted)s; }
 QLabel#pageBadge { color: %(text)s; font-weight: 600; }
+/* 主操作按钮（专业软件都让"开始"这类动作最显眼） */
+QPushButton#primaryBtn { background: %(success)s; color: #FFFFFF; font-weight: 600;
+                         border: 1px solid %(success)s; border-radius: 5px; padding: 4px 16px; }
+QPushButton#primaryBtn:hover { background: %(accentHover)s; border-color: %(accentHover)s; }
+QPushButton#primaryBtn:disabled { background: %(panelBg)s; color: %(textMuted)s;
+                                  border-color: %(border)s; }
+/* 设置摘要 / 对话框说明文字 */
+QLabel#diffSummary { color: %(textMuted)s; font-size: 12px; }
+QLabel#dlgHint { color: %(textMuted)s; font-size: 12px; }
 )")
         .replace(QStringLiteral("%(text)s"), QLatin1String(p.text))
         .replace(QStringLiteral("%(windowBg)s"), QLatin1String(p.windowBg))

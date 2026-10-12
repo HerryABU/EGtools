@@ -1,9 +1,11 @@
 #include "selftest.h"
 #include "pdfcanvas.h"
+#include "pdfview.h"          // createPdfViewHost / frameLooksBlank / gpuBackendDescription
 #include "continuouspdfview.h"
 #include "kernelclient.h"
 #include "materialextractpage.h"
 #include "mainwindow.h"
+#include "diffpage.h"
 
 #include <QDir>
 #include <QElapsedTimer>
@@ -14,6 +16,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPixmap>
 #include <QScreen>
 #include <QScrollArea>
 #include <QStatusBar>
@@ -594,6 +597,406 @@ int runMathTest()
     out.flush();
     if (fails) { out << "[FAIL] math test (" << fails << ")\n"; out.flush(); return 1; }
     out << "[PASS] math test: coordinate mapping derived from render scale + zoom, not hard-coded\n";
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 画布绘制自检：渲染成功 ≠ 画出来了
+//
+// 这是"全黑"这类故障唯一能被自动抓住的地方：内核渲染本身没问题（--test-render 已
+// 证明过），但**画布壳**可能根本没把内容落到屏幕上 —— 曾经的 GPU 壳把 QPainter 画在
+// paintEvent() 里，而 QOpenGLWidget 的绘制目标是自己的 FBO，结果稳定显示为纯黑。
+// 做法：走真实工厂拿到画布壳 → 塞入真实渲染结果 → grab() 抓成位图 → 统计像素。
+// ---------------------------------------------------------------------------
+// 统一走 pdfview 的度量实现（自检与首帧判定同一口径，避免两处阈值不一致）。
+static void luminanceStats(const QImage& img, double* avg, int* mn, int* mx, double* brightFrac)
+{
+    const LumaStats s = imageLuminanceStats(img);
+    *avg = s.avg; *mn = s.minLum; *mx = s.maxLum; *brightFrac = s.brightFrac;
+}
+
+int runPaintTest(const QString& cliDirIn, const QString& pdfIn)
+{
+    const QString cliDir = cliDirIn.isEmpty() ? qEnvironmentVariable("EGTOOLS_CLI_DIR") : cliDirIn;
+    QString pdf = pdfIn;
+    if (pdf.isEmpty()) pdf = qEnvironmentVariable("EGTOOLS_SELFTEST_PDF");
+    if (!cliDir.isEmpty()) KernelClient::setCliDir(cliDir);
+    if (pdf.isEmpty() || !QFile::exists(pdf)) {
+        out << "[SKIP] 未提供 PDF（--pdf 或 EGTOOLS_SELFTEST_PDF）\n"; out.flush(); return 0;
+    }
+
+    out << "=== 画布绘制自检 ===\n";
+    out << "渲染路径: " << gpuBackendDescription() << "\n";
+
+    QTemporaryDir tmp;
+    const QString bmp = QDir(tmp.path()).filePath(QStringLiteral("page.bmp"));
+    const KernelClient::Result kr = callKernel(
+        {QStringLiteral("--render"), QStringLiteral("--page"), QStringLiteral("0"),
+         QStringLiteral("--scale"), QStringLiteral("1"),
+         QStringLiteral("--render-out"), bmp, pdf});
+    if (kr.rc != 0) {
+        out << "[FAIL] 渲染失败 rc=" << kr.rc << " " << kr.err.trimmed() << "\n"; out.flush(); return 3;
+    }
+    const QJsonObject meta = QJsonDocument::fromJson(kr.out.toUtf8()).object();
+    const double scale = meta.value(QStringLiteral("scale")).toDouble(1.0);
+    const QImage img = QImageReader(bmp).read();
+    if (img.isNull()) { out << "[FAIL] 读不到渲染图: " << bmp << "\n"; out.flush(); return 4; }
+    out << "页面图: " << img.width() << "x" << img.height()
+        << "  渲染比例=" << scale << "\n";
+
+    // 走**真实工厂**：GPU 可用就是 GPU 壳，否则光栅壳 —— 测的正是用户实际拿到的那条路径。
+    PdfViewHost host = createPdfViewHost();
+    out << "画布壳: " << (host.gpu ? "GPU (QOpenGLWidget)" : "CPU 光栅 (QWidget)") << "\n";
+
+    host.canvas->setPage(img, scale, 0);
+    // 缩到 1200px 宽以内再抓图：像素统计只需要"画没画出来"，不需要整张原图。
+    host.canvas->setZoom(qMin(1.0, 1200.0 / qMax(1, img.width())));
+    host.widget->resize(host.canvas->canvasSize());
+    host.widget->show();
+    QApplication::processEvents();
+
+    // grab() 返回 QPixmap（对 QOpenGLWidget 会走 grabFramebuffer），转成 QImage 好统计像素。
+    const QImage frame = host.widget->grab().toImage();
+    if (frame.isNull()) { out << "[FAIL] grab() 返回空图\n"; out.flush(); return 5; }
+
+    double avg = 0; int mn = 0, mx = 0; double brightFrac = 0;
+    luminanceStats(frame, &avg, &mn, &mx, &brightFrac);
+    out << "抓到位图: " << frame.width() << "x" << frame.height()
+        << "  平均亮度=" << QString::number(avg, 'f', 1)
+        << " (min " << mn << " / max " << mx << ")"
+        << "  亮底占比=" << QString::number(brightFrac * 100, 'f', 1) << "%\n";
+
+    QString why;
+    if (frameLooksBlank(frame, &why)) {
+        out << "[FAIL] 画布没画出内容 —— " << why << "\n";
+        out << "       渲染是成功的，所以问题在显示侧（画布壳/GL 合成）。\n";
+        out.flush();
+        delete host.widget;
+        return 6;
+    }
+    // 更进一步：图纸页应以白底为主。只有底色、没有页面 ⇒ 同样算没画出来。
+    if (brightFrac < 0.05) {
+        out << "[FAIL] 位图里几乎没有亮底（页面白纸）—— 页面没被绘制，只有底色。\n";
+        out.flush();
+        delete host.widget;
+        return 7;
+    }
+
+    out << "[PASS] 画布绘制：内容确实落到了位图上（非纯黑，且含页面白底 "
+        << QString::number(brightFrac * 100, 'f', 1) << "%）\n";
+    out.flush();
+    delete host.widget;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 端到端「界面到底显示了什么」自检
+//
+// 与 --test-paint 的差别很关键：--test-paint 是**单独 new 一个画布壳**，
+// 而这个测试走**真实主窗口**：那个画布壳实际是 QScrollArea(view) ⊂ QStackedWidget
+// ⊂ QSplitter ⊂ QMainWindow。故障往往只在这种真实嵌套里出现（合成、裁剪、滚动区域
+// 视口、DPI、GL 子窗口…），单独测壳测不出来。
+// 做法：构造 MainWindow → 打开 PDF → 抓画布控件的位图 → 统计像素。
+// ---------------------------------------------------------------------------
+int runUiPaintTest(const QString& cliDirIn, const QString& pdfIn)
+{
+    const QString cliDir = cliDirIn.isEmpty() ? qEnvironmentVariable("EGTOOLS_CLI_DIR") : cliDirIn;
+    QString pdf = pdfIn;
+    if (pdf.isEmpty()) pdf = qEnvironmentVariable("EGTOOLS_SELFTEST_PDF");
+    if (!cliDir.isEmpty()) KernelClient::setCliDir(cliDir);
+    if (pdf.isEmpty() || !QFile::exists(pdf)) {
+        out << "[SKIP] 未提供 PDF（--pdf 或 EGTOOLS_SELFTEST_PDF）\n"; out.flush(); return 0;
+    }
+
+    out << "=== 界面绘制自检（真实主窗口）===\n";
+    out << "平台: " << QGuiApplication::platformName() << "\n";
+
+    MainWindow w(cliDir);
+    w.resize(1280, 860);
+    w.show();
+    // 让窗口真正完成首次布局/合成 —— 这正是"画布在真实嵌套里"与"孤立测壳"的差别。
+    for (int i = 0; i < 30; ++i) { QApplication::processEvents(); QThread::msleep(20); }
+
+    // 必须切到「PDF 工具」页：真实用户流程是 打开PDF → showPage(1) → 渲染。
+    // 停在首页时画布处于 QStackedWidget 的隐藏页里，抓图只会拿到底色。
+    w.showPdfPageForTest();
+    for (int i = 0; i < 10; ++i) { QApplication::processEvents(); QThread::msleep(20); }
+
+    if (!w.openPdf(pdf)) { out << "[FAIL] openPdf 失败\n"; out.flush(); return 3; }
+    out << "页数=" << w.pageCountForTest()
+        << "  画布=" << (w.canvasIsGpuForTest() ? "GPU (QOpenGLWidget)" : "CPU 光栅 (QWidget)") << "\n";
+    out << "渲染路径: " << w.continuousBackendForTest() << "\n";
+
+    // give the GL compositor a few frames before grabbing.
+    // 这段等待也是自愈的窗口期：GPU 壳首帧画出问题时会在这期间被换成光栅壳。
+    for (int i = 0; i < 40; ++i) { QApplication::processEvents(); QThread::msleep(25); }
+
+    // ⚠️ 必须在这之后再取画布控件：换壳会把旧控件 deleteLater，提前取到的指针会失效。
+    QWidget* cv = w.canvasWidgetForTest();
+    if (!cv) { out << "[FAIL] 拿不到画布控件\n"; out.flush(); return 4; }
+
+    // 诊断：先分清"画布没画"与"画了但 grab() 抓不到 GL 内容"（两者表现都是糊底）。
+    PdfCanvas* pc = w.canvasForTest();
+    out << "等待后画布=" << (w.canvasIsGpuForTest() ? "GPU" : "CPU 光栅")
+        << "（用于观察 GPU 自愈是否发生）\n";
+    out << "诊断: hasImage=" << (pc && pc->hasImage() ? "yes" : "no")
+        << " 图尺寸=" << (pc ? QStringLiteral("%1x%2").arg(pc->image().width()).arg(pc->image().height())
+                             : QStringLiteral("?"))
+        << " zoom=" << (pc ? QString::number(pc->zoom(), 'f', 2) : QStringLiteral("?"))
+        << " 页=" << (pc ? pc->pageIndex() : -1)
+        << " paint()次数=" << (pc ? pc->paintCalls() : -1)
+        << " dpr=" << QString::number(cv->devicePixelRatioF(), 'f', 2)
+        << " 可见=" << (cv->isVisible() ? 1 : 0) << "\n";
+
+    const QImage frame = cv->grab().toImage();
+    if (frame.isNull()) { out << "[FAIL] 画布 grab() 返回空图\n"; out.flush(); return 5; }
+
+    QImage best = frame;   // 以"能取到内容"的那份为判定依据
+    double avg = 0; int mn = 0, mx = 0; double brightFrac = 0;
+    luminanceStats(frame, &avg, &mn, &mx, &brightFrac);
+    out << "grab()      : " << frame.width() << "x" << frame.height()
+        << "  平均亮度=" << QString::number(avg, 'f', 1)
+        << " (min " << mn << " / max " << mx << ")"
+        << "  亮底占比=" << QString::number(brightFrac * 100, 'f', 1) << "%\n";
+
+    // GPU 壳额外直接读 FBO：grab() 走的是控件渲染路径，grabFramebuffer() 走的是
+    // QOpenGLWidget 自己的帧缓冲 —— 两者的差异能直接指出问题出在哪一层。
+    if (auto* gpu = dynamic_cast<GpuPdfView*>(cv)) {
+        const QImage fb = gpu->grabFramebuffer();
+        if (!fb.isNull()) {
+            double a2 = 0; int m2 = 0, x2 = 0; double b2 = 0;
+            luminanceStats(fb, &a2, &m2, &x2, &b2);
+            out << "grabFramebuf: " << fb.width() << "x" << fb.height()
+                << "  平均亮度=" << QString::number(a2, 'f', 1)
+                << " (min " << m2 << " / max " << x2 << ")"
+                << "  亮底占比=" << QString::number(b2 * 100, 'f', 1) << "%\n";
+            if (b2 > brightFrac) { best = fb; avg = a2; mn = m2; mx = x2; brightFrac = b2; }
+        }
+    }
+
+    QString why;
+    if (frameLooksBlank(best, &why)) {
+        out << "[FAIL] 真实主窗口里的画布是全黑的 —— " << why << "\n";
+        out.flush();
+        return 6;
+    }
+    if (brightFrac < 0.05) {
+        out << "[FAIL] 画布只有底色、没有页面内容（亮底占比 "
+            << QString::number(brightFrac * 100, 'f', 1) << "%）\n";
+        out.flush();
+        return 7;
+    }
+
+    // ---- 决定性一步：屏幕像素 ----
+    // QWidget::grab() 对 QOpenGLWidget 会走它的 FBO，所以"能抓到内容"只说明 FBO 对，
+    // **不说明屏幕上合成出来是对的**。用户看到的黑屏只可能出现在合成层，所以必须直接
+    // 抓屏幕像素来判定。没有真实显示（无头）时跳过，不误报。
+    if (QScreen* scr = QGuiApplication::primaryScreen()) {
+        const QPixmap shot = scr->grabWindow(0);
+        if (!shot.isNull() && shot.width() > 64) {
+            const qreal dpr = shot.devicePixelRatio();
+            const QPoint cvGlobal = cv->mapToGlobal(QPoint(0, 0));
+            // 画布可能大于窗口：只看**真正落在窗口里**的那块。
+            const QRect vis = QRect(cvGlobal, cv->size()).intersected(w.frameGeometry());
+            if (vis.width() > 32 && vis.height() > 32) {
+                QImage desktop = shot.toImage();
+                QRect cut(qRound(vis.x() * dpr), qRound(vis.y() * dpr),
+                          qRound(vis.width() * dpr), qRound(vis.height() * dpr));
+                cut &= QRect(0, 0, desktop.width(), desktop.height());
+                if (cut.width() > 32 && cut.height() > 32) {
+                    const QImage region = desktop.copy(cut);
+                    double a3 = 0; int m3 = 0, x3 = 0; double b3 = 0;
+                    luminanceStats(region, &a3, &m3, &x3, &b3);
+                    out << "屏幕像素    : " << region.width() << "x" << region.height()
+                        << " (dpr=" << QString::number(dpr, 'f', 2) << ")"
+                        << "  平均亮度=" << QString::number(a3, 'f', 1)
+                        << " (min " << m3 << " / max " << x3 << ")"
+                        << "  亮底占比=" << QString::number(b3 * 100, 'f', 1) << "%\n";
+                    if (b3 < 0.05) {
+                        out << "[FAIL] 屏幕上画布区域是黑的/只有底色 —— 这是真实用户看到的现象"
+                            << "（FBO 内有内容，但合成到屏幕后没了）。\n";
+                        out.flush();
+                        return 8;
+                    }
+                    out << "  → 屏幕合成正确（不是 FBO 层的假通过）\n";
+                }
+            }
+        }
+    }
+
+    out << "[PASS] 界面绘制：真实主窗口的画布显示了页面内容（亮底 "
+        << QString::number(brightFrac * 100, 'f', 1) << "%）\n";
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 截图取证：把真实主窗口（含画布）与整屏保存成 PNG，供人工/多模态复核。
+// 有些故障（配色、排版、合成层）用数字说不清，一张图胜过一堆阈值。
+// ---------------------------------------------------------------------------
+int runScreenshot(const QString& cliDirIn, const QString& pdfIn, const QString& outPng)
+{
+    const QString cliDir = cliDirIn.isEmpty() ? qEnvironmentVariable("EGTOOLS_CLI_DIR") : cliDirIn;
+    QString pdf = pdfIn;
+    if (pdf.isEmpty()) pdf = qEnvironmentVariable("EGTOOLS_SELFTEST_PDF");
+    if (!cliDir.isEmpty()) KernelClient::setCliDir(cliDir);
+
+    MainWindow w(cliDir);
+    w.resize(1440, 900);
+    w.show();
+    for (int i = 0; i < 25; ++i) { QApplication::processEvents(); QThread::msleep(20); }
+    if (QFile::exists(pdf)) {
+        w.showPdfPageForTest();
+        for (int i = 0; i < 10; ++i) { QApplication::processEvents(); QThread::msleep(20); }
+        w.openPdf(pdf);
+    }
+    // 渲染是"打开后异步出图"的，给它足够时间（大图纸首帧要一两秒）。
+    for (int i = 0; i < 200; ++i) { QApplication::processEvents(); QThread::msleep(25); }
+
+    const QString base = outPng.isEmpty()
+        ? QDir::temp().filePath(QStringLiteral("egtools_shot")) : outPng;
+    const QString winPng = base + QStringLiteral("_window.png");
+    const QString scrPng = base + QStringLiteral("_screen.png");
+
+    w.grab().save(winPng, "PNG");
+    out << "window png: " << winPng << "  size=" << QFileInfo(winPng).size() << "\n";
+
+    if (QScreen* scr = QGuiApplication::primaryScreen()) {
+        const QPixmap full = scr->grabWindow(0);
+        if (!full.isNull()) {
+            full.save(scrPng, "PNG");
+            out << "screen png: " << scrPng << "  size=" << QFileInfo(scrPng).size()
+                << "  (" << full.width() << "x" << full.height()
+                << " dpr=" << QString::number(full.devicePixelRatio(), 'f', 2) << ")\n";
+
+            // 顺便量一下"窗口在屏幕上那块"的像素：这张才代表用户实际看到的画面。
+            const qreal dpr = full.devicePixelRatio();
+            const QRect geo = w.frameGeometry();
+            QRect cut(qRound(geo.x() * dpr), qRound(geo.y() * dpr),
+                      qRound(geo.width() * dpr), qRound(geo.height() * dpr));
+            cut &= QRect(0, 0, full.width(), full.height());
+            if (cut.width() > 32 && cut.height() > 32) {
+                double a = 0; int mn = 0, mx = 0; double bf = 0;
+                luminanceStats(full.toImage().copy(cut), &a, &mn, &mx, &bf);
+                out << "窗口屏幕区域: " << cut.width() << "x" << cut.height()
+                    << "  平均亮度=" << QString::number(a, 'f', 1)
+                    << " (min " << mn << " / max " << mx << ")"
+                    << "  亮底占比=" << QString::number(bf * 100, 'f', 1) << "%\n";
+            }
+        }
+    }
+    out.flush();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 「图纸比对」页交互自检：差异清单 / 筛选 / 跳转定位
+//
+// 这几件事是本页的核心交互，而真实比对一次要几分钟 —— 所以这里直接喂一份
+// 内核返回**同样结构**的 JSON，把清单填充、筛选、"跳到某条差异"三条逻辑独立验证。
+// ---------------------------------------------------------------------------
+int runDiffUiTest()
+{
+    out << "=== 比对页交互自检 ===\n";
+
+    DiffPage page;
+    page.resize(1200, 760);
+    page.show();
+    for (int i = 0; i < 10; ++i) { QApplication::processEvents(); QThread::msleep(10); }
+
+    // 造 5 条差异：2 图形(新增/删除) + 3 文字(新增/删除/变更)，页号与位置都不同。
+    auto mkGraphic = [](int page, const char* change, double x, double y) {
+        QJsonObject o;
+        o[QStringLiteral("page")] = page;
+        o[QStringLiteral("type")] = QStringLiteral("graphic");
+        o[QStringLiteral("changeType")] = QString::fromLatin1(change);
+        QJsonObject bb;
+        bb[QStringLiteral("x")] = x; bb[QStringLiteral("y")] = y;
+        bb[QStringLiteral("w")] = 12.5; bb[QStringLiteral("h")] = 7.5;
+        o[QStringLiteral("bbox")] = bb;
+        o[QStringLiteral("confidence")] = 0.9;
+        return o;
+    };
+    auto mkText = [](int page, const char* change, const QString& oldT, const QString& newT) {
+        QJsonObject o;
+        o[QStringLiteral("page")] = page;
+        o[QStringLiteral("type")] = QStringLiteral("text");
+        o[QStringLiteral("changeType")] = QString::fromLatin1(change);
+        QJsonObject bb;
+        bb[QStringLiteral("x")] = 100; bb[QStringLiteral("y")] = 200;
+        bb[QStringLiteral("w")] = 40;  bb[QStringLiteral("h")] = 8;
+        o[QStringLiteral("bbox")] = bb;
+        if (!oldT.isEmpty()) o[QStringLiteral("oldText")] = oldT;
+        if (!newT.isEmpty()) o[QStringLiteral("newText")] = newT;
+        o[QStringLiteral("confidence")] = 0.75;
+        return o;
+    };
+
+    QJsonArray diffs;
+    diffs.append(mkGraphic(0, "added",   120.0, 340.0));
+    diffs.append(mkGraphic(2, "removed", 500.0, 210.0));
+    diffs.append(mkText(1, "added",   QString(),            QStringLiteral("408.101.P02")));
+    diffs.append(mkText(3, "removed", QStringLiteral("OLD-NOTE-1"), QString()));
+    diffs.append(mkText(4, "changed", QStringLiteral("DN80"), QStringLiteral("DN100")));
+
+    QJsonObject root;
+    root[QStringLiteral("diffs")] = diffs;
+    QJsonObject sum;
+    sum[QStringLiteral("graphicDiffs")] = 2;
+    sum[QStringLiteral("textDiffs")] = 3;
+    root[QStringLiteral("summary")] = sum;
+
+    page.feedDiffResultForTest(root);
+
+    int fails = 0;
+    auto check = [&](const QString& what, bool ok, const QString& detail = QString()) {
+        out << "  " << (ok ? "OK  " : "BAD ") << what
+            << (detail.isEmpty() ? QString() : QStringLiteral("  [%1]").arg(detail)) << "\n";
+        if (!ok) ++fails;
+    };
+
+    check(QStringLiteral("清单行数 = 5"), page.diffRowCountForTest() == 5,
+          QString::number(page.diffRowCountForTest()));
+    check(QStringLiteral("默认筛选显示全部 5 条"), page.diffVisibleCountForTest() == 5,
+          QString::number(page.diffVisibleCountForTest()));
+
+    page.setFilterForTest(QStringLiteral("graphic"));
+    check(QStringLiteral("筛选「仅图形」= 2 条"), page.diffVisibleCountForTest() == 2,
+          QString::number(page.diffVisibleCountForTest()));
+
+    page.setFilterForTest(QStringLiteral("text"));
+    check(QStringLiteral("筛选「仅文字」= 3 条"), page.diffVisibleCountForTest() == 3,
+          QString::number(page.diffVisibleCountForTest()));
+
+    page.setFilterForTest(QStringLiteral("added"));
+    check(QStringLiteral("筛选「仅新增」= 2 条"), page.diffVisibleCountForTest() == 2,
+          QString::number(page.diffVisibleCountForTest()));
+
+    page.setFilterForTest(QStringLiteral("changed"));
+    check(QStringLiteral("筛选「仅变更」= 1 条"), page.diffVisibleCountForTest() == 1,
+          QString::number(page.diffVisibleCountForTest()));
+
+    page.setFilterForTest(QStringLiteral("all"));
+
+    // 跳到第 4 条（索引 3）＝ 第 4 页的删除文字 ⇒ 应为 page=3、区域与输入一致。
+    page.selectDiffRowForTest(3);
+    check(QStringLiteral("跳转后页码 = 第 4 页(索引3)"), page.lastGotoPageForTest() == 3,
+          QString::number(page.lastGotoPageForTest()));
+    const QRectF r = page.lastGotoRectForTest();
+    check(QStringLiteral("跳转后高亮区域与差异几何一致"),
+          qAbs(r.x() - 100.0) < 0.01 && qAbs(r.y() - 200.0) < 0.01 &&
+          qAbs(r.width() - 40.0) < 0.01 && qAbs(r.height() - 8.0) < 0.01,
+          QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height()));
+
+    page.selectDiffRowForTest(1);
+    check(QStringLiteral("再跳第 2 条：页码 = 索引2 且几何换成图形那条"),
+          page.lastGotoPageForTest() == 2 && qAbs(page.lastGotoRectForTest().x() - 500.0) < 0.01,
+          QStringLiteral("page=%1 x=%2").arg(page.lastGotoPageForTest()).arg(page.lastGotoRectForTest().x()));
+
+    out.flush();
+    if (fails) { out << "[FAIL] 比对页交互自检（" << fails << " 项）\n"; out.flush(); return 1; }
+    out << "[PASS] 比对页交互：清单填充 / 6 种筛选 / 跳转定位 全部正确\n";
     out.flush();
     return 0;
 }

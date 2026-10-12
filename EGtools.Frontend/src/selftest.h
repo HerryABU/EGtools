@@ -29,3 +29,19 @@ int runBatchTest(const QString& cliDir, const QString& pdfPath, int jobs, int co
 // 用来把"横向太长"从主观观感变成可比较的数字（尤其是 minimumSizeHint —— 它才是
 // 决定"窗口能不能变窄"的东西）。不依赖内核与 PDF。
 int runLayoutDump();
+
+// 画布绘制自检：渲染一页 → 放进真实的画布壳 → grab() 抓成位图 → 统计像素。
+// 这是唯一能抓住"画布全黑"这类故障的测试：渲染成功 ≠ 画出来了。
+// （GPU 壳在无头环境不可用时会自动用光栅壳；两边都走同一套 PdfCanvas::paint。）
+int runPaintTest(const QString& cliDir, const QString& pdfPath);
+
+// 端到端界面绘制自检：构造**真实主窗口**、打开 PDF、抓画布控件位图并统计像素。
+// 与 --test-paint 的区别在于画布处于真实嵌套（QScrollArea ⊂ QStackedWidget ⊂ QSplitter）——
+// "渲染正常但界面全黑"这类故障只在这种真实处境下才复现得出来。
+int runUiPaintTest(const QString& cliDir, const QString& pdfPath);
+
+// 截图取证：保存真实主窗口与整屏 PNG（人工/多模态复核用，配色与排版的问题说不清时看图）。
+int runScreenshot(const QString& cliDir, const QString& pdfPath, const QString& outPngBase);
+
+// 「图纸比对」页交互自检：差异清单填充 / 筛选 / 跳到某条差异（不依赖真实比对，秒级）。
+int runDiffUiTest();

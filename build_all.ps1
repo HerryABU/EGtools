@@ -99,6 +99,21 @@ Step 'Publish EGpdf2df'
 & $dotnet publish "$root\EGpdf2df\EGpdf2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=win-x64 /p:SelfContained=true /p:PublishTrimmed=false --no-restore -m:1 -nodeReuse:false -o "$root\DIST\EGpdf2df"
 if ($LASTEXITCODE -ne 0) { throw "EGpdf2df publish failed" }
 
+# ---- 3b. 交付目录里不留符号文件（*.pdb）----
+# csproj 里的 CopyOutputSymbolsToPublishDirectory / AllowedReferenceRelatedFileExtensions
+# 对**项目引用**带出来的 pdb（Engine / Core）并不完全生效，所以在这里兜一道：
+# 把 publish 目录里的 *.pdb 移进 .build_trash（用移动而不是删除 —— 递归删除会触发
+# 沙箱 safe-delete 守卫 fail-closed，整条流水线会被中断）。
+Step 'Strip *.pdb from published CLI folders (release payload only)'
+foreach ($d in @('EGpdf2excel','EGexcel2df','EGpdf2df')) {
+    $pd = "$root\DIST\$d"
+    Get-ChildItem "$pd\*.pdb" -EA SilentlyContinue | ForEach-Object {
+        Move-Item -LiteralPath $_.FullName -Destination "$trash\pdb_$($_.Name)" -Force -EA SilentlyContinue
+    }
+    $left = (Get-ChildItem "$pd\*.pdb" -EA SilentlyContinue | Measure-Object).Count
+    Write-Host "OK  $d : residual pdb = $left"
+}
+
 # ---- 4. Qt 6 front-end (primary GUI) — built with windeployqt so it is self-contained ----
 # The Qt app is now THE shipped GUI (replaces the legacy WinUI front-end, which is
 # no longer packaged). windeployqt copies the required Qt runtime DLLs, the
@@ -128,8 +143,14 @@ if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake
         }
     }
     Push-Location "$root\EGtools.Frontend"
+    # ⚠️ 必须是 Release：既要显式传 CMAKE_BUILD_TYPE（Ninja 是单配置生成器），
+    #    也要给 --build 补 --config Release。CMakeLists 里另外做了兜底
+    #    （未指定时默认 Release、显式 Debug 会被强制改回 Release）。
     & $qtCmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="$qtRoot" -DCMAKE_BUILD_TYPE=Release 2>&1 | Out-Host
-    if ($LASTEXITCODE -eq 0) { & $qtCmake --build build 2>&1 | Out-Host }
+    if ($LASTEXITCODE -eq 0) { & $qtCmake --build build --config Release 2>&1 | Out-Host }
+    $cfgLine = Select-String -Path 'build\CMakeCache.txt' -Pattern '^CMAKE_BUILD_TYPE:STRING=' -EA SilentlyContinue |
+               Select-Object -First 1
+    if ($cfgLine) { Write-Host "Qt build config -> $($cfgLine.Line)" } else { Write-Warning 'Cannot verify Qt build config.' }
     Pop-Location
     $qtExe = "$root\EGtools.Frontend\build\EGtoolsFrontend.exe"
     if (Test-Path $qtExe) {
@@ -150,6 +171,11 @@ if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake
                            'Qt6OpenGL.dll','Qt6OpenGLWidgets.dll','Qt6Concurrent.dll')) {
             Copy-Item "$qtRoot\bin\$dll" $out -Force -EA SilentlyContinue
         }
+        # 软件 OpenGL 兜底（Mesa llvmpipe，Qt 自带）：某些机器只有微软的 GDI Generic
+        # OpenGL 1.1，QOpenGLWidget 起不来（表现是**一块黑画布**）。带上它之后，
+        # Qt 在 ``QT_OPENGL=software`` 或驱动缺失时仍有可用的 GL 实现。
+        # 我们自己的探测也会在 GL 版本不足时退回 CPU 光栅，这里是双保险。
+        Copy-Item "$qtRoot\bin\opengl32sw.dll" $out -Force -EA SilentlyContinue
         foreach ($plug in @('platforms','styles','imageformats','iconengines')) {
             if (Test-Path "$qtRoot\plugins\$plug") {
                 $pd = "$out\plugins\$plug"
@@ -210,6 +236,23 @@ foreach ($d in @('EGpdf2excel','EGexcel2df','EGpdf2df')) {
 $qtOut = "$root\DIST\EGtoolsFrontend\EGtoolsFrontend.exe"
 if (-not (Test-Path $qtOut)) { throw "Missing $qtOut (Qt front-end build failed)" }
 Write-Host "OK  $qtOut  ($(Get-Item $qtOut).Length) bytes"
+
+# ---- 7b. 交付自证：exe 自己报出构建配置，必须含 "Release" ----
+# 只信产物本身的说法（--version 里带构建配置），不信文件名或目录名。
+Step 'Verify Qt front-end is a Release build'
+$oldPath = $env:PATH
+$env:PATH = "$qtRoot\bin;$oldPath"
+try {
+    $ver = (& $qtOut --version 2>&1 | Out-String).Trim()
+} finally {
+    $env:PATH = $oldPath
+}
+if ([string]::IsNullOrWhiteSpace($ver)) {
+    Write-Warning "Qt front-end --version produced no output (cannot self-verify; check manually)."
+} else {
+    Write-Host "OK  front-end self-reports: $ver"
+    if ($ver -notmatch 'Release') { throw "Qt front-end is NOT a Release build: $ver" }
+}
 
 # ---- 8. Recompile installer from fresh DIST ----
 Step 'Compile installer (ISCC)'

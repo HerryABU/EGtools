@@ -82,6 +82,8 @@ public:
 
     // ---- 绘制（由薄壳控件的 paintEvent 调用）----
     void paint(QPainter& g, const QRect& widgetRect);
+    // 自检用：绘制次数。用来区分"没画"与"画了但没落到屏幕上"。
+    int paintCalls() const { return m_paintCalls; }
 
     static QColor colorForKind(const QString& kind);
 
@@ -109,4 +111,5 @@ private:
 
     bool    m_renderFailed = false;
     QString m_failReason;
+    int     m_paintCalls = 0;      // 自检用（paint() 被调用次数）
 };

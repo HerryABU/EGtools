@@ -76,9 +76,9 @@ ChangesEnvironment=yes
 Source: "DIST\EGtoolsFrontend\*"; DestDir: "{app}\EGtoolsFrontend"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; CLI kernels (self-contained .NET 9). Installed as siblings so the Qt front-end
 ; finds them automatically, and usable standalone from any prompt.
-Source: "DIST\EGpdf2excel\*"; DestDir: "{app}\EGpdf2excel"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "DIST\EGexcel2df\*"; DestDir: "{app}\EGexcel2df"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "DIST\EGpdf2df\*"; DestDir: "{app}\EGpdf2df"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "DIST\EGpdf2excel\*"; DestDir: "{app}\EGpdf2excel"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "DIST\EGexcel2df\*"; DestDir: "{app}\EGexcel2df"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "DIST\EGpdf2df\*"; DestDir: "{app}\EGpdf2df"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Documentation.
 Source: "DIST\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; App icon (installer / shortcut icon).

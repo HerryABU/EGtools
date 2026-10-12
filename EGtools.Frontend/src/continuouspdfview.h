@@ -69,6 +69,12 @@ public:
     void scrollToPage(int page);
     void fitToPageHeight(int viewportHeightPx);   // 「适合页面」（整页可见）
 
+    // ---- 差异定位（专业比对工具的"跳到上/下一个差异"）----
+    // 在指定页高亮一个区域（pt 坐标，y-down）并把它滚到视口中央。
+    // rectPt 为空则只滚到该页。高亮是**瞬态**的：只用于引导视线，不参与导出。
+    void focusRegion(int page, const QRectF& rectPt = QRectF());
+    void clearFocusRegion();
+    int  focusPage() const { return m_focusPage; }
     // 抽出：把当前页（视口中心页）的渲染诊断信息回一句给日志用。
     QString lastDiagnostics() const { return m_lastDiag; }
 
@@ -169,6 +175,10 @@ private:
     int     m_dragPage = -1;
     QPointF m_pressPt;
     QPointF m_curPt;
+
+    // 差异定位高亮（瞬态，仅引导视线）
+    int     m_focusDiffPage = -1;            // -1 = 无高亮
+    QRectF  m_focusDiffRectPt;
 
     QStringList m_trace;                     // 调度轨迹（上限 200 条）
     void trace(const QString& line)
