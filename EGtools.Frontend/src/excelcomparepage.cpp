@@ -1,4 +1,5 @@
 #include "excelcomparepage.h"
+#include "panels.h"
 #include "clirunner.h"
 #include "kernelclient.h"
 
@@ -73,6 +74,7 @@ ExcelComparePage::ExcelComparePage(QWidget* parent) : QWidget(parent)
     split->addWidget(ctrlScroll);
     split->addWidget(m_jsonView);
     split->setChildrenCollapsible(false);
+    makeSplitterNonDraggable(split);          // 不给拖
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 3);
 

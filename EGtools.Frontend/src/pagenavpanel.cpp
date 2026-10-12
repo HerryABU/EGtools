@@ -3,6 +3,7 @@
 #include "kernelclient.h"
 
 #include <QDir>
+#include <QDebug>
 #include <QHBoxLayout>
 #include <QImageReader>
 #include <QLabel>
@@ -35,7 +36,12 @@ public:
     ThumbRenderWorker(QString pdfPath, int pageCount, QString backend)
         : m_pdf(pdfPath), m_pages(pageCount), m_backend(backend) {}
 
-    void cancel() { m_cancel.storeRelaxed(1); }
+    // ⚠️ 必须 Q_INVOKABLE：stopWorker() 用 QMetaObject::invokeMethod(worker, "cancel") 调用它，
+    // 而"元对象系统能找到的方法"只有 signals / slots / Q_INVOKABLE —— 普通成员函数不在里面。
+    // 之前漏了这个宏 ⇒ invokeMethod 静默失败（只打一行 "No such method QObject::cancel()"），
+    // 结果**取消标志永远没被置位**：面板销毁后缩略图线程还会把整本图纸渲染完（白烧 CPU，
+    // 且继续往已销毁的界面发信号）。这类"静默失败"必须靠看日志发现，故保留注释警示。
+    Q_INVOKABLE void cancel() { m_cancel.storeRelaxed(1); }
 
 public slots:
     void run()
@@ -144,10 +150,16 @@ void PageNavPanel::setCliDir(const QString& dir)
 
 void PageNavPanel::stopWorker()
 {
+    // 先置取消标志（Q_INVOKABLE 才能被 invokeMethod 找到），让 worker 在"当前这页渲染完"
+    // 之后立刻退出循环 —— 内核调用本身不可中断，所以最多再等多一页。
     if (m_worker) QMetaObject::invokeMethod(m_worker, "cancel", Qt::DirectConnection);
+
     if (m_thread) {
         m_thread->quit();
-        m_thread->wait(8000);
+        if (!m_thread->wait(8000)) {
+            // 内核调用极端卡住时不让界面跟着卡死：只记一条日志，线程交给 Qt 收尾。
+            qWarning("thumbnail worker did not stop within 8s; detaching");
+        }
         m_thread = nullptr;
     }
     m_worker = nullptr;   // 由 QThread::finished 的 deleteLater 释放

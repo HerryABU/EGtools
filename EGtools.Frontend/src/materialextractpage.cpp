@@ -1,4 +1,5 @@
 #include "materialextractpage.h"
+#include "panels.h"
 
 #include "kernelclient.h"
 
@@ -361,6 +362,7 @@ MaterialExtractPage::MaterialExtractPage(QWidget* parent) : QWidget(parent)
     split->addWidget(top);
     split->addWidget(sideScroll);
     split->setChildrenCollapsible(false);
+    makeSplitterNonDraggable(split);          // 不给拖
     split->setStretchFactor(0, 3);
     split->setStretchFactor(1, 2);
 

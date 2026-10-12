@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QVector>
 #include <QThreadPool>
+#include <functional>
 #include <memory>
 #include "pdfview.h"
 #include "schemes.h"
@@ -75,6 +76,10 @@ public:
     void setSidebarVisibleForTest(bool v) { setSidebarVisible(v); }
     void setSidebarWidthForTest(int px)   { setSidebarWidth(px); }
     void setResultsVisibleForTest(bool v) { setResultsVisible(v); }
+    void setThumbnailsVisibleForTest(bool v) { setThumbnailsVisible(v); }
+    void setThumbnailWidthForTest(int px)     { setThumbnailWidth(px); }
+    int  thumbWidthForTest() const { return m_thumbWidth; }
+    bool thumbVisibleForTest() const { return m_thumbVisible; }
 
 public slots:
     void onOpen();
@@ -136,6 +141,11 @@ private:
     // ---- 侧栏：固定宽度 + 折叠（替代旧版"拖分割条"）----
     void setSidebarVisible(bool visible);
     void setResultsVisible(bool visible);   // 底部结果面板折叠（Ctrl+J）
+    void setThumbnailsVisible(bool visible); // 页面缩略图栏折叠（Ctrl+Shift+B）
+    void setThumbnailWidth(int px);          // 缩略图栏宽度预设
+    void setResultsHeight(int px);           // 结果面板高度预设
+    QWidget* makePanelHeader(const QString& title, const char* extraText,
+                             std::function<void()> onCollapse, const QString& collapseTip);
     void setSidebarWidth(int px);          // 由预设调用（紧凑/标准/宽）
     void updateNavSurfaces();              // 决定"导航树 / 顶部页签 / 窄导航条"谁显示
     bool stackedLayout() const { return m_stackedLayout; }
@@ -194,7 +204,15 @@ private:
     QToolButton* m_railExpandBtn = nullptr;
     QAction*   m_navToggleA = nullptr;   // 视图 → 导航栏（Ctrl+B）
     QAction*   m_resultsToggleA = nullptr; // 视图 → 结果面板（Ctrl+J）
-    QSplitter* m_canvasSplit = nullptr; // 缩略图 | 画布
+    QSplitter* m_canvasSplit = nullptr; // 缩略图 | 画布（**不可拖动**，见 panels.h）
+    QSplitter* m_vertSplit   = nullptr; // 画布 | 结果面板（**不可拖动**）
+    QWidget*   m_thumbHost   = nullptr; // 页面缩略图栏（含标题栏与折叠按钮），固定宽度
+    QWidget*   m_thumbRail   = nullptr; // 缩略图折叠后留在画布左侧的窄条
+    QWidget*   m_resultsHost = nullptr; // 结果面板容器（标题栏 + 标签页），固定高度
+    int        m_thumbWidth    = 180;   // 缩略图栏宽度（预设）
+    int        m_resultsHeight = 240;   // 结果面板高度（预设）
+    bool       m_thumbVisible  = true;
+    QAction*   m_thumbToggleA  = nullptr;
     QWidget*   m_kernelBox   = nullptr; // 内核设置（滚动容器；侧栏式在侧栏、堆叠式在底部标签）
     // 侧栏：**固定宽度、不提供拖动改宽**（专业软件用"折叠/切换"而不是推拉）。
     // 宽度由预设决定（紧凑/标准/宽），持久化到 QSettings。

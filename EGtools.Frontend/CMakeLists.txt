@@ -71,6 +71,7 @@ add_executable(EGtoolsFrontend
     src/theme.cpp
     src/charsegmentpanel.h
     src/charsegmentpanel.cpp
+    src/panels.h
     src/types.h
     res/app_icon.rc
 )

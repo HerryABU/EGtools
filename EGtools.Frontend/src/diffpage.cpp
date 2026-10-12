@@ -1,4 +1,5 @@
 #include "diffpage.h"
+#include "panels.h"
 
 #include "continuouspdfview.h"
 #include "kernelclient.h"
@@ -289,6 +290,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     leftCol->addWidget(m_detailTabs);
     leftCol->setStretchFactor(0, 3);
     leftCol->setStretchFactor(1, 2);
+    makeSplitterNonDraggable(leftCol);        // 不给拖：尺寸走"视图 → 面板尺寸"预设
 
     auto* split = new QSplitter(Qt::Horizontal);
     split->addWidget(leftCol);
@@ -296,6 +298,7 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
     split->setStretchFactor(0, 2);
     split->setStretchFactor(1, 3);
     split->setChildrenCollapsible(false);
+    makeSplitterNonDraggable(split);          // 不给拖
     split->setSizes({560, 760});
 
     auto* lay = new QVBoxLayout(this);

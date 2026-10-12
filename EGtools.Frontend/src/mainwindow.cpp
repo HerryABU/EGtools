@@ -11,6 +11,7 @@
 #include "materialextractpage.h"
 #include "pagenavpanel.h"
 #include "continuouspdfview.h"
+#include "panels.h"
 #include "theme.h"
 #include "charsegmentpanel.h"
 
@@ -285,22 +286,51 @@ void MainWindow::buildUi()
         m_resultsToggleA->setToolTip(QStringLiteral("折叠/展开底部结果面板（Ctrl+J）。"));
         connect(m_resultsToggleA, &QAction::toggled, this, [this](bool on){ setResultsVisible(on); });
 
-        // 侧栏宽度预设：用"选一档"替代"拖分割条"。
-        auto* widthMenu = mView->addMenu(QStringLiteral("导航栏宽度"));
-        auto* widthGroup = new QActionGroup(this);
-        widthGroup->setExclusive(true);
-        const int widthNow = QSettings().value(QStringLiteral("ui/sidebarWidth"), 220).toInt();
-        struct { const char* label; int px; } widths[] = {
-            { "紧凑 (180)", 180 }, { "标准 (220)", 220 }, { "宽 (280)", 280 },
-        };
-        for (const auto& w : widths) {
-            auto* a = widthMenu->addAction(QString::fromUtf8(w.label));
-            a->setCheckable(true);
-            a->setChecked(w.px == widthNow);
-            const int px = w.px;
-            widthGroup->addAction(a);
-            connect(a, &QAction::triggered, this, [this, px]{ setSidebarWidth(px); });
+        m_thumbToggleA = mView->addAction(QStringLiteral("页面缩略图(&T)"));
+        m_thumbToggleA->setCheckable(true);
+        m_thumbToggleA->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+B")));
+        m_thumbToggleA->setToolTip(QStringLiteral("折叠/展开画布左侧的页面缩略图栏（Ctrl+Shift+B）。\n"
+                                                 "折叠后画布获得更宽的绘图区。"));
+        connect(m_thumbToggleA, &QAction::toggled, this, [this](bool on){ setThumbnailsVisible(on); });
+
+        // 面板尺寸预设：**用"选一档"替代"拖分割条"**（本页所有分割条都是不可拖的）。
+        auto* sizeMenu = mView->addMenu(QStringLiteral("面板尺寸"));
+        {
+            auto* wm = sizeMenu->addMenu(QStringLiteral("导航栏宽度"));
+            auto* wg = new QActionGroup(this);
+            wg->setExclusive(true);
+            const int cur = QSettings().value(QStringLiteral("ui/sidebarWidth"), 220).toInt();
+            struct { const char* label; int px; } ws[] = { {"紧凑 (180)",180}, {"标准 (220)",220}, {"宽 (280)",280} };
+            for (const auto& w : ws) {
+                auto* a = wm->addAction(QString::fromUtf8(w.label));
+                a->setCheckable(true); a->setChecked(w.px == cur);
+                const int px = w.px; wg->addAction(a);
+                connect(a, &QAction::triggered, this, [this, px]{ setSidebarWidth(px); });
+            }
+            auto* tm = sizeMenu->addMenu(QStringLiteral("缩略图宽度"));
+            auto* tg = new QActionGroup(this);
+            tg->setExclusive(true);
+            const int curT = QSettings().value(QStringLiteral("ui/thumbWidth"), 180).toInt();
+            struct { const char* label; int px; } ts[] = { {"紧凑 (140)",140}, {"标准 (180)",180}, {"宽 (240)",240} };
+            for (const auto& t : ts) {
+                auto* a = tm->addAction(QString::fromUtf8(t.label));
+                a->setCheckable(true); a->setChecked(t.px == curT);
+                const int px = t.px; tg->addAction(a);
+                connect(a, &QAction::triggered, this, [this, px]{ setThumbnailWidth(px); });
+            }
+            auto* rm = sizeMenu->addMenu(QStringLiteral("结果面板高度"));
+            auto* rg = new QActionGroup(this);
+            rg->setExclusive(true);
+            const int curR = QSettings().value(QStringLiteral("ui/resultsHeight"), 240).toInt();
+            struct { const char* label; int px; } rs[] = { {"紧凑 (160)",160}, {"标准 (240)",240}, {"高 (360)",360} };
+            for (const auto& r : rs) {
+                auto* a = rm->addAction(QString::fromUtf8(r.label));
+                a->setCheckable(true); a->setChecked(r.px == curR);
+                const int px = r.px; rg->addAction(a);
+                connect(a, &QAction::triggered, this, [this, px]{ setResultsHeight(px); });
+            }
         }
+
 
         mView->addSeparator();
         auto* themeGroup = new QActionGroup(this);
@@ -618,29 +648,66 @@ void MainWindow::buildUi()
     });
     connect(m_pageNav, &PageNavPanel::statusMessage, this, &MainWindow::log);
 
+    // 页面缩略图栏：**固定宽度 + 自带折叠按钮**，分割条不可拖（用户反复要求"不要推拉"）。
+    m_thumbHost = new QWidget();
+    m_thumbHost->setObjectName(QStringLiteral("thumbHost"));
+    auto* thumbLay = new QVBoxLayout(m_thumbHost);
+    thumbLay->setContentsMargins(0, 0, 0, 0);
+    thumbLay->setSpacing(0);
+    thumbLay->addWidget(makePanelHeader(QStringLiteral("页面"), nullptr,
+        [this]{ setThumbnailsVisible(false); }, QStringLiteral("折叠页面缩略图（Ctrl+Shift+B）")));
+    thumbLay->addWidget(m_pageNav, 1);
+
     auto* canvasSplit = new QSplitter(Qt::Horizontal);
     m_canvasSplit = canvasSplit;
-    canvasSplit->addWidget(m_pageNav);
+    canvasSplit->addWidget(m_thumbHost);
     canvasSplit->addWidget(leftPane);
     canvasSplit->setStretchFactor(0, 0);
     canvasSplit->setStretchFactor(1, 1);
-    canvasSplit->setChildrenCollapsible(false);
-    m_pageNav->setMinimumWidth(150);
-    m_pageNav->setMaximumWidth(280);
     leftPane->setMinimumWidth(360);
-    canvasSplit->setSizes({180, 900});
+    makeSplitterNonDraggable(canvasSplit);      // ← 不给拖
+    canvasSplit->setSizes({m_thumbWidth, 900});
+
+    // 折叠缩略图后留在画布左侧的窄条（只放展开按钮）—— 与侧栏同一套范式。
+    m_thumbRail = new QWidget();
+    m_thumbRail->setObjectName(QStringLiteral("sideRail"));
+    auto* thumbRailLay = new QVBoxLayout(m_thumbRail);
+    thumbRailLay->setContentsMargins(0, 6, 0, 0);
+    thumbRailLay->setSpacing(0);
+    auto* thumbExpandBtn = new QToolButton();
+    thumbExpandBtn->setObjectName(QStringLiteral("railBtn"));
+    thumbExpandBtn->setText(QStringLiteral("»"));
+    thumbExpandBtn->setToolTip(QStringLiteral("展开页面缩略图（Ctrl+Shift+B）"));
+    thumbExpandBtn->setAutoRaise(true);
+    connect(thumbExpandBtn, &QToolButton::clicked, this, [this]{ setThumbnailsVisible(true); });
+    thumbRailLay->addWidget(thumbExpandBtn, 0, Qt::AlignHCenter);
+    thumbRailLay->addStretch(1);
+    m_thumbRail->setFixedWidth(22);
+    canvasSplit->addWidget(m_thumbRail);        // 顺序：缩略图 | 窄条 | 画布
 
     // ---- 上下两层：上层画布区，**下层结果面板** ----
     // 旧版是"缩略图|画布|结果"三栏并排 —— 三者一起把窗口横向撑得很宽。
     // 现在结果面板下放到底部：横向只剩「缩略图 + 画布」，窗口可以窄很多。
+    // 结果面板同样**固定高度 + 折叠按钮**，分割条不可拖；高度用预设切换。
+    m_resultsHost = new QWidget();
+    m_resultsHost->setObjectName(QStringLiteral("resultsHost"));
+    auto* resLay = new QVBoxLayout(m_resultsHost);
+    resLay->setContentsMargins(0, 0, 0, 0);
+    resLay->setSpacing(0);
+    resLay->addWidget(makePanelHeader(QStringLiteral("结果"), nullptr,
+        [this]{ setResultsVisible(false); }, QStringLiteral("折叠结果面板（Ctrl+J）")));
+    resLay->addWidget(m_tabs, 1);
+
     auto* split = new QSplitter(Qt::Vertical);
+    m_vertSplit = split;
     split->addWidget(canvasSplit);
-    split->addWidget(m_tabs);
+    split->addWidget(m_resultsHost);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 0);
-    split->setChildrenCollapsible(false);
-    m_tabs->setMinimumHeight(140);
-    split->setSizes({560, 260});
+    m_tabs->setMinimumHeight(120);
+    makeSplitterNonDraggable(split);            // ← 不给拖
+    split->setSizes({560, m_resultsHeight});
+
 
     // ---- Multi-level sidebar navigation: every sub-function is its own entry ----
     m_nav = new QTreeWidget();
@@ -821,10 +888,26 @@ void MainWindow::buildUi()
         if (!envV.isEmpty()) m_sidebarVisible = (envV.toInt() != 0);
         if (m_sidePane) m_sidePane->setFixedWidth(m_sidebarWidth);
         if (m_navToggleA) { QSignalBlocker b(m_navToggleA); m_navToggleA->setChecked(m_sidebarVisible); }
+
+        // 页面缩略图栏（固定宽 + 折叠）与结果面板（固定高 + 折叠）
+        m_thumbWidth = qBound(120, st.value(QStringLiteral("ui/thumbWidth"), 180).toInt(), 320);
+        m_thumbVisible = st.value(QStringLiteral("ui/thumbVisible"), true).toBool();
+        if (m_thumbHost) m_thumbHost->setFixedWidth(m_thumbWidth);
+        if (m_thumbHost) m_thumbHost->setVisible(m_thumbVisible);
+        if (m_thumbRail) m_thumbRail->setVisible(!m_thumbVisible);
+        if (m_thumbToggleA) { QSignalBlocker b(m_thumbToggleA); m_thumbToggleA->setChecked(m_thumbVisible); }
+
+        m_resultsHeight = qBound(120, st.value(QStringLiteral("ui/resultsHeight"), 240).toInt(), 600);
+        if (m_vertSplit && m_vertSplit->height() > 200) {
+            const int total = m_vertSplit->height();
+            m_vertSplit->setSizes({total - m_resultsHeight, m_resultsHeight});
+        }
+
         bool resultsVisible = st.value(QStringLiteral("ui/resultsVisible"), true).toBool();
         const QByteArray envR = qgetenv("EGTOOLS_RESULTS");
         if (!envR.isEmpty()) resultsVisible = (envR.toInt() != 0);
-        if (m_tabs) m_tabs->setVisible(resultsVisible);
+        if (m_resultsHost) m_resultsHost->setVisible(resultsVisible);
+        if (m_tabs)        m_tabs->setVisible(resultsVisible);
         if (m_resultsToggleA) { QSignalBlocker b(m_resultsToggleA); m_resultsToggleA->setChecked(resultsVisible); }
         updateNavSurfaces();
         log(QStringLiteral("面板：导航栏%1（宽 %2px）· 结果面板%3")
@@ -1302,6 +1385,85 @@ bool MainWindow::railVisibleForTest() const
     return m_sideRail && m_sideRail->isVisible();
 }
 
+void MainWindow::setResultsVisible(bool visible)
+{
+    if (m_resultsHost) m_resultsHost->setVisible(visible);
+    if (m_tabs)        m_tabs->setVisible(visible);
+    QSettings().setValue(QStringLiteral("ui/resultsVisible"), visible);
+    if (m_resultsToggleA) {
+        QSignalBlocker blk(m_resultsToggleA);
+        m_resultsToggleA->setChecked(visible);
+    }
+    log(visible ? QStringLiteral("已显示底部结果面板")
+                : QStringLiteral("已折叠底部结果面板（视图 → 结果面板 或 Ctrl+J 可恢复）"));
+}
+
+// 页面缩略图栏：与侧栏同一套范式 —— 固定宽度、一键折叠、宽度走预设（**不拖**）。
+void MainWindow::setThumbnailsVisible(bool visible)
+{
+    m_thumbVisible = visible;
+    QSettings().setValue(QStringLiteral("ui/thumbVisible"), visible);
+    if (m_thumbHost) m_thumbHost->setVisible(visible);
+    if (m_thumbRail) m_thumbRail->setVisible(!visible);
+    if (m_thumbToggleA) {
+        QSignalBlocker blk(m_thumbToggleA);
+        m_thumbToggleA->setChecked(visible);
+    }
+    log(visible ? QStringLiteral("已显示页面缩略图栏")
+                : QStringLiteral("已折叠页面缩略图栏（视图 → 页面缩略图 或 Ctrl+Shift+B 可恢复）"));
+}
+
+void MainWindow::setThumbnailWidth(int px)
+{
+    m_thumbWidth = qBound(120, px, 320);
+    QSettings().setValue(QStringLiteral("ui/thumbWidth"), m_thumbWidth);
+    if (m_thumbHost) m_thumbHost->setFixedWidth(m_thumbWidth);
+}
+
+void MainWindow::setResultsHeight(int px)
+{
+    m_resultsHeight = qBound(120, px, 600);
+    QSettings().setValue(QStringLiteral("ui/resultsHeight"), m_resultsHeight);
+    if (m_vertSplit) {
+        const int total = qMax(200, m_vertSplit->height());
+        m_vertSplit->setSizes({total - m_resultsHeight, m_resultsHeight});
+    }
+}
+
+// ---------------------------------------------------------------- 面板装配助手
+
+// 统一的「面板标题栏」：左边标题、右边一个折叠按钮。
+// 专业软件里每个面板都有标题栏，折叠入口就在标题栏上 —— 这是"面板可收起"这套范式的视觉落点，
+// 也是"不靠拖分割条也能腾地方"的关键。
+QWidget* MainWindow::makePanelHeader(const QString& title, const char* extraText,
+                                     std::function<void()> onCollapse, const QString& collapseTip)
+{
+    auto* head = new QWidget();
+    head->setObjectName(QStringLiteral("panelHeader"));
+    auto* lay = new QHBoxLayout(head);
+    lay->setContentsMargins(10, 5, 6, 5);
+    lay->setSpacing(6);
+    auto* t = new QLabel(title);
+    t->setObjectName(QStringLiteral("panelTitle"));
+    lay->addWidget(t);
+    lay->addStretch(1);
+    if (extraText) {
+        auto* ex = new QLabel(QString::fromUtf8(extraText));
+        ex->setObjectName(QStringLiteral("hintText"));
+        lay->addWidget(ex);
+    }
+    if (onCollapse) {
+        auto* btn = new QToolButton();
+        btn->setObjectName(QStringLiteral("panelToolBtn"));
+        btn->setText(QStringLiteral("▾"));
+        btn->setToolTip(collapseTip);
+        btn->setAutoRaise(true);
+        connect(btn, &QToolButton::clicked, this, [onCollapse]{ onCollapse(); });
+        lay->addWidget(btn);
+    }
+    return head;
+}
+
 // ---------------------------------------------------------------- 侧栏（固定宽 + 折叠）
 //
 // 设计取舍：**不做拖拽改宽**。理由见 buildUi 里的注释 —— 专业软件（AutoCAD/Revit Palette、
@@ -1345,19 +1507,6 @@ void MainWindow::updateNavSurfaces()
     if (showTop)    syncTopNav(m_stack ? m_stack->currentIndex() : 0);
 }
 
-// 底部「结果面板」折叠：与侧栏同一套思路（面板要么用，要么收起来，不靠推拉）。
-void MainWindow::setResultsVisible(bool visible)
-{
-    if (m_tabs) m_tabs->setVisible(visible);
-    QSettings().setValue(QStringLiteral("ui/resultsVisible"), visible);
-    if (m_resultsToggleA) {
-        QSignalBlocker blk(m_resultsToggleA);
-        m_resultsToggleA->setChecked(visible);
-    }
-    log(visible ? QStringLiteral("已显示底部结果面板")
-                : QStringLiteral("已折叠底部结果面板（视图 → 结果面板 或 Ctrl+J 可恢复）"));
-}
-
 void MainWindow::setStackedLayout(bool stacked)
 {
     if (m_stackedLayout == stacked) return;
@@ -1392,21 +1541,25 @@ void MainWindow::applyLayoutMode()
         // 竖向堆叠：把"占横向空间"的两块都收进底部标签页（＝窗口堆叠）。
         // ⚠️ 缩略图栏原本在画布左侧，带 min/max 宽度限制；进了底部标签页后必须
         // 解除限制，否则它会被卡在 180px 宽（显得很挤），也无法随窗口伸展。
-        if (m_pageNav) {
-            m_pageNav->setMinimumWidth(0);
-            m_pageNav->setMaximumWidth(QWIDGETSIZE_MAX);
+        if (m_thumbHost) {
+            m_thumbHost->setMinimumWidth(0);
+            m_thumbHost->setMaximumWidth(QWIDGETSIZE_MAX);
         }
-        moveIntoTabs(m_pageNav,  QStringLiteral("页面"), 0);
+        moveIntoTabs(m_thumbHost, QStringLiteral("页面"), 0);
         moveIntoTabs(m_kernelBox, QStringLiteral("内核设置"), -1);
-        if (m_pageNav && m_tabs->indexOf(m_pageNav) >= 0)
-            m_tabs->setCurrentIndex(m_tabs->indexOf(m_pageNav));   // 默认显示缩略图
+        if (m_thumbHost && m_tabs->indexOf(m_thumbHost) >= 0)
+            m_tabs->setCurrentIndex(m_tabs->indexOf(m_thumbHost));   // 默认显示缩略图
     } else {
         // 侧栏式：缩略图回到画布左侧（恢复列宽约束），内核设置回到侧栏底部。
-        if (m_pageNav) {
-            m_pageNav->setMinimumWidth(150);
-            m_pageNav->setMaximumWidth(280);
+        if (m_thumbHost) m_thumbHost->setFixedWidth(m_thumbWidth);
+        moveIntoSplitter(m_thumbHost, 0);
+        // 窄条紧跟缩略图（顺序：缩略图 | 窄条 | 画布）
+        if (m_thumbRail && m_canvasSplit) {
+            if (m_canvasSplit->indexOf(m_thumbRail) < 0) {
+                m_thumbRail->setParent(nullptr);
+                m_canvasSplit->insertWidget(1, m_thumbRail);
+            }
         }
-        moveIntoSplitter(m_pageNav, 0);
         if (m_kernelBox) {
             if (m_tabs && m_tabs->indexOf(m_kernelBox) >= 0)
                 m_tabs->removeTab(m_tabs->indexOf(m_kernelBox));
@@ -1420,6 +1573,9 @@ void MainWindow::applyLayoutMode()
     }
     refreshTheme();
     updateNavSurfaces();
+    // 搬完控件后 Qt 会重建分割器把手（新把手默认 enabled）；这里再刷一遍，
+    // 保证"任何分割条都抓不到"这条约束在布局切换后依然成立。
+    refreshNonDraggableSplitters(this);
 }
 
 void MainWindow::syncTopNav(int page)

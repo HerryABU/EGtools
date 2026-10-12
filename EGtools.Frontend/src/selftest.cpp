@@ -8,6 +8,10 @@
 #include "diffpage.h"
 #include "homepage.h"
 #include "theme.h"
+#include "panels.h"
+#include "schemepage.h"
+#include "excelcomparepage.h"
+#include "materialextractpage.h"
 
 #include <QDir>
 #include <QElapsedTimer>
@@ -21,6 +25,7 @@
 #include <QPixmap>
 #include <QScreen>
 #include <QScrollArea>
+#include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -1062,6 +1067,56 @@ int runPanelsTest()
     w.setResultsVisibleForTest(true);
     QApplication::processEvents();
     check(QStringLiteral("展开后：结果面板可见"), w.resultsVisibleForTest());
+
+    // ---- 5. 页面缩略图栏折叠（画布左侧那条）----
+    w.setThumbnailsVisibleForTest(false);
+    QApplication::processEvents();
+    check(QStringLiteral("折叠后：缩略图栏不可见"), !w.thumbVisibleForTest());
+    w.setThumbnailsVisibleForTest(true);
+    QApplication::processEvents();
+    check(QStringLiteral("展开后：缩略图栏可见"), w.thumbVisibleForTest());
+    for (const auto& t : QVector<QPair<QString,int>>{ {QStringLiteral("缩略图宽度-紧凑"),140},
+                                                     {QStringLiteral("缩略图宽度-标准"),180},
+                                                     {QStringLiteral("缩略图宽度-宽"),240} }) {
+        w.setThumbnailWidthForTest(t.second);
+        QApplication::processEvents();
+        check(t.first, w.thumbWidthForTest() == t.second, QString::number(w.thumbWidthForTest()));
+    }
+
+    // ---- 6. ⚠️ 核心断言：**任何分割条都不许可拖** ----
+    // 用户反复反馈"怎么还是推拉"。这条断言把所有 QSplitter 一次性管住 ——
+    // 以后谁再新增一个可拖的分割条，这里立刻会红。
+    auto assertNoDraggable = [&](const QString& scope, QWidget* root) {
+        int bad = 0, notDisabled = 0, total = 0;
+        for (QSplitter* sp : root->findChildren<QSplitter*>()) {
+            ++total;
+            if (!splitterIsNonDraggable(sp)) {          // 把手宽度 > 0 ⇒ 鼠标能抓到
+                ++bad;
+                out << "      ! " << scope << " 存在可拖分割条：handleWidth="
+                    << sp->handleWidth() << "\n";
+            }
+            if (!splitterHandlesFullyDisabled(sp)) ++notDisabled;
+        }
+        check(QStringLiteral("%1：%2 个分割条把手宽度都为 0（抓不到）").arg(scope).arg(total),
+              bad == 0, QStringLiteral("可拖 %1 个").arg(bad));
+        check(QStringLiteral("%1：把手也都已禁用（状态干净）").arg(scope), notDisabled == 0,
+              QStringLiteral("未禁用 %1 个").arg(notDisabled));
+    };
+    refreshNonDraggableSplitters(&w);      // 布局切换后把手会被重建，先刷一遍再断言
+    assertNoDraggable(QStringLiteral("主窗口"), &w);
+
+    {
+        DiffPage dur;         dur.resize(1000,700);  dur.show();      QApplication::processEvents();
+        SchemeStore store;
+        SchemePage sp(&store); sp.resize(1000,700);  sp.show();       QApplication::processEvents();
+        ExcelComparePage ep;  ep.resize(1000,700);   ep.show();       QApplication::processEvents();
+        MaterialExtractPage mp; mp.resize(1000,700); mp.show();       QApplication::processEvents();
+        for (int i = 0; i < 5; ++i) { QApplication::processEvents(); QThread::msleep(10); }
+        assertNoDraggable(QStringLiteral("图纸比对页"), &dur);
+        assertNoDraggable(QStringLiteral("框选方案页"), &sp);
+        assertNoDraggable(QStringLiteral("Excel 比对页"), &ep);
+        assertNoDraggable(QStringLiteral("材料表提取页"), &mp);
+    }
 
     out.flush();
     if (fails) { out << "[FAIL] 面板自检（" << fails << " 项）\n"; out.flush(); return 1; }

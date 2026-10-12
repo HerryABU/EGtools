@@ -1,4 +1,5 @@
 #include "schemepage.h"
+#include "panels.h"
 
 #include <QComboBox>
 #include <QSizePolicy>
@@ -132,6 +133,7 @@ SchemePage::SchemePage(SchemeStore* store, QWidget* parent)
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 2);
     root->addWidget(split, 1);
+    makeSplitterNonDraggable(split);   // 不给拖（此时把手已创建，禁用才有效）
 
     m_current = new QLabel(QStringLiteral("未选中方案"));
     m_current->setObjectName(QStringLiteral("hintText"));
