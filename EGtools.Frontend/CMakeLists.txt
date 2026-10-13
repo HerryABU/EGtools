@@ -197,13 +197,17 @@ if(UNIX AND NOT APPLE)
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/EGtoolsFrontend.runtimeconfig.json" DESTINATION .)
 
     # 三个内核（self-contained 目录，含各自的 .so 与 .runtimeconfig.json）。
-    # 由 build_linux.sh 先行生成；不存在时给出明确警告而不是静默打出残缺包。
+    # ⚠️ 源目录由 build_linux.sh 通过 -DEGTOOLS_LINUX_DIST=... 传入（默认 DIST-linux/）：
+    #    与 Windows 的 DIST/ **刻意分开**，否则跨平台产物同名互覆。
+    if(NOT DEFINED EGTOOLS_LINUX_DIST)
+        set(EGTOOLS_LINUX_DIST "${CMAKE_CURRENT_SOURCE_DIR}/../DIST-linux")
+    endif()
     foreach(_k EGpdf2excel EGexcel2df EGpdf2df)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../DIST/${_k}")
-            install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../DIST/${_k}" DESTINATION .)
+        if(EXISTS "${EGTOOLS_LINUX_DIST}/${_k}")
+            install(DIRECTORY "${EGTOOLS_LINUX_DIST}/${_k}" DESTINATION .)
         else()
             message(WARNING
-                "DIST/${_k} 不存在 —— 该内核不会进包。请先运行 build_linux.sh（它会 publish 内核）。")
+                "${EGTOOLS_LINUX_DIST}/${_k} 不存在 —— 该内核不会进包。请先运行 build_linux.sh（它会 publish 内核）。")
         endif()
     endforeach()
 

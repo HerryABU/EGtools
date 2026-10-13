@@ -97,6 +97,7 @@ redist/*
 
 # -------- Published / packaged deliverables (regenerable) --------
 DIST/
+DIST-linux/
 installer/
 publish/
 *.msi

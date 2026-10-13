@@ -13,32 +13,44 @@
 # 用法：
 #   ./build_linux.sh                 # 内核 + 前端 + deb + rpm
 #   ./build_linux.sh --no-package    # 只构建，不打安装包（快）
+#   ./build_linux.sh --kernels-only  # 只出内核（不碰 Qt；先证明 .NET 侧在 Linux 上能跑）
 #   ./build_linux.sh --deb           # 只出 deb
 #   QT_PREFIX=/opt/Qt/6.8.0/gcc_64 ./build_linux.sh   # 指定 Qt
 #
 # 依赖（构建机）：dotnet SDK 9+、cmake 3.21+、ninja 或 make、g++、Qt6 **含 Qt6Pdf**、
 #                打包用 dpkg-deb（deb）/ rpmbuild（rpm）。
+#   Ubuntu 24.04: sudo apt install dotnet-sdk-9.0 cmake ninja-build g++ \
+#                                qt6-base-dev qt6-pdf-dev dpkg-dev rpm
+#   （Ubuntu 24.04 的 Qt 是 **6.4.2**；本项目在 Windows 上用 6.11.2 构建，
+#     版本差异造成的编译问题只在真机编译时才暴露 —— 见 verify_in_wsl.sh。）
 # ===========================================================================
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="${EGTOOLS_VERSION:-4.3.0}"
 RID="linux-x64"
-DIST="$ROOT/DIST"
+# ⚠️ 输出目录**按平台隔离**：Windows 的 build_all.ps1 用 DIST/，Linux 用 DIST-linux/。
+#    两者共用同一个 DIST/ 会互相覆盖（Windows 的 .exe 与 Linux 的无后缀 ELF 同名），
+#    且做完 Linux 验证后 Windows 自检/打包会拿到错的二进制。
+DIST="${EGTOOLS_LINUX_DIST:-$ROOT/DIST-linux}"
 FRONTEND="$ROOT/EGtools.Frontend"
 BUILD_DIR="$FRONTEND/build-linux"
 JOBS="$( (command -v nproc >/dev/null && nproc) || echo 4 )"
 QT_PREFIX="${QT_PREFIX:-}"
 DO_DEB=1
 DO_RPM=1
+KERNELS_ONLY=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --no-package) DO_DEB=0; DO_RPM=0 ;;
-        --deb)        DO_DEB=1; DO_RPM=0 ;;
-        --rpm)        DO_DEB=0; DO_RPM=1 ;;
-        --qt)         QT_PREFIX="$2"; shift ;;
-        -h|--help)    sed -n '2,22p' "$0"; exit 0 ;;
+        --no-package)   DO_DEB=0; DO_RPM=0 ;;
+        --deb)          DO_DEB=1; DO_RPM=0 ;;
+        --rpm)          DO_DEB=0; DO_RPM=1 ;;
+        # 只出内核（不碰 Qt）：用于"先证明 .NET 侧在 Linux 上真的能跑"，
+        # 也方便在没装 Qt6 的机器/容器里先做一轮验证。
+        --kernels-only) KERNELS_ONLY=1; DO_DEB=0; DO_RPM=0 ;;
+        --qt)           QT_PREFIX="$2"; shift ;;
+        -h|--help)      sed -n '2,22p' "$0"; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
     shift
@@ -52,24 +64,30 @@ fail() { printf '\n[FAIL] %s\n' "$*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 log "前置检查"
 command -v dotnet >/dev/null || fail "未找到 dotnet（需要 .NET SDK 9+）"
-command -v cmake  >/dev/null || fail "未找到 cmake"
 echo "dotnet : $(dotnet --version)"
-echo "cmake  : $(cmake --version | head -1)"
 
-# Qt6 定位：显式 QT_PREFIX 优先，其次交给 cmake 自己找（发行版包会装在标准前缀）。
+# qt/Qt 只在真的要编前端时才要求 —— `--kernels-only` 不该被 Qt 缺失拦住。
 CMAKE_QT_ARG=()
-if [ -n "$QT_PREFIX" ]; then
-    [ -d "$QT_PREFIX" ] || fail "QT_PREFIX 不存在: $QT_PREFIX"
-    CMAKE_QT_ARG=(-DCMAKE_PREFIX_PATH="$QT_PREFIX")
-    echo "Qt      : $QT_PREFIX"
+if [ "$KERNELS_ONLY" = 1 ]; then
+    echo "模式   : 只出内核（跳过 Qt 相关前置检查）"
 else
-    echo "Qt      : 交给 CMake 自动查找（若失败请设 QT_PREFIX）"
-fi
+    command -v cmake  >/dev/null || fail "未找到 cmake"
+    echo "cmake  : $(cmake --version | head -1)"
 
-# ⚠️ Qt6Pdf（Qt PDF / PDFium）是**硬依赖**：预览的矢量渲染全靠它。
-if [ -n "$QT_PREFIX" ] && [ ! -e "$QT_PREFIX/lib/cmake/Qt6Pdf" ]; then
-    fail "$QT_PREFIX 里没有 Qt6Pdf —— 预览渲染必需。请安装/编译带 PDF 模块的 Qt6
+    # Qt6 定位：显式 QT_PREFIX 优先，其次交给 cmake 自己找（发行版包会装在标准前缀）。
+    if [ -n "$QT_PREFIX" ]; then
+        [ -d "$QT_PREFIX" ] || fail "QT_PREFIX 不存在: $QT_PREFIX"
+        CMAKE_QT_ARG=(-DCMAKE_PREFIX_PATH="$QT_PREFIX")
+        echo "Qt      : $QT_PREFIX"
+    else
+        echo "Qt      : 交给 CMake 自动查找（若失败请设 QT_PREFIX）"
+    fi
+
+    # ⚠️ Qt6Pdf（Qt PDF / PDFium）是**硬依赖**：预览的矢量渲染全靠它。
+    if [ -n "$QT_PREFIX" ] && [ ! -e "$QT_PREFIX/lib/cmake/Qt6Pdf" ]; then
+        fail "$QT_PREFIX 里没有 Qt6Pdf —— 预览渲染必需。请安装/编译带 PDF 模块的 Qt6
        （Debian/Ubuntu: apt install qt6-pdf-dev）"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -90,29 +108,14 @@ done
 find "$DIST" -maxdepth 2 -name '*.pdb' -delete 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 2. 前端：Qt6 + CMake + Ninja
-# ---------------------------------------------------------------------------
-log "构建 Qt 前端"
-cmake -S "$FRONTEND" -B "$BUILD_DIR" -G Ninja \
-      -DCMAKE_BUILD_TYPE=Release \
-      "${CMAKE_QT_ARG[@]}" || fail "CMake 配置失败"
-cmake --build "$BUILD_DIR" --parallel "$JOBS" || fail "前端构建失败"
-
-# 前端产物 + 它的 runtimeconfig.json 一起进 DIST（hostfxr 内嵌调用必需）。
-mkdir -p "$DIST/EGtoolsFrontend"
-cp -f "$BUILD_DIR/EGtoolsFrontend" "$DIST/EGtoolsFrontend/" || fail "拷贝前端可执行文件失败"
-[ -f "$BUILD_DIR/EGtoolsFrontend.runtimeconfig.json" ] || \
-    fail "缺少 EGtoolsFrontend.runtimeconfig.json —— hostfxr 初始化会退用内核那份并静默失败"
-cp -f "$BUILD_DIR/EGtoolsFrontend.runtimeconfig.json" "$DIST/EGtoolsFrontend/"
-
-# ---------------------------------------------------------------------------
-# 3. 断言：产出的确实是能跑的 Linux 组合（不是"构建成功但缺原生库"）
-#    ⚠️ 这几条是本项目的历史教训换来的：
+# 2. 内核产物断言（**必须在内核 publish 之后立刻做**，这样 --kernels-only
+#    这个"先证明 .NET 侧能跑"的档位也带着断言，而不是空跑一趟）
+#    ⚠️ 这几条是历史教训换来的：
 #      · 缺 libOpenCvSharpExtern.so → 图纸差异一碰 Cv2.* 就 DllNotFoundException
 #      · 缺 libMuPDFWrapper.so      → 所有 PDF 处理直接不可用
 #      · 缺 runtimeconfig.json      → 内嵌通道静默退化成命令行
 # ---------------------------------------------------------------------------
-log "断言产物完整性"
+log "断言内核产物"
 is_elf() { [ -f "$1" ] && [ "$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; }
 
 for p in "${PROJECTS[@]}"; do
@@ -127,6 +130,35 @@ done
        检查 EGpdf2df.Engine.csproj 里的 OpenCvSharp4.runtime.linux-x64 引用是否还在"
 echo "  OK  EGpdf2df/libOpenCvSharpExtern.so（OpenCV 原生库）"
 
+# ---------------------------------------------------------------------------
+# 3. 前端：Qt6 + CMake + Ninja
+# ---------------------------------------------------------------------------
+if [ "$KERNELS_ONLY" = 1 ]; then
+    log "跳过前端与打包（--kernels-only）—— 内核产物在 $DIST"
+    echo "上面已断言：三个内核均为 ELF + 带 libMuPDFWrapper.so / runtimeconfig.json（+ OpenCV）"
+    echo "下一步（要验证**真能跑**）：./verify_in_wsl.sh"
+    echo "  或直接执行：$DIST/EGpdf2excel/EGpdf2excel --page-count <pdf>"
+    exit 0
+fi
+
+log "构建 Qt 前端"
+cmake -S "$FRONTEND" -B "$BUILD_DIR" -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DEGTOOLS_LINUX_DIST="$DIST" \
+      "${CMAKE_QT_ARG[@]}" || fail "CMake 配置失败"
+cmake --build "$BUILD_DIR" --parallel "$JOBS" || fail "前端构建失败"
+
+# 前端产物 + 它的 runtimeconfig.json 一起进 DIST（hostfxr 内嵌调用必需）。
+mkdir -p "$DIST/EGtoolsFrontend"
+cp -f "$BUILD_DIR/EGtoolsFrontend" "$DIST/EGtoolsFrontend/" || fail "拷贝前端可执行文件失败"
+[ -f "$BUILD_DIR/EGtoolsFrontend.runtimeconfig.json" ] || \
+    fail "缺少 EGtoolsFrontend.runtimeconfig.json —— hostfxr 初始化会退用内核那份并静默失败"
+cp -f "$BUILD_DIR/EGtoolsFrontend.runtimeconfig.json" "$DIST/EGtoolsFrontend/"
+
+# ---------------------------------------------------------------------------
+# 4. 前端产物断言（内核那些已在第 2 步断言过，这里只查前端）
+# ---------------------------------------------------------------------------
+log "断言前端产物"
 is_elf "$DIST/EGtoolsFrontend/EGtoolsFrontend" || fail "前端不是 ELF"
 [ -f "$DIST/EGtoolsFrontend/EGtoolsFrontend.runtimeconfig.json" ] || fail "前端缺 runtimeconfig.json"
 echo "  OK  EGtoolsFrontend（ELF + runtimeconfig.json）"
