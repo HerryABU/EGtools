@@ -39,9 +39,13 @@
          `.official.runtime.linux-x64` 4.13.0 在 24.04 上 74 个依赖全部可解析（实测）。
          ⚠️ 不要用 `OpenCvSharp4.runtime.ubuntu.22.04-x64`：只发过 4.6.0-snapshot，
          且 RID 是 `ubuntu.*` 而非通用的 `linux-x64`。
-         ⚠️ 换版本必须**三处同步**（托管 + win + linux），否则托管层与原生层符号对不上。 -->
+         ⚠️ 换版本必须**四处同步**（托管 + win + linux-x64 + linux-arm64），否则托管层与原生层符号对不上。
+         ⚠️ arm64 的包名是**普通版** `OpenCvSharp4.runtime.linux-arm64`（**没有** official 版；
+            实测其依赖基线也是新的：libtiff.so.6 / libtesseract.so.5 / libavcodec.so.60 /
+            libgtk-3.so.0 —— 与 official.linux-x64 4.13 同批，Ubuntu 24.04 兼容）。 -->
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
     <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64" Version="4.13.0.20260627" />
+    <PackageReference Include="OpenCvSharp4.runtime.linux-arm64" Version="4.13.0.20260627" />
     <!-- iText7: write the diff as a VECTOR PDF (preserve the original drawing's native
          vector content, then append a vector annotation layer). AGPL-3.0 — same license
          family as this project, so the combined work stays AGPL-3.0. -->

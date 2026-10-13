@@ -98,6 +98,7 @@ redist/*
 # -------- Published / packaged deliverables (regenerable) --------
 DIST/
 DIST-linux/
+DIST-linux-arm64/
 installer/
 publish/
 *.msi

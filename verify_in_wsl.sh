@@ -29,22 +29,35 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# 与 build_linux.sh 一致：Linux 产物在 DIST-linux/（Windows 用 DIST/，刻意分开）
-DIST="${EGTOOLS_LINUX_DIST:-$ROOT/DIST-linux}"
 LOG_DIR="$ROOT/.build_trash/wsl"
 WANT_GUI=0
 INSTALL_DEPS=0
+# 架构：默认按**本机**（在 arm64 机器上跑就验 arm64）。交叉发布的产物不能在本机验。
+ARCH="${EGTOOLS_ARCH:-native}"
 mkdir -p "$LOG_DIR"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --gui)          WANT_GUI=1 ;;
         --install-deps) INSTALL_DEPS=1 ;;
-        -h|--help)      sed -n '2,28p' "$0"; exit 0 ;;
+        --arch)         ARCH="$2"; shift ;;
+        -h|--help)      sed -n '2,30p' "$0"; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
     shift
 done
+
+HOST_ARCH="$(uname -m)"
+case "${ARCH}" in
+    native|"") case "$HOST_ARCH" in aarch64|arm64) ARCH="arm64" ;; *) ARCH="x64" ;; esac ;;
+    amd64|x86_64) ARCH="x64" ;;
+    aarch64)      ARCH="arm64" ;;
+esac
+ELF_WANT="3e00"; [ "$ARCH" = "arm64" ] && ELF_WANT="b700"
+# 与 build_linux.sh 一致：x64 产物在 DIST-linux/，arm64 在 DIST-linux-arm64/。
+DIST_DEFAULT="$ROOT/DIST-linux"
+[ "$ARCH" != "x64" ] && DIST_DEFAULT="$ROOT/DIST-linux-$ARCH"
+DIST="${EGTOOLS_LINUX_DIST:-$DIST_DEFAULT}"
 
 PASS=0; FAIL=0; SKIP=0
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; PASS=$((PASS+1)); }
@@ -66,6 +79,22 @@ asroot() {
 # ---------------------------------------------------------------------------
 step "① 环境体检"
 # ---------------------------------------------------------------------------
+echo "  宿主架构: $HOST_ARCH   目标架构: $ARCH   产物目录: $DIST"
+
+# ⚠️ 产物架构与本机不符 = 跑不了（交叉发布的产物必须拿到目标机上验）。
+#    这里先判，免得后面给出一堆看不懂的动态链接错误。
+DIST_BIN="$DIST/EGpdf2excel/EGpdf2excel"
+if [ -f "$DIST_BIN" ]; then
+    GOT="$(od -An -tx1 -j18 -N2 "$DIST_BIN" 2>/dev/null | tr -d ' \n')"
+    if [ "$GOT" = "$ELF_WANT" ]; then
+        ok "产物架构匹配（e_machine=$GOT）"
+    else
+        bad "产物架构($GOT) ≠ 目标($ELF_WANT) —— 本机跑不了。交叉发布的产物要拷到 $ARCH 机器上验"
+    fi
+else
+    echo "  （$DIST_BIN 还不存在，② 步会先生成）"
+fi
+
 if grep -qi microsoft /proc/version 2>/dev/null; then
     ok "在 WSL 里（$(uname -r)）"
     if grep -qi "WSL2" /proc/version 2>/dev/null; then ok "WSL2（真 Linux 内核，验证有效）"
@@ -261,6 +290,34 @@ if [ -x "$DIST/EGtoolsFrontend/EGtoolsFrontend" ]; then
             else
                 bad "内核 apphost 不是 0755 —— 装完会 'Permission denied'(126)"
                 grep 'opt/egtools/EGpdf2excel/EGpdf2excel$' "$LOG_DIR/deb_list.txt" | sed 's/^/        /'
+            fi
+
+            # ⚠️⚠️ 依赖必须覆盖**内核里原生库**的系统依赖，不能只按前端反推：
+            #    libOpenCvSharpExtern.so 链接了 GTK3 全套（libgtk-3.so.0 / libcairo.so.2 /
+            #    libpango / libfreetype / libX11…），dlopen 会解析全部 DT_NEEDED ⇒
+            #    漏掉就只在**干净机**上炸（开发机装了 qt6-base-dev 顺带带进来，看不出来）。
+            DEB_DEP_LINE="$(dpkg-deb -I "$DEB" 2>/dev/null | sed -n 's/^ Depends: //p' | tr -d ' ')"
+            UNCOVERED=""
+            for so in "$DIST/EGpdf2df/libOpenCvSharpExtern.so" "$DIST/EGpdf2df/libMuPDFWrapper.so"; do
+                [ -f "$so" ] || continue
+                while read -r n; do
+                    [ -n "$n" ] || continue
+                    p=""
+                    for d in /usr/lib/*-linux-gnu /lib/*-linux-gnu /usr/lib64 /lib64; do
+                        [ -e "$d/$n" ] && { p="$(readlink -f "$d/$n")"; break; }
+                    done
+                    [ -n "$p" ] || continue
+                    pkg="$(dpkg -S "$p" 2>/dev/null | head -1 | cut -d: -f1)"
+                    [ -n "$pkg" ] || continue
+                    case ",$DEB_DEP_LINE," in *",$pkg,"*) ;; *) UNCOVERED="$UNCOVERED $n->$pkg" ;; esac
+                done < <(readelf -d "$so" 2>/dev/null | awk -F'[][]' '/NEEDED/{print $2}')
+            done
+            if [ -z "$UNCOVERED" ]; then
+                ok "deb 的 Depends 覆盖了内核原生库的系统依赖（干净机可跑）"
+            else
+                bad "deb 的 Depends **漏了**内核原生库需要的包（干净机上会 dlopen 失败）："
+                for u in $UNCOVERED; do echo "        $u"; done
+                echo "        → 检查 build_linux.sh 是否把内核 .so 也算进了依赖反推（dep_scan_targets）"
             fi
         else
             bad "cpack 报成功但没找到 .deb"

@@ -14,8 +14,16 @@
 #   ./build_linux.sh                 # 内核 + 前端 + deb + rpm
 #   ./build_linux.sh --no-package    # 只构建，不打安装包（快）
 #   ./build_linux.sh --kernels-only  # 只出内核（不碰 Qt；先证明 .NET 侧在 Linux 上能跑）
-#   ./build_linux.sh --deb           # 只出 deb
+#   ./build_linux.sh --arch arm64 --kernels-only   # **交叉发布 arm64 内核**（在 x64 上即可）
 #   QT_PREFIX=/opt/Qt/6.8.0/gcc_64 ./build_linux.sh   # 指定 Qt
+#
+# 架构（EGTOOLS_ARCH / --arch）：
+#   x64（默认）→ RID=linux-x64、产物 DIST-linux/、可在任意 Linux 上编
+#   arm64      → RID=linux-arm64、产物 DIST-linux-arm64/
+#                ⚠️ **内核**可在 x64 上交叉发布（.NET 支持，已实测）；
+#                ⚠️ **Qt 前端**必须在 arm64 环境里编（需要 aarch64 的 Qt6 + Qt6Pdf），
+#                   故 arm64 的 deb/rpm 也只能在 arm64 环境（真机 / qemu chroot）里打。
+#                   在 x64 上跑 `--arch arm64` 而不带 --kernels-only 会明确报错退出。
 #
 # 依赖（构建机）：dotnet SDK 9+、cmake 3.21+、ninja 或 make、g++、Qt6 **含 Qt6Pdf**、
 #                打包用 dpkg-deb（deb）/ rpmbuild（rpm）。
@@ -28,11 +36,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="${EGTOOLS_VERSION:-4.3.0}"
-RID="linux-x64"
-# ⚠️ 输出目录**按平台隔离**：Windows 的 build_all.ps1 用 DIST/，Linux 用 DIST-linux/。
-#    两者共用同一个 DIST/ 会互相覆盖（Windows 的 .exe 与 Linux 的无后缀 ELF 同名），
-#    且做完 Linux 验证后 Windows 自检/打包会拿到错的二进制。
-DIST="${EGTOOLS_LINUX_DIST:-$ROOT/DIST-linux}"
+ARCH="${EGTOOLS_ARCH:-x64}"
+# ELF 的 e_machine 期望值（用于断言产物架构 —— 交叉编译最怕"静默产出错架构"）。
+ARCH_ELF_X64="3e00"
+ARCH_ELF_ARM64="b700"
+RID=""
 FRONTEND="$ROOT/EGtools.Frontend"
 # 构建目录可外置：在 WSL 里编前端时，把 build 目录放到 Linux 原生文件系统
 # （如 /tmp）比留在 /mnt/c（9p/drvfs）快很多。
@@ -55,12 +63,23 @@ while [ $# -gt 0 ]; do
         # 复用**已发布**的内核，只编 Qt 前端 + 打包。给"构建机没有 .NET SDK"的场景用
         # （内核可在 Windows 侧交叉发布好，Qt 前端本来就必须在 Linux 上编）。
         --no-kernels)   SKIP_KERNELS=1 ;;
+        --arch)         ARCH="$2"; shift ;;
         --qt)           QT_PREFIX="$2"; shift ;;
-        -h|--help)      sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help)      sed -n '2,34p' "$0"; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
     shift
 done
+
+case "$ARCH" in
+    x64|amd64|linux-x64)   ARCH="x64";   RID="linux-x64";   ARCH_ELF="$ARCH_ELF_X64" ;;
+    arm64|aarch64|linux-arm64) ARCH="arm64"; RID="linux-arm64"; ARCH_ELF="$ARCH_ELF_ARM64" ;;
+    *) echo "未知架构: $ARCH（支持 x64 / arm64）" >&2; exit 2 ;;
+esac
+# 输出目录按**平台 + 架构**隔离（否则同名产物互相覆盖）。
+DIST_DEFAULT="$ROOT/DIST-linux"
+[ "$ARCH" != "x64" ] && DIST_DEFAULT="$ROOT/DIST-linux-$ARCH"
+DIST="${EGTOOLS_LINUX_DIST:-$DIST_DEFAULT}"
 
 log()  { printf '\n=== %s ===\n' "$*"; }
 fail() { printf '\n[FAIL] %s\n' "$*" >&2; exit 1; }
@@ -86,35 +105,81 @@ direct_needed() {
     readelf -d "$1" 2>/dev/null | awk -F'[][]' '/NEEDED/{print $2}' | sort -u
 }
 
-deb_depends_for() {   # → 逗号分隔的 Debian 包名（本发行版实测）
-    local out="" n p pkg
-    while read -r n; do
-        [ -n "$n" ] || continue
-        p="$(lib_path_of "$n")"
-        [ -n "$p" ] || continue
-        pkg="$(dpkg -S "$p" 2>/dev/null | head -1 | cut -d: -f1 | sed 's/:amd64$//')"
-        [ -n "$pkg" ] && out="$out${out:+,}$pkg"
-    done < <(direct_needed "$1")
+# ⚠️⚠️ 必须把**内核里的原生库**也算进依赖，不能只算前端二进制。
+#    `libOpenCvSharpExtern.so` 链接了 GTK3 全套（libgtk-3.so.0 / libcairo.so.2 /
+#    libpango-1.0.so.0 / libfreetype.so.6 / libX11.so.6 …，OpenCV 官方构建开了 GUI 模块），
+#    dlopen 时动态链接器会解析**全部** DT_NEEDED ⇒ 缺一个就整块不可用。
+#    实测：只按前端反推时，这些包**一个都没进 Depends** ⇒ 在干净的 Ubuntu Server 上装完，
+#    `EGpdf2df` 一碰 Cv2.* 就抛
+#      `The type initializer for 'OpenCvSharp.Internal.NativeMethods' threw an exception.`
+#    （开发机上因为装了 qt6-base-dev，GTK3 被顺带带进来 ⇒ 完全看不出来）。
+#    所以这里对**每个**传入的二进制都反推，再合并去重。
+deb_depends_for() {   # → 逗号分隔的 Debian 包名（本发行版实测）；可传多个二进制
+    local out="" f n p pkg
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        while read -r n; do
+            [ -n "$n" ] || continue
+            p="$(lib_path_of "$n")"
+            [ -n "$p" ] || continue
+            pkg="$(dpkg -S "$p" 2>/dev/null | head -1 | cut -d: -f1 | sed 's/:amd64$//')"
+            [ -n "$pkg" ] && out="$out${out:+,}$pkg"
+        done < <(direct_needed "$f")
+    done
     printf '%s' "$out" | tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -
 }
 
 rpm_requires_for() {  # → 逗号分隔的 soname 能力（跨发行版，rpm 就是这么自报的）
-    direct_needed "$1" | while read -r n; do
+    # ⚠️ `(64bit)` 是 RPM 对 **ELFCLASS64** 的标记，**与 CPU 无关** ⇒ aarch64 上也写作
+    #    `libQt6Core.so.6()(64bit)`（只有 32 位目标才写 (32bit)）。
+    local f
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        direct_needed "$f"
+    done | sort -u | while read -r n; do
         case "$n" in lib*) printf '%s()(64bit)\n' "$n" ;; esac
     done | sort -u | paste -sd, -
+}
+
+# 需要参与依赖反推的全部二进制：前端 + 内核里会加载的原生库。
+# （.NET 运行时自身是 self-contained 捆绑；这里重点是 OpenCV/MuPDF 这两块原生库。）
+dep_scan_targets() {
+    local d
+    for d in "$DIST/EGpdf2excel" "$DIST/EGexcel2df" "$DIST/EGpdf2df"; do
+        [ -f "$d/libOpenCvSharpExtern.so" ] && echo "$d/libOpenCvSharpExtern.so"
+        [ -f "$d/libMuPDFWrapper.so" ] && echo "$d/libMuPDFWrapper.so"
+    done
 }
 
 # ---------------------------------------------------------------------------
 # 0. 前置检查（缺什么先报清楚，别等构建到一半才炸）
 # ---------------------------------------------------------------------------
 log "前置检查"
+HOST_ARCH="$(uname -m)"
+echo "目标   : $ARCH（RID=$RID, e_machine=$ARCH_ELF）"
+echo "构建机 : $HOST_ARCH"
+
+# ⚠️ 架构保护：.NET 能交叉发布，**Qt 前端不能**（需要目标架构的 Qt6 + Qt6Pdf）。
+#    在 x64 上试图编 arm64 前端必然失败，与其编到一半炸，不如立刻说清楚。
+if [ "$ARCH" = "arm64" ] && [ "$KERNELS_ONLY" != 1 ]; then
+    case "$HOST_ARCH" in
+        aarch64|arm64) : ;;   # 原生 arm64 构建，正常走
+        *)
+            fail "在 $HOST_ARCH 上无法构建 arm64 的 Qt 前端（需要 aarch64 的 Qt6 + Qt6Pdf）。
+       · 只要 arm64 **内核**：加 --kernels-only（.NET 交叉发布，无需 arm64 机器）
+       · 要 arm64 **完整包**：在 arm64 环境里跑本脚本（真机，或 x64 上 qemu +
+         arm64 chroot：debootstrap --arch=arm64 + qemu-user-static + binfmt_misc）"
+            ;;
+    esac
+fi
+
 # dotnet 只在真的要发布内核时需要 —— `--no-kernels` 复用现成产物，不该被 SDK 缺失拦住。
 if [ "$SKIP_KERNELS" = 1 ]; then
     echo "模式   : 复用已有内核（$DIST），只编前端/打包"
 else
     command -v dotnet >/dev/null || fail "未找到 dotnet（需要 .NET SDK 9+）。
        若本机没有 SDK：改用 --no-kernels，并在 Windows 侧先交叉发布：
-         build_linux.sh --kernels-only   （或在 Windows 上 dotnet publish -r linux-x64）"
+         build_linux.sh --kernels-only   （或在 Windows 上 dotnet publish -r $RID）"
     echo "dotnet : $(dotnet --version)"
 fi
 
@@ -177,24 +242,53 @@ fi
 #      · 缺 runtimeconfig.json      → 内嵌通道静默退化成命令行
 # ---------------------------------------------------------------------------
 log "断言内核产物"
-is_elf() { [ -f "$1" ] && [ "$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; }
+# ELF 魔数 + **e_machine 必须匹配目标架构**。
+# ⚠️ 只判魔数是不够的：交叉编译最阴的失效模式是"发布成功、架构也对不上"
+#    （例如某依赖只有 x64 原生库，它照样会被拷进产物）。实测 arm64 产物里
+#    一旦漏了某个 arm64 原生包，就会出现 x64 的 .so 混进来 —— 只有在**目标机**
+#    上才会炸，而且报错难看懂。这里用 e_machine 直接断言。
+#    e_machine 在 ELF 头偏移 18、2 字节小端 ⇒ arm64=b700、x86-64=3e00。
+# ⚠️ 用 `od -j18 -N2`（偏移 + 长度）而不是切字符串：切字符位置极易差一位（踩过）。
+elf_machine_of() {
+    [ -f "$1" ] || { echo "缺失"; return; }
+    od -An -tx1 -j18 -N2 "$1" 2>/dev/null | tr -d ' \n'
+}
+is_elf() {
+    [ -f "$1" ] || return 1
+    [ "$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] || return 1
+    [ "$(elf_machine_of "$1")" = "$ARCH_ELF" ]
+}
 
 for p in "${PROJECTS[@]}"; do
-    is_elf "$DIST/$p/$p" || fail "$p 不是可执行 ELF（实际：$(file -b "$DIST/$p/$p" 2>/dev/null || echo 缺失)）"
+    is_elf "$DIST/$p/$p" || fail "$p 不是目标架构（$ARCH）的可执行 ELF
+       实际 e_machine=$(elf_machine_of "$DIST/$p/$p")（期望 $ARCH_ELF）／$(file -b "$DIST/$p/$p" 2>/dev/null || echo 缺失)"
     [ -e "$DIST/$p/libMuPDFWrapper.so" ] || fail "$p 缺少 libMuPDFWrapper.so（MuPDF 原生库）"
+    is_elf "$DIST/$p/libMuPDFWrapper.so" || fail "$p 的 libMuPDFWrapper.so 架构不对（e_machine=$(elf_machine_of "$DIST/$p/libMuPDFWrapper.so")）"
     [ -f "$DIST/$p/$p.runtimeconfig.json" ] || fail "$p 缺少 runtimeconfig.json"
-    echo "  OK  $p（ELF + libMuPDFWrapper.so + runtimeconfig.json）"
+    echo "  OK  $p（$ARCH ELF + libMuPDFWrapper.so + runtimeconfig.json）"
 done
 # ⚠️ OpenCV 原生库只在 EGpdf2df 里需要（图纸对齐/图形差异）。
 [ -e "$DIST/EGpdf2df/libOpenCvSharpExtern.so" ] || \
     fail "EGpdf2df 缺少 libOpenCvSharpExtern.so ——
-       检查 EGpdf2df.Engine.csproj 里的 OpenCvSharp4.official.runtime.linux-x64 引用是否还在"
-echo "  OK  EGpdf2df/libOpenCvSharpExtern.so（OpenCV 原生库）"
+       检查 EGpdf2df.Engine.csproj 里的 OpenCvSharp4.*runtime*.linux-$ARCH 引用是否还在"
+is_elf "$DIST/EGpdf2df/libOpenCvSharpExtern.so" || \
+    fail "libOpenCvSharpExtern.so 架构不对（e_machine=$(elf_machine_of "$DIST/EGpdf2df/libOpenCvSharpExtern.so")，期望 $ARCH_ELF）
+       典型成因：csproj 里少了 linux-$ARCH 的 OpenCvSharp 原生包，于是**别的架构**的 .so 被带进来。"
+echo "  OK  EGpdf2df/libOpenCvSharpExtern.so（$ARCH OpenCV 原生库）"
 # ⚠️ 只有 file 存在不够：**依赖的 soname 必须能在本机解析**。
 #    `OpenCvSharp4.runtime.linux-x64`(4.10) 是按 Ubuntu 20.04 构建的，DT_NEEDED 钉在
 #    libtiff.so.5 / libtesseract.so.4 / libavcodec.so.58 这些旧 soname 上 —— 在 24.04 上
 #    dlopen 直接失败，而 publish 与"文件存在"检查**都看不出来**。故在这里加 ldd 断言。
-if command -v ldd >/dev/null; then
+#    ⚠️ 交叉构建（x64 上出 arm64）时 ldd 读不了别的架构的 .so ⇒ 改为只读 DT_NEEDED 列出来
+#       让人核对，并把"真机验证"明确交给目标机。
+CROSS=0
+{ [ "$ARCH" = "x64" ] && [ "$HOST_ARCH" != "x86_64" ]; } && CROSS=1
+{ [ "$ARCH" = "arm64" ] && [ "$HOST_ARCH" = "x86_64" ]; } && CROSS=1
+if [ "$CROSS" = 1 ]; then
+    echo "  --  交叉构建（$HOST_ARCH → $ARCH）：本机无法 ldd 别的架构，列出 DT_NEEDED 供核对："
+    direct_needed "$DIST/EGpdf2df/libOpenCvSharpExtern.so" | head -8 | sed 's/^/        /'
+    echo "        真机验证：把 $DIST 拷到 $ARCH 机器（或 qemu chroot）跑 verify_in_wsl.sh"
+elif command -v ldd >/dev/null; then
     OCV_MISSING="$(ldd "$DIST/EGpdf2df/libOpenCvSharpExtern.so" 2>/dev/null | awk '/not found/{print $1}' | sort -u)"
     if [ -n "$OCV_MISSING" ]; then
         fail "libOpenCvSharpExtern.so 的依赖在本机无法解析：
@@ -212,9 +306,15 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$KERNELS_ONLY" = 1 ]; then
     log "跳过前端与打包（--kernels-only）—— 内核产物在 $DIST"
-    echo "上面已断言：三个内核均为 ELF + 带 libMuPDFWrapper.so / runtimeconfig.json（+ OpenCV）"
-    echo "下一步（要验证**真能跑**）：./verify_in_wsl.sh"
-    echo "  或直接执行：$DIST/EGpdf2excel/EGpdf2excel --page-count <pdf>"
+    echo "上面已断言：三个内核均为 **$ARCH** ELF + 带 libMuPDFWrapper.so / runtimeconfig.json（+ OpenCV）"
+    if [ "$ARCH" = "$HOST_ARCH" ] || { [ "$ARCH" = "x64" ] && [ "$HOST_ARCH" = "x86_64" ]; }; then
+        echo "下一步（要验证**真能跑**）：./verify_in_wsl.sh"
+        echo "  或直接执行：$DIST/EGpdf2excel/EGpdf2excel --help"
+    else
+        echo "⚠️ 本机是 $HOST_ARCH，上面的产物是交叉发布的 $ARCH —— **本机跑不了**，要真跑需："
+        echo "  ① 拷到 $ARCH 机器：scp -r $DIST user@host:~/ ; 再在那边跑 verify_in_wsl.sh"
+        echo "  ② 或 qemu-user-static + $ARCH chroot（见 .build_trash/wsl/ 里的做法）"
+    fi
     exit 0
 fi
 
@@ -236,9 +336,10 @@ cp -f "$BUILD_DIR/EGtoolsFrontend.runtimeconfig.json" "$DIST/EGtoolsFrontend/"
 # 4. 前端产物断言（内核那些已在第 2 步断言过，这里只查前端）
 # ---------------------------------------------------------------------------
 log "断言前端产物"
-is_elf "$DIST/EGtoolsFrontend/EGtoolsFrontend" || fail "前端不是 ELF"
+is_elf "$DIST/EGtoolsFrontend/EGtoolsFrontend" || fail "前端不是目标架构（$ARCH）的 ELF
+       实际 e_machine=$(elf_machine_of "$DIST/EGtoolsFrontend/EGtoolsFrontend")（期望 $ARCH_ELF）"
 [ -f "$DIST/EGtoolsFrontend/EGtoolsFrontend.runtimeconfig.json" ] || fail "前端缺 runtimeconfig.json"
-echo "  OK  EGtoolsFrontend（ELF + runtimeconfig.json）"
+echo "  OK  EGtoolsFrontend（$ARCH ELF + runtimeconfig.json）"
 
 if [ "$DO_DEB" = 0 ] && [ "$DO_RPM" = 0 ]; then
     log "跳过打包（--no-package）—— 产物在 $DIST"
@@ -257,16 +358,22 @@ GEN=()
 
 # 按本机实测反推运行库依赖（见文件上方 lib_path_of/direct_needed 的说明）。
 FE_BIN="$DIST/EGtoolsFrontend/EGtoolsFrontend"
+# ⚠️ 必须把**内核里的原生库**也纳入：OpenCV 链接了 GTK3 全套，只按前端反推会漏掉
+#    16 个包 ⇒ 干净机上 dlopen 失败（详见上面 deb_depends_for 的注释）。
+mapfile -t DEP_TARGETS < <(dep_scan_targets)
+DEP_TARGETS=("$FE_BIN" "${DEP_TARGETS[@]}")
+echo "  依赖反推对象（${#DEP_TARGETS[@]} 个）:"
+printf '    %s\n' "${DEP_TARGETS[@]}"
 DEP_ARGS=()
 if command -v readelf >/dev/null; then
     if [ "$DO_DEB" = 1 ]; then
-        DEB_DEP="$(deb_depends_for "$FE_BIN")"
+        DEB_DEP="$(deb_depends_for "${DEP_TARGETS[@]}")"
         [ -n "$DEB_DEP" ] || fail "无法反推 deb 依赖（readelf/dpkg -S 没给出结果）—— 不要用空的 Depends 出包"
         echo "  deb Depends : $DEB_DEP"
         DEP_ARGS+=("-D" "CPACK_DEBIAN_PACKAGE_DEPENDS=$DEB_DEP")
     fi
     if [ "$DO_RPM" = 1 ]; then
-        RPM_REQ="$(rpm_requires_for "$FE_BIN")"
+        RPM_REQ="$(rpm_requires_for "${DEP_TARGETS[@]}")"
         [ -n "$RPM_REQ" ] || fail "无法反推 rpm 依赖"
         echo "  rpm Requires: $RPM_REQ"
         DEP_ARGS+=("-D" "CPACK_RPM_PACKAGE_REQUIRES=$RPM_REQ")
