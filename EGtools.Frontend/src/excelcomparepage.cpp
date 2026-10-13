@@ -89,7 +89,8 @@ ExcelComparePage::ExcelComparePage(QWidget* parent) : QWidget(parent)
 
 QString ExcelComparePage::cliExe(const QString& name) const
 {
-    const QString exe = name + QStringLiteral(".exe");
+    // ⚠️ 可执行文件后缀按平台（Windows .exe / Linux 无后缀）—— 不要写死。
+    const QString exe = KernelClient::cliFileName(name);
     QStringList cands;
     auto add = [&](const QString& d){ if (!d.isEmpty()) cands << QDir(d).filePath(exe); };
     add(m_cliDir);
@@ -106,7 +107,7 @@ void ExcelComparePage::refreshKernelStatus()
 {
     bool ok = QFileInfo::exists(cliExe(QStringLiteral("EGexcel2df")));
     m_status->setText(ok ? QStringLiteral("内核状态：已就绪（EGexcel2df）")
-                         : QStringLiteral("内核状态：未找到 EGexcel2df.exe — 请在首页设置 CLI 目录"));
+                         : QStringLiteral("内核状态：未找到 %1 — 请在首页设置 CLI 目录").arg(KernelClient::cliFileName(QStringLiteral("EGexcel2df"))));
     m_runBtn->setEnabled(ok);
 }
 

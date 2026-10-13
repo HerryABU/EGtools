@@ -210,18 +210,50 @@ QString KernelClient::kernelDir(const QString& kernel)
     return QFileInfo(dll).absolutePath();
 }
 
-// 找 hostfxr.dll：不依赖 nethost（那是 SDK 期产物，用户机上通常没有）。
-// 顺序：① 应用目录旁（可随包分发）② DOTNET_ROOT ③ 注册表安装位置
-//      ④ 默认安装目录；然后在 host/fxr/<版本>/ 里取**版本最高**的那个。
+// hostfxr 的**文件名按平台**不同（这是移植到 Linux 最容易漏的一处）：
+//   Windows: hostfxr.dll      Linux: libhostfxr.so      macOS: libhostfxr.dylib
+QString KernelClient::hostFxrFileName()
+{
+#if defined(Q_OS_WIN)
+    return QStringLiteral("hostfxr.dll");
+#elif defined(Q_OS_MACOS)
+    return QStringLiteral("libhostfxr.dylib");
+#else
+    return QStringLiteral("libhostfxr.so");
+#endif
+}
+
+// 可执行文件后缀：Windows 有 ".exe"，Linux/macOS 没有。
+// ⚠️ 注意与托管程序集区分：`EGpdf2excel.dll` 在任何平台都带 .dll，
+//    只有**可执行文件**（self-contained 发布出来的那个）在 Linux 上无后缀。
+QString KernelClient::exeSuffix()
+{
+#if defined(Q_OS_WIN)
+    return QStringLiteral(".exe");
+#else
+    return QString();
+#endif
+}
+
+QString KernelClient::cliFileName(const QString& kernel)
+{
+    return kernel + exeSuffix();
+}
+
+// 找 hostfxr 库：不依赖 nethost（那是 SDK 期产物，用户机上通常没有）。
+// 顺序：① 应用目录旁（可随包分发）② DOTNET_ROOT ③ 平台特有的其他位置
+//      ④ 由 `dotnet` 可执行文件反推安装根；然后在 host/fxr/<版本>/ 里取**版本最高**的。
 QString KernelClient::findHostFxr()
 {
+    const QString fxrName = hostFxrFileName();
     const QString appDir = QCoreApplication::applicationDirPath();
-    const QString beside = QDir(appDir).filePath(QStringLiteral("hostfxr.dll"));
+    const QString beside = QDir(appDir).filePath(fxrName);
     if (QFileInfo::exists(beside)) return beside;
 
     QStringList roots;
     const QByteArray envRoot = qgetenv("DOTNET_ROOT");
     if (!envRoot.isEmpty()) roots << QString::fromLocal8Bit(envRoot);
+
 #if defined(Q_OS_WIN)
     {
         QSettings reg(QStringLiteral("HKEY_LOCAL_MACHINE\\SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64"),
@@ -229,20 +261,40 @@ QString KernelClient::findHostFxr()
         const QString loc = reg.value(QStringLiteral("InstallLocation")).toString();
         if (!loc.isEmpty()) roots << loc;
     }
-#endif
     roots << QStringLiteral("C:/Program Files/dotnet");
+#else
+    // Linux：发行版包把运行时放在 /usr/lib/dotnet（Debian/Ubuntu 的 dotnet-runtime-*），
+    // 微软官方脚本装到 /usr/share/dotnet，snap 另一处；macOS 官方装到
+    // /usr/local/share/dotnet。这些路径都可能只有 host/fxr 而没有 SDK。
+    roots << QStringLiteral("/usr/share/dotnet")
+          << QStringLiteral("/usr/lib/dotnet")
+          << QStringLiteral("/usr/local/share/dotnet")
+          << QStringLiteral("/opt/dotnet")
+          << QStringLiteral("/snap/dotnet-sdk/current/dotnet");
+    // 最后再从 `dotnet` 可执行文件反推安装根（最能适应自定义安装位置）。
+    {
+        const QString dotnetExe = QStandardPaths::findExecutable(QStringLiteral("dotnet"));
+        if (!dotnetExe.isEmpty()) {
+            // /usr/bin/dotnet 常是符号链接 → 解析到真实路径后再取上两级（bin/ 与根）。
+            const QString real = QFileInfo(dotnetExe).canonicalFilePath().isEmpty()
+                                     ? dotnetExe : QFileInfo(dotnetExe).canonicalFilePath();
+            roots << QFileInfo(QFileInfo(real).absolutePath()).absolutePath();
+        }
+    }
+#endif
 
     for (const QString& root : roots)
     {
+        if (root.isEmpty()) continue;
         const QString fxrRoot = QDir(root).filePath(QStringLiteral("host/fxr"));
         if (!QFileInfo::exists(fxrRoot)) continue;
         QString best;
-        QDirIterator it(fxrRoot, QStringList() << QStringLiteral("hostfxr.dll"),
+        QDirIterator it(fxrRoot, QStringList() << fxrName,
                         QDir::Files, QDirIterator::Subdirectories);
         while (it.hasNext())
         {
             const QString cand = it.next();
-            // 目录名即版本号，取最大者（字符串比较对同一主版本足够；10.x > 9.x > 8.x 需按段比）
+            // 目录名即版本号，取最大者（按段比：10.x > 9.x > 8.x，字符串比较会在 10 < 9 上翻车）
             const QString ver = QFileInfo(cand).dir().dirName();
             auto parts = [](const QString& v) {
                 QList<int> p; for (const QString& s : v.split(QLatin1Char('.'))) p << s.toInt();
@@ -271,17 +323,17 @@ static bool initRuntime(QString* why)
 
     const QString fxr = KernelClient::findHostFxr();
     if (fxr.isEmpty())
-        return fail(QStringLiteral("未找到 hostfxr.dll（需要目标机安装 .NET 运行时）"));
+        return fail(QStringLiteral("未找到 %1（需要目标机安装 .NET 运行时）").arg(KernelClient::hostFxrFileName()));
 
     g_hostfxrLib = new QLibrary(fxr);
     if (!g_hostfxrLib->load())
-        return fail(QStringLiteral("hostfxr.dll 加载失败: %1").arg(g_hostfxrLib->errorString()));
+        return fail(QStringLiteral("%1 加载失败: %2").arg(KernelClient::hostFxrFileName(), g_hostfxrLib->errorString()));
 
     // 只校验必要导出是否齐全；真正初始化在 ensureRuntimeFor（要用某个内核的 runtimeconfig）。
     if (!g_hostfxrLib->resolve("hostfxr_initialize_for_runtime_config")
         || !g_hostfxrLib->resolve("hostfxr_get_runtime_delegate")
         || !g_hostfxrLib->resolve("hostfxr_close"))
-        return fail(QStringLiteral("hostfxr.dll 缺少所需导出（版本过旧？）"));
+        return fail(QStringLiteral("%1 缺少所需导出（版本过旧？）").arg(KernelClient::hostFxrFileName()));
 
     g_hostfxrPath = fxr;
     return true;
@@ -466,7 +518,7 @@ bool KernelClient::embeddedAvailable(const QString& kernel, QString* why)
     }
     if (findHostFxr().isEmpty())
     {
-        if (why) *why = QStringLiteral("未找到 hostfxr.dll（目标机需安装 .NET 运行时）");
+        if (why) *why = QStringLiteral("未找到 %1（目标机需安装 .NET 运行时）").arg(KernelClient::hostFxrFileName());
         return false;
     }
     if (!g_runtimeError.isEmpty())
@@ -607,7 +659,7 @@ KernelClient::Result KernelClient::runCli(const QString& kernel, const QStringLi
     }
 
     QString out, err;
-    const int rc = CliRunner::run(findKernelFile(kernel, QStringLiteral(".exe")), a, out, err, timeoutMs);
+    const int rc = CliRunner::run(findKernelFile(kernel, exeSuffix()), a, out, err, timeoutMs);
     r.rc = rc;
     r.out = out;
     r.err = err;

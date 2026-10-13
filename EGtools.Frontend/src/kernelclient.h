@@ -61,8 +61,18 @@ public:
 
     // 内核器目录探测（.dll 与 .exe 同目录）。
     static QString kernelDir(const QString& kernel);
-    // 定位 hostfxr.dll（不依赖 nethost；见 .cpp 里的搜索顺序说明）。
+    // 定位 hostfxr 库（不依赖 nethost；见 .cpp 里的搜索顺序说明）。
     static QString findHostFxr();
+
+    // ---- 平台差异（移植 Linux/macOS 时唯二要注意的地方）------------------
+    // hostfxr 库名按平台：hostfxr.dll / libhostfxr.so / libhostfxr.dylib。
+    static QString hostFxrFileName();
+    // 可执行文件后缀：Windows ".exe"，其他平台空串。
+    // ⚠️ 托管程序集始终是 ".dll"（Linux 上也是），只有**可执行文件**没有后缀。
+    static QString exeSuffix();
+    // 内核 CLI 可执行文件名（含平台后缀），如 Windows "EGpdf2df.exe" / Linux "EGpdf2df"。
+    static QString cliFileName(const QString& kernel);
+
     // 定位内核文件：kernel + ext（".exe" / ".dll" / ".runtimeconfig.json"）。
     static QString findKernelFile(const QString& kernel, const QString& ext);
 

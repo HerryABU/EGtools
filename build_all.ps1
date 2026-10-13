@@ -143,16 +143,45 @@ if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake
         }
     }
     Push-Location "$root\EGtools.Frontend"
+    $qtExe = "$root\EGtools.Frontend\build\EGtoolsFrontend.exe"
+
+    # ⚠️⚠️ 构建前**先移走上一次的 exe**。
+    # 原因（实测踩过）：编译失败时后面那句 `if (Test-Path $qtExe)` 仍会命中**上一轮的产物**，
+    # 于是脚本一路往下走、打出安装包、最后还报 ALL DONE —— 交付了一个用**旧二进制**做的包，
+    # 而真实情况是前端根本没编译成功。移走旧产物之后，"构建后 exe 不存在"就成了硬失败信号。
+    if (Test-Path $qtExe) {
+        $stale = "$root\.build_trash\stale_frontend"
+        New-Item -ItemType Directory -Path $stale -Force | Out-Null
+        Move-Item -LiteralPath $qtExe `
+                  -Destination (Join-Path $stale "EGtoolsFrontend_$(Get-Date -Format yyyyMMdd_HHmmss).exe") -Force
+    }
+
+    # ⚠️ 不要用管道接 Out-Host 之后再读 $LASTEXITCODE —— 管道会**吞掉/改写**退出码
+    #    （本仓库早有记录：编译/测试校验必须让工具退出码等于原生命令）。这里直接调用。
     # ⚠️ 必须是 Release：既要显式传 CMAKE_BUILD_TYPE（Ninja 是单配置生成器），
     #    也要给 --build 补 --config Release。CMakeLists 里另外做了兜底
     #    （未指定时默认 Release、显式 Debug 会被强制改回 Release）。
-    & $qtCmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="$qtRoot" -DCMAKE_BUILD_TYPE=Release 2>&1 | Out-Host
-    if ($LASTEXITCODE -eq 0) { & $qtCmake --build build --config Release 2>&1 | Out-Host }
+    & $qtCmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="$qtRoot" -DCMAKE_BUILD_TYPE=Release
+    $qtCfgRc = $LASTEXITCODE
+    if ($qtCfgRc -ne 0) { Pop-Location; throw "Qt CMake 配置失败（exit=$qtCfgRc）—— 前端不会更新，已中止。" }
+
+    & $qtCmake --build build --config Release
+    $qtBuildRc = $LASTEXITCODE
+    if ($qtBuildRc -ne 0) { Pop-Location; throw "Qt 前端编译失败（exit=$qtBuildRc）—— 已中止，避免打出用旧二进制的安装包。" }
+
     $cfgLine = Select-String -Path 'build\CMakeCache.txt' -Pattern '^CMAKE_BUILD_TYPE:STRING=' -EA SilentlyContinue |
                Select-Object -First 1
-    if ($cfgLine) { Write-Host "Qt build config -> $($cfgLine.Line)" } else { Write-Warning 'Cannot verify Qt build config.' }
     Pop-Location
-    $qtExe = "$root\EGtools.Frontend\build\EGtoolsFrontend.exe"
+
+    if (-not $cfgLine) { throw '无法确认 Qt 构建配置（CMakeCache.txt 里没有 CMAKE_BUILD_TYPE）。' }
+    Write-Host "Qt build config -> $($cfgLine.Line)"
+    if ($cfgLine.Line -notmatch 'Release') {
+        throw "Qt 构建配置不是 Release：$($cfgLine.Line)"
+    }
+    if (-not (Test-Path $qtExe)) {
+        throw "Qt 构建报成功但产物不存在：$qtExe"
+    }
+
     if (Test-Path $qtExe) {
         $out = "$root\DIST\EGtoolsFrontend"
         New-Item -ItemType Directory -Path $out -Force | Out-Null

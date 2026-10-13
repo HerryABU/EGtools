@@ -1,0 +1,30 @@
+# ===========================================================================
+# 行尾策略 —— 这是**功能性**的，不只是风格：
+#   · Linux 侧的 shell / 打包控制脚本如果是 CRLF，会出现
+#     `/bin/sh^M: bad interpreter` 或 dpkg/rpm 的 maintainer script 执行失败。
+#   · 本仓库在 Windows 上开发且 core.autocrlf=true ⇒ 不加规则的话，
+#     提交时是 LF、**检出时会变回 CRLF**，脚本在 Linux 上直接坏掉。
+# ===========================================================================
+
+# Linux 打包与构建脚本：强制 LF。
+*.sh                    text eol=lf
+build_linux.sh          text eol=lf
+
+# 打包控制脚本（无扩展名，按路径匹配）与桌面项。
+*.desktop               text eol=lf
+*.spec                  text eol=lf
+EGtools.Frontend/packaging/deb/*    text eol=lf
+EGtools.Frontend/packaging/rpm/*    text eol=lf
+
+# Windows 脚本：保持 CRLF（PowerShell 两种都能跑，但 CRLF 更符合本机习惯）。
+*.ps1                   text eol=crlf
+*.bat                   text eol=crlf
+*.cmd                   text eol=crlf
+
+# 二进制：不做任何行尾/编码转换。
+*.png   binary
+*.ico   binary
+*.pdf   binary
+*.dll   binary
+*.so    binary
+*.exe   binary

@@ -167,3 +167,61 @@ target_include_directories(kernelclient_test PRIVATE src)
 if(MSVC)
     target_compile_options(kernelclient_test PRIVATE /utf-8)
 endif()
+
+# ===========================================================================
+# Linux 打包（deb / rpm）—— 由仓库根的 build_linux.sh 驱动：
+#   ① 先 `dotnet publish -r linux-x64 --self-contained` 把三个内核出到 DIST/<name>/
+#   ② 再配置并构建本工程 → ③ `cpack -G DEB` / `-G RPM`
+#
+# 布局（装到 /opt/egtools）必须让 `KernelClient` 的自动发现命中：内核放在
+# **前端同级的 <name>/<name>**（与 Windows 的 DIST 布局一致，见 mainwindow 的 cliExe 探测）。
+#
+# ⚠️ 依赖不手写包名：Debian 用 CPACK_DEBIAN_PACKAGE_SHLIBDEPS（dpkg-shlibdeps 从二进制
+#    反推，含 Qt6Pdf），RPM 用 CPACK_RPM_PACKAGE_AUTOREQ —— 手写发行版包名极易写错
+#    （t64 变体、qt6-pdf 的拆分方式各发行版不同），写错会让包**装不上**。
+# ===========================================================================
+if(UNIX AND NOT APPLE)
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/opt/egtools")
+    set(CPACK_PACKAGE_NAME "egtools")
+    set(CPACK_PACKAGE_VENDOR "HerryABU")
+    set(CPACK_PACKAGE_CONTACT "HerryABU")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "工程图纸材料表提取与对比工具集（PDF 材料表 / 图纸差异 / 等轴测图比对）")
+    set(CPACK_PACKAGE_VERSION "4.3.0")
+    set(CPACK_GENERATOR "DEB;RPM")
+
+    # rpath 用 $ORIGIN：让二进制优先从**自己所在目录**解析 Qt 库（随包分发时必需）。
+    set_target_properties(EGtoolsFrontend PROPERTIES INSTALL_RPATH "$ORIGIN")
+
+    install(TARGETS EGtoolsFrontend RUNTIME DESTINATION .)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/EGtoolsFrontend.runtimeconfig.json" DESTINATION .)
+
+    # 三个内核（self-contained 目录，含各自的 .so 与 .runtimeconfig.json）。
+    # 由 build_linux.sh 先行生成；不存在时给出明确警告而不是静默打出残缺包。
+    foreach(_k EGpdf2excel EGexcel2df EGpdf2df)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../DIST/${_k}")
+            install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../DIST/${_k}" DESTINATION .)
+        else()
+            message(WARNING
+                "DIST/${_k} 不存在 —— 该内核不会进包。请先运行 build_linux.sh（它会 publish 内核）。")
+        endif()
+    endforeach()
+
+    # 桌面集成 + 图标 + 启动器符号链接（postinst/post 里创建 /usr/bin/egtools）。
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/egtools.desktop"
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/res/app_icon.png"
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
+            RENAME egtools.png)
+
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)          # 自动算依赖（含 Qt6）
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/deb/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/deb/postrm")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
+    set(CPACK_RPM_PACKAGE_AUTOREQ ON)
+    set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm/post")
+    set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm/postun")
+    set(CPACK_RPM_PACKAGE_LICENSE "AGPL-3.0")
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE")
+    include(CPack)
+endif()

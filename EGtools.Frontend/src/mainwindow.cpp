@@ -1061,7 +1061,8 @@ void MainWindow::log(const QString& s)
 
 QString MainWindow::cliExe(const QString& name) const
 {
-    const QString exe = name + QStringLiteral(".exe");
+    // ⚠️ 可执行文件后缀按平台（Windows .exe / Linux 无后缀）—— 不要写死。
+    const QString exe = KernelClient::cliFileName(name);
     QStringList candidates;
     auto add = [&](const QString& dir){ if (!dir.isEmpty()) candidates << QDir(dir).filePath(exe); };
 

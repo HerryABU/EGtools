@@ -1,0 +1,25 @@
+#!/bin/sh
+# RPM %post —— 与 deb/postinst 等价：补 /usr/bin 启动器 + 桌面项/图标软链接 + 刷新缓存。
+APP=/opt/egtools/EGtoolsFrontend
+DESK=/opt/egtools/share/applications/egtools.desktop
+ICON=/opt/egtools/share/icons/hicolor/256x256/apps/egtools.png
+
+if [ -x "$APP" ]; then
+    ln -sf "$APP" /usr/bin/egtools
+fi
+if [ -f "$DESK" ]; then
+    ln -sf "$DESK" /usr/share/applications/egtools.desktop
+fi
+if [ -f "$ICON" ]; then
+    mkdir -p /usr/share/icons/hicolor/256x256/apps
+    ln -sf "$ICON" /usr/share/icons/hicolor/256x256/apps/egtools.png
+fi
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+
+exit 0

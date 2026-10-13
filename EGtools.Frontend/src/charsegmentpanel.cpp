@@ -72,7 +72,8 @@ CharSegmentPanel::CharSegmentPanel(QWidget* parent) : QWidget(parent)
 
 QString CharSegmentPanel::cliExe(const QString& name) const
 {
-    const QString exe = name + QStringLiteral(".exe");
+    // ⚠️ 可执行文件后缀按平台（Windows .exe / Linux 无后缀）—— 不要写死。
+    const QString exe = KernelClient::cliFileName(name);
     QStringList cands;
     auto add = [&](const QString& d){ if (!d.isEmpty()) cands << QDir(d).filePath(exe); };
     add(m_cliDir);

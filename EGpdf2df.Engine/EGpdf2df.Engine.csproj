@@ -1,6 +1,6 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
@@ -22,7 +22,17 @@
     <!-- OpenCV: image registration (ORB + homography) and graphic diff (SSIM /
          absdiff). MIT-licensed, AGPL3-compatible. -->
     <PackageReference Include="OpenCvSharp4" Version="4.10.0.20241108" />
+    <!-- 原生 OpenCV 按**平台**分包：两个包**同时引用**是安全的 —— 它们的资产都在
+         `runtimes/<rid>/native/` 下（且包内 build/*.props 只对 .NET Framework 生效），
+         所以 `-r win-x64` 只带 OpenCvSharpExtern.dll、`-r linux-x64` 只带
+         libOpenCvSharpExtern.so，互不污染。
+         ⚠️ 漏了 linux-x64 的表现：发布"成功"，但产物里只有托管的 OpenCvSharp.dll，
+         运行时第一次调 Cv2.* 就抛 DllNotFoundException（`EGpdf2df dev` 的图纸对齐
+         与图形差异全靠 OpenCV，等于功能整体不可用）。
+         ⚠️ 不要用 `OpenCvSharp4.runtime.ubuntu.22.04-x64`：它只发过 4.6.0-snapshot，
+         且 RID 是 `ubuntu.*` 而非通用的 `linux-x64`。 -->
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.10.0.20241108" />
+    <PackageReference Include="OpenCvSharp4.runtime.linux-x64" Version="4.10.0.20240717" />
     <!-- iText7: write the diff as a VECTOR PDF (preserve the original drawing's native
          vector content, then append a vector annotation layer). AGPL-3.0 — same license
          family as this project, so the combined work stays AGPL-3.0. -->

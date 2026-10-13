@@ -1,0 +1,32 @@
+#!/bin/sh
+# DEB postinst —— 补两样 CPack 单前缀装不了的东西：
+#   ① /usr/bin/egtools 启动器（应用本体装在 /opt/egtools）
+#   ② 桌面项与图标的系统级软链接（否则菜单里看不到）
+# 原因：CPack 的 DEB 生成器只支持**一个**安装前缀（这里用 /opt/egtools），
+#      无法同时往 /usr/bin 与 /usr/share 写文件，只能在这里补。
+set -e
+
+APP=/opt/egtools/EGtoolsFrontend
+DESK=/opt/egtools/share/applications/egtools.desktop
+ICON=/opt/egtools/share/icons/hicolor/256x256/apps/egtools.png
+
+if [ -x "$APP" ]; then
+    ln -sf "$APP" /usr/bin/egtools
+fi
+if [ -f "$DESK" ]; then
+    ln -sf "$DESK" /usr/share/applications/egtools.desktop
+fi
+if [ -f "$ICON" ]; then
+    mkdir -p /usr/share/icons/hicolor/256x256/apps
+    ln -sf "$ICON" /usr/share/icons/hicolor/256x256/apps/egtools.png
+fi
+
+# 刷新桌面数据库 / 图标缓存（失败不算错误：很多精简环境没装这些工具）。
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+
+exit 0

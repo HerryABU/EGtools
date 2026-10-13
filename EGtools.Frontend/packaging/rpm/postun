@@ -1,0 +1,12 @@
+#!/bin/sh
+# RPM %postun —— 卸载后清掉软链接（$1=0 表示真正卸载；升级时保留）。
+if [ "$1" = "0" ]; then
+    rm -f /usr/bin/egtools
+    rm -f /usr/share/applications/egtools.desktop
+    rm -f /usr/share/icons/hicolor/256x256/apps/egtools.png
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications || true
+    fi
+fi
+
+exit 0

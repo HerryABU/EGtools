@@ -316,7 +316,8 @@ DiffPage::DiffPage(QWidget* parent) : QWidget(parent)
 
 QString DiffPage::cliExe(const QString& name) const
 {
-    const QString exe = name + QStringLiteral(".exe");
+    // ⚠️ 可执行文件后缀按平台（Windows .exe / Linux 无后缀）—— 不要写死。
+    const QString exe = KernelClient::cliFileName(name);
     QStringList cands;
     auto add = [&](const QString& d){ if (!d.isEmpty()) cands << QDir(d).filePath(exe); };
     add(m_cliDir);
@@ -333,7 +334,7 @@ void DiffPage::refreshKernelStatus()
 {
     const bool ok = QFileInfo::exists(cliExe(QStringLiteral("EGpdf2df")));
     m_status->setText(ok ? QStringLiteral("内核状态：已就绪（EGpdf2df）")
-                         : QStringLiteral("内核状态：未找到 EGpdf2df.exe — 请在首页设置 CLI 目录"));
+                         : QStringLiteral("内核状态：未找到 %1 — 请在首页设置 CLI 目录").arg(KernelClient::cliFileName(QStringLiteral("EGpdf2df"))));
     m_runBtn->setEnabled(ok);
 }
 

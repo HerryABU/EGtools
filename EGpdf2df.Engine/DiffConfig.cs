@@ -163,10 +163,12 @@ namespace EGpdf2df.Engine
             // 注意与上面 LineWidth（填充块/轮廓标记的线宽）区分：那是像素路径的标记。
             public double StrokeWidthPt { get; set; } = 1.0;
             public double StrokeOpacity { get; set; } = 0.55;
-            // 嵌入 Unicode 字体（默认 Windows Arial，含土耳其语等字形），让"消失/变更文字"
-            // 的标注真正渲染；字体文件缺失时回退内置 Helvetica（仅 ASCII）。
-            public string FontPathRegular { get; set; } = "C:/Windows/Fonts/arial.ttf";
-            public string FontPathItalic { get; set; } = "C:/Windows/Fonts/ariali.ttf";
+            // ⚠️ 以下两项**已废弃、当前无人读取**（前端也不读）。保留只为兼容既有 config.json。
+            //    原因：文字差异的标注走 `TextRedlineDiff.RecolorAdded` —— 它把**原 PDF 自带的
+            //    字形**从内容流里抽出来重绘并 `RehostFonts` 换资源名，全程不依赖任何系统字体。
+            //    ⇒ 这也意味着**移植到 Linux 不需要处理字体路径**（曾经这里是 Windows Arial）。
+            public string FontPathRegular { get; set; } = "";
+            public string FontPathItalic { get; set; } = "";
         }
 
         public sealed class PipeMatchCfg

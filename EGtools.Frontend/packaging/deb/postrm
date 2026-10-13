@@ -1,0 +1,14 @@
+#!/bin/sh
+# DEB postrm —— 卸载时清掉 postinst 建的软链接与桌面缓存。
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    rm -f /usr/bin/egtools
+    rm -f /usr/share/applications/egtools.desktop
+    rm -f /usr/share/icons/hicolor/256x256/apps/egtools.png
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications || true
+    fi
+fi
+
+exit 0

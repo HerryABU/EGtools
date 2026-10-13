@@ -407,7 +407,7 @@ void MaterialExtractPage::setCliDir(const QString& dir)
 
     const bool have = KernelClient::embeddedAvailable(QStringLiteral("EGpdf2excel"))
                       || QFileInfo::exists(KernelClient::findKernelFile(
-                             QStringLiteral("EGpdf2excel"), QStringLiteral(".exe")));
+                             QStringLiteral("EGpdf2excel"), KernelClient::exeSuffix()));
     m_startBtn->setEnabled(have && !m_running);
     m_backendLbl->setText(have
         ? KernelClient::describe(QStringLiteral("EGpdf2excel"))
@@ -590,7 +590,7 @@ void MaterialExtractPage::setRunning(bool running)
     if (!running) {
         const bool have = KernelClient::embeddedAvailable(QStringLiteral("EGpdf2excel"))
                           || QFileInfo::exists(KernelClient::findKernelFile(
-                                 QStringLiteral("EGpdf2excel"), QStringLiteral(".exe")));
+                                 QStringLiteral("EGpdf2excel"), KernelClient::exeSuffix()));
         m_startBtn->setEnabled(have);
     }
 }

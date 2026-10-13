@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=EGtools
+Name[zh_CN]=EGtools 工程图纸工具集
+GenericName=Engineering Drawing Toolkit
+GenericName[zh_CN]=工程图纸工具集
+Comment=Extract material tables from PDF drawings and compare drawing revisions
+Comment[zh_CN]=从 PDF 图纸提取材料表、比对图纸版本差异
+Exec=/opt/egtools/EGtoolsFrontend %F
+Icon=egtools
+Terminal=false
+Categories=Graphics;Engineering;VectorGraphics;
+MimeType=application/pdf;
+Keywords=PDF;CAD;drawing;isometric;diff;material;
+StartupNotify=true
+# 注意：本文件由 CMake install() 安装到 /usr/share/applications。
+# Exec 用**绝对路径**（/opt/egtools/...）：CPack 的 deb/rpm 不带 PATH 处理，
+# 若写裸命令名则依赖 /usr/bin 里的软链接（由 postinst 创建）。
