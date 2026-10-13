@@ -2,6 +2,7 @@
 
 #include <QAtomicInt>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
@@ -143,6 +144,9 @@ private:
     QPlainTextEdit* m_log       = nullptr;
 
     QThread*               m_thread = nullptr;
-    MaterialExtractWorker* m_worker = nullptr;
+    // ⚠️ 同 pagenavpanel：worker 跑完时 `QThread::finished → deleteLater` 会释放它，
+    //    裸指针随即悬垂。这里虽然 `onAllFinished` 会清空、析构也先判 `isRunning()`，
+    //    但一旦"清空前对象已被释放"就会出现 use-after-free ⇒ 统一改用 QPointer。
+    QPointer<MaterialExtractWorker> m_worker;
     bool m_running = false;
 };

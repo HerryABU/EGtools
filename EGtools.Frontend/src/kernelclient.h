@@ -75,6 +75,9 @@ public:
 
     // 定位内核文件：kernel + ext（".exe" / ".dll" / ".runtimeconfig.json"）。
     static QString findKernelFile(const QString& kernel, const QString& ext);
+    // 候选项能否当可执行文件用（必须是**可执行的文件**，不能是同名目录）。
+    // ⚠️ Linux 上 `<app>/EGpdf2excel` 既是目录又是可执行文件名 ⇒ 只判 exists() 会误命中目录。
+    static bool isUsableKernelExe(const QString& path);
 
     // 可选：把内核日志**实时**转出去（进度显示用）。传空函数清除。
     static void setLiveLogSink(std::function<void(const QString&)> sink);

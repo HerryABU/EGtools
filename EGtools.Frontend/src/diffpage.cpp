@@ -53,7 +53,11 @@ QString trimmedOneLine(const QString& s, int maxLen = 90)
 }
 
 // 「标签 + 输入 + 选择按钮」一行（顶部工具区反复用到）。
-QWidget* makePathRow(const QString& label, QLineEdit** outEdit, QWidget* owner,
+// ⚠️ `owner` 必须是 **DiffPage***，不能是 QWidget*：连接用的是"上下文 + 成员函数指针"
+//    重载，Qt 6.4 的该重载要求接收者类型与 `void (DiffPage::*)()` 的宿主类**精确匹配**
+//    （Qt 6.11 放宽了，所以 Windows 上编得过，Linux/Qt 6.4 直接 CS/模板推导失败）。
+//    三处调用点传的都是 `this`，改成精确类型语义完全不变。
+QWidget* makePathRow(const QString& label, QLineEdit** outEdit, DiffPage* owner,
                      void (DiffPage::*slot)(), const QString& placeholder)
 {
     auto* host = new QWidget();

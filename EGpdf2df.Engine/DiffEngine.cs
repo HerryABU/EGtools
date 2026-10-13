@@ -757,7 +757,9 @@ namespace EGpdf2df.Engine
                 using var crop = new Mat(labels, new Rect(mx, my, mw, mh));
                 using var labVal = new Mat(crop.Size(), crop.Type(), new Scalar(lab));
                 using var comp = new Mat();
-                Cv2.Compare(crop, labVal, comp, CmpType.EQ);
+                // ⚠️ OpenCvSharp 4.13 起 `CmpType` 更名为 `CmpTypes`（旧名仍标 Obsolete，
+                //    但已从重载签名里移除 ⇒ 编译期报 CS1503）。语义（逐元素比较）不变。
+                Cv2.Compare(crop, labVal, comp, CmpTypes.EQ);
                 labVal.Dispose();
                 // DILATE the element's ink before contouring → the trace is a clean HOLLOW
                 // silhouette instead of hugging every hairline stroke:

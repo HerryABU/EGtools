@@ -2,6 +2,7 @@
 
 #include <QImage>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QVector>
 #include <QWidget>
@@ -59,5 +60,13 @@ private:
     QSpinBox*    m_spin  = nullptr;
     QLabel*      m_hint  = nullptr;
     QThread*     m_thread = nullptr;
-    QObject*     m_worker = nullptr;   // ThumbRenderWorker（定义在 .cpp）
+    // ⚠️ 必须是 QPointer，不能是裸 QObject*：
+    //    worker 跑完 → 线程结束 → `QThread::finished → deleteLater` **把它释放掉**
+    //    （对象在"事件循环已停"的线程里，Qt 会在线程结束时销毁它）。
+    //    裸指针在那一刻起就是悬垂的，而析构里 stopWorker() 只判 `if (m_worker)` ⇒
+    //    会对已释放内存做 `QMetaObject::invokeMethod` ⇒ **跳到 0x0 段错误**。
+    //    实测：`--screenshot`（会渲染缩略图 ⇒ worker 会正常跑完）退出即 SIGSEGV；
+    //    而不开文档的 `--test-panels/--test-theme` 不崩 —— 差别正在于此。
+    //    QPointer 在对象被析构时自动置空，从根上消除这一类 use-after-free。
+    QPointer<QObject> m_worker;   // ThumbRenderWorker（定义在 .cpp）
 };

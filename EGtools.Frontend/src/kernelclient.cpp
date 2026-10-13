@@ -196,10 +196,13 @@ QString KernelClient::findKernelFile(const QString& kernel, const QString& ext)
     add(QDir(appDir).filePath(QStringLiteral("../cli")));
     add(QDir(appDir).filePath(QStringLiteral("..")));
     add(QDir(appDir).filePath(QStringLiteral("../") + kernel));
+    // ⚠️ 找**可执行文件**时必须要求"是可执行文件"，不能只判存在 —— 见 isUsableKernelExe。
+    //    ext == exeSuffix() 即"这次要的就是可执行文件"（Windows ".exe"；Linux 两边都是空串）。
+    const bool needExec = (ext == exeSuffix());
     for (const QString& d : dirs)
     {
         const QString c = QDir(d).filePath(name);
-        if (QFileInfo::exists(c)) return c;
+        if (needExec ? isUsableKernelExe(c) : QFileInfo::exists(c)) return c;
     }
     return dirs.isEmpty() ? name : QDir(dirs.first()).filePath(name);
 }
@@ -240,6 +243,25 @@ QString KernelClient::cliFileName(const QString& kernel)
     return kernel + exeSuffix();
 }
 
+// ⚠️⚠️ 判断"这个候选项能不能当可执行文件用"，**不能只判 `QFileInfo::exists()`**：
+//    安装/DIST 布局是 `<appDir>/<name>/<name>`：目录名与 Linux 上的可执行文件名
+//    **完全同形**（Linux 可执行文件没有 .exe 后缀）。于是 `exists("<appDir>/EGpdf2excel")`
+//    命中的是那个**目录**，被当成程序返回 ⇒ 运行时才炸 `execvp: Permission denied`（退出码 126）。
+//    Windows 因为候选名都带 .exe 后缀（目录不带），"恰好"绕过了这个坑 —— 所以这个 bug
+//    只在 Linux 暴露，而且暴露得很晚（走到 spawn 才报）。
+//    再顺手在 Unix 上要求**可执行位**：包里漏了 exec 位（install(DIRECTORY) 默认不保留权限）
+//    也在这里就暴露，而不是等到用户点"开始"。
+bool KernelClient::isUsableKernelExe(const QString& path)
+{
+    const QFileInfo fi(path);
+    if (!fi.isFile()) return false;          // 目录、或指向目录的符号链接，一律不算
+#if defined(Q_OS_UNIX)
+    return fi.isExecutable();
+#else
+    return true;
+#endif
+}
+
 // 找 hostfxr 库：不依赖 nethost（那是 SDK 期产物，用户机上通常没有）。
 // 顺序：① 应用目录旁（可随包分发）② DOTNET_ROOT ③ 平台特有的其他位置
 //      ④ 由 `dotnet` 可执行文件反推安装根；然后在 host/fxr/<版本>/ 里取**版本最高**的。
@@ -249,6 +271,23 @@ QString KernelClient::findHostFxr()
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString beside = QDir(appDir).filePath(fxrName);
     if (QFileInfo::exists(beside)) return beside;
+
+    // ② 随包分发的**内核目录**：self-contained 发布把 hostfxr 放在**内核目录里**
+    //    （`<appDir>/EGpdf2excel/libhostfxr.so`），不是前端目录旁。
+    //    ⚠️ 不探这里，装好的包在没装 .NET 运行时的机器上会永远"内嵌不可用 → 回退命令行"，
+    //       看起来功能正常其实少了整条内嵌通道（实测就是这样退化的）。
+    {
+        QStringList kdirs;
+        if (!g_cliDir.isEmpty()) kdirs << g_cliDir;
+        const QStringList names{QStringLiteral("EGpdf2excel"), QStringLiteral("EGexcel2df"),
+                                QStringLiteral("EGpdf2df")};
+        for (const QString& k : names) kdirs << QDir(appDir).filePath(k);
+        for (const QString& d : kdirs)
+        {
+            const QString c = QDir(d).filePath(fxrName);
+            if (QFileInfo::exists(c)) return c;
+        }
+    }
 
     QStringList roots;
     const QByteArray envRoot = qgetenv("DOTNET_ROOT");

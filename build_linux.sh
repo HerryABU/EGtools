@@ -34,12 +34,15 @@ RID="linux-x64"
 #    且做完 Linux 验证后 Windows 自检/打包会拿到错的二进制。
 DIST="${EGTOOLS_LINUX_DIST:-$ROOT/DIST-linux}"
 FRONTEND="$ROOT/EGtools.Frontend"
-BUILD_DIR="$FRONTEND/build-linux"
+# 构建目录可外置：在 WSL 里编前端时，把 build 目录放到 Linux 原生文件系统
+# （如 /tmp）比留在 /mnt/c（9p/drvfs）快很多。
+BUILD_DIR="${EGTOOLS_LINUX_BUILD:-$FRONTEND/build-linux}"
 JOBS="$( (command -v nproc >/dev/null && nproc) || echo 4 )"
 QT_PREFIX="${QT_PREFIX:-}"
 DO_DEB=1
 DO_RPM=1
 KERNELS_ONLY=0
+SKIP_KERNELS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -49,8 +52,11 @@ while [ $# -gt 0 ]; do
         # 只出内核（不碰 Qt）：用于"先证明 .NET 侧在 Linux 上真的能跑"，
         # 也方便在没装 Qt6 的机器/容器里先做一轮验证。
         --kernels-only) KERNELS_ONLY=1; DO_DEB=0; DO_RPM=0 ;;
+        # 复用**已发布**的内核，只编 Qt 前端 + 打包。给"构建机没有 .NET SDK"的场景用
+        # （内核可在 Windows 侧交叉发布好，Qt 前端本来就必须在 Linux 上编）。
+        --no-kernels)   SKIP_KERNELS=1 ;;
         --qt)           QT_PREFIX="$2"; shift ;;
-        -h|--help)      sed -n '2,22p' "$0"; exit 0 ;;
+        -h|--help)      sed -n '2,25p' "$0"; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
     shift
@@ -60,11 +66,57 @@ log()  { printf '\n=== %s ===\n' "$*"; }
 fail() { printf '\n[FAIL] %s\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
+# 运行库依赖反推（给 CPack 的 Depends / Requires 用）
+#
+# 为什么不能用自动推导：本包是 **self-contained 捆绑**（三个 .NET 内核自带整套运行时
+# 与私有 .so），`dpkg-shlibdeps` / rpm autoreq 会把捆绑内的私有库也当外部依赖去找 ⇒
+# 实测直接报 `cannot find library liblttng-ust.so.0`，**包都出不来**。
+# 为什么也不能手写包名：Qt 的运行库包名带 t64 后缀（libqt6widgets6t64），随发行版变。
+#
+# 所以：只取二进制的**直接 DT_NEEDED**（不是 ldd 的传递闭包），在构建机上解成真实包名。
+# ---------------------------------------------------------------------------
+lib_path_of() {   # soname → 规范化绝对路径（/lib→/usr/lib 的合并式 usr 会让 dpkg -S 失配）
+    local n="$1" d
+    for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /lib64 /usr/lib; do
+        if [ -e "$d/$n" ]; then readlink -f "$d/$n"; return; fi
+    done
+}
+
+direct_needed() {
+    readelf -d "$1" 2>/dev/null | awk -F'[][]' '/NEEDED/{print $2}' | sort -u
+}
+
+deb_depends_for() {   # → 逗号分隔的 Debian 包名（本发行版实测）
+    local out="" n p pkg
+    while read -r n; do
+        [ -n "$n" ] || continue
+        p="$(lib_path_of "$n")"
+        [ -n "$p" ] || continue
+        pkg="$(dpkg -S "$p" 2>/dev/null | head -1 | cut -d: -f1 | sed 's/:amd64$//')"
+        [ -n "$pkg" ] && out="$out${out:+,}$pkg"
+    done < <(direct_needed "$1")
+    printf '%s' "$out" | tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -
+}
+
+rpm_requires_for() {  # → 逗号分隔的 soname 能力（跨发行版，rpm 就是这么自报的）
+    direct_needed "$1" | while read -r n; do
+        case "$n" in lib*) printf '%s()(64bit)\n' "$n" ;; esac
+    done | sort -u | paste -sd, -
+}
+
+# ---------------------------------------------------------------------------
 # 0. 前置检查（缺什么先报清楚，别等构建到一半才炸）
 # ---------------------------------------------------------------------------
 log "前置检查"
-command -v dotnet >/dev/null || fail "未找到 dotnet（需要 .NET SDK 9+）"
-echo "dotnet : $(dotnet --version)"
+# dotnet 只在真的要发布内核时需要 —— `--no-kernels` 复用现成产物，不该被 SDK 缺失拦住。
+if [ "$SKIP_KERNELS" = 1 ]; then
+    echo "模式   : 复用已有内核（$DIST），只编前端/打包"
+else
+    command -v dotnet >/dev/null || fail "未找到 dotnet（需要 .NET SDK 9+）。
+       若本机没有 SDK：改用 --no-kernels，并在 Windows 侧先交叉发布：
+         build_linux.sh --kernels-only   （或在 Windows 上 dotnet publish -r linux-x64）"
+    echo "dotnet : $(dotnet --version)"
+fi
 
 # qt/Qt 只在真的要编前端时才要求 —— `--kernels-only` 不该被 Qt 缺失拦住。
 CMAKE_QT_ARG=()
@@ -94,18 +146,27 @@ fi
 # 1. 内核：三个 CLI 自包含发布到 DIST/<name>/
 #    为什么 self-contained：目标机不需要预装 .NET 运行时（与 Windows 安装包一致）。
 # ---------------------------------------------------------------------------
-log "发布 .NET 内核（$RID, self-contained）"
 PROJECTS=(EGpdf2excel EGexcel2df EGpdf2df)
-for p in "${PROJECTS[@]}"; do
-    echo "--- dotnet publish $p ---"
-    dotnet publish "$ROOT/$p/$p.csproj" \
-        -c Release -r "$RID" --self-contained true \
-        -p:PublishTrimmed=false \
-        -o "$DIST/$p" || fail "$p 发布失败"
-done
+if [ "$SKIP_KERNELS" = 1 ]; then
+    log "复用已有内核（--no-kernels）"
+    for p in "${PROJECTS[@]}"; do
+        [ -d "$DIST/$p" ] || fail "$DIST/$p 不存在 —— --no-kernels 需要一个已发布的内核目录。
+       先在 Windows 侧跑 build_linux.sh --kernels-only，或去掉 --no-kernels。"
+    done
+    echo "内核目录: $DIST"
+else
+    log "发布 .NET 内核（$RID, self-contained）"
+    for p in "${PROJECTS[@]}"; do
+        echo "--- dotnet publish $p ---"
+        dotnet publish "$ROOT/$p/$p.csproj" \
+            -c Release -r "$RID" --self-contained true \
+            -p:PublishTrimmed=false \
+            -o "$DIST/$p" || fail "$p 发布失败"
+    done
 
-# 交付不带符号文件（与 Windows 侧一致）。
-find "$DIST" -maxdepth 2 -name '*.pdb' -delete 2>/dev/null || true
+    # 交付不带符号文件（与 Windows 侧一致）。
+    find "$DIST" -maxdepth 2 -name '*.pdb' -delete 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # 2. 内核产物断言（**必须在内核 publish 之后立刻做**，这样 --kernels-only
@@ -127,8 +188,24 @@ done
 # ⚠️ OpenCV 原生库只在 EGpdf2df 里需要（图纸对齐/图形差异）。
 [ -e "$DIST/EGpdf2df/libOpenCvSharpExtern.so" ] || \
     fail "EGpdf2df 缺少 libOpenCvSharpExtern.so ——
-       检查 EGpdf2df.Engine.csproj 里的 OpenCvSharp4.runtime.linux-x64 引用是否还在"
+       检查 EGpdf2df.Engine.csproj 里的 OpenCvSharp4.official.runtime.linux-x64 引用是否还在"
 echo "  OK  EGpdf2df/libOpenCvSharpExtern.so（OpenCV 原生库）"
+# ⚠️ 只有 file 存在不够：**依赖的 soname 必须能在本机解析**。
+#    `OpenCvSharp4.runtime.linux-x64`(4.10) 是按 Ubuntu 20.04 构建的，DT_NEEDED 钉在
+#    libtiff.so.5 / libtesseract.so.4 / libavcodec.so.58 这些旧 soname 上 —— 在 24.04 上
+#    dlopen 直接失败，而 publish 与"文件存在"检查**都看不出来**。故在这里加 ldd 断言。
+if command -v ldd >/dev/null; then
+    OCV_MISSING="$(ldd "$DIST/EGpdf2df/libOpenCvSharpExtern.so" 2>/dev/null | awk '/not found/{print $1}' | sort -u)"
+    if [ -n "$OCV_MISSING" ]; then
+        fail "libOpenCvSharpExtern.so 的依赖在本机无法解析：
+$(printf '         %s\n' $OCV_MISSING)
+       这会让 Cv2.* 一调用就抛 'The type initializer for OpenCvSharp.Internal.NativeMethods'。
+       改用 OpenCvSharp4.official.runtime.linux-x64（见 EGpdf2df.Engine.csproj 注释）。"
+    fi
+    echo "  OK  libOpenCvSharpExtern.so 的 soname 依赖全部可解析（ldd 无 not found）"
+else
+    echo "  --  无 ldd，跳过 OpenCV 依赖解析检查"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. 前端：Qt6 + CMake + Ninja
@@ -178,8 +255,43 @@ GEN=()
 [ "$DO_DEB" = 1 ] && ! command -v dpkg-deb >/dev/null && fail "要打 deb 但未找到 dpkg-deb"
 [ "$DO_RPM" = 1 ] && ! command -v rpmbuild >/dev/null && fail "要打 rpm 但未找到 rpmbuild"
 
-( cd "$BUILD_DIR" && cpack -G "$(IFS=';'; echo "${GEN[*]}")" -D CPACK_PACKAGE_VERSION="$VERSION" ) \
+# 按本机实测反推运行库依赖（见文件上方 lib_path_of/direct_needed 的说明）。
+FE_BIN="$DIST/EGtoolsFrontend/EGtoolsFrontend"
+DEP_ARGS=()
+if command -v readelf >/dev/null; then
+    if [ "$DO_DEB" = 1 ]; then
+        DEB_DEP="$(deb_depends_for "$FE_BIN")"
+        [ -n "$DEB_DEP" ] || fail "无法反推 deb 依赖（readelf/dpkg -S 没给出结果）—— 不要用空的 Depends 出包"
+        echo "  deb Depends : $DEB_DEP"
+        DEP_ARGS+=("-D" "CPACK_DEBIAN_PACKAGE_DEPENDS=$DEB_DEP")
+    fi
+    if [ "$DO_RPM" = 1 ]; then
+        RPM_REQ="$(rpm_requires_for "$FE_BIN")"
+        [ -n "$RPM_REQ" ] || fail "无法反推 rpm 依赖"
+        echo "  rpm Requires: $RPM_REQ"
+        DEP_ARGS+=("-D" "CPACK_RPM_PACKAGE_REQUIRES=$RPM_REQ")
+    fi
+else
+    fail "未找到 readelf（binutils）—— 无法反推依赖；请安装 binutils"
+fi
+
+# ⚠️⚠️ CPack 的**暂存目录必须在能保存 Unix 权限的文件系统上**：
+#    构建目录若在 /mnt/c（Windows 盘 / drvfs），drvfs 不保存 Unix 权限 ⇒
+#    `install(CODE)` 里的 `file(CHMOD)` 会被**静默忽略**（不报错！）⇒
+#    包内内核 apphost 变成 0777（world-writable），装完虽然"能跑"（777 含 x 位），
+#    但权限不对且是安全隐患。实测踩过：构建目录在 /tmp 时包里是 0755，在 /mnt/c 时是 0777。
+#    所以暂存目录固定用 Linux 原生路径，产物再拷回 BUILD_DIR（保持既有引用不变）。
+CPACK_STAGE="${EGTOOLS_CPACK_STAGE:-/tmp/egtools-cpack}"
+rm -rf "$CPACK_STAGE"; mkdir -p "$CPACK_STAGE"
+
+( cd "$BUILD_DIR" && cpack -G "$(IFS=';'; echo "${GEN[*]}")" \
+      -D CPACK_PACKAGE_VERSION="$VERSION" \
+      -D CPACK_PACKAGE_DIRECTORY="$CPACK_STAGE" \
+      "${DEP_ARGS[@]}" ) \
     || fail "CPack 打包失败"
+
+# 产物拷回构建目录（用户预期与下面的校验都在 BUILD_DIR）。
+cp -f "$CPACK_STAGE"/*.deb "$CPACK_STAGE"/*.rpm "$BUILD_DIR"/ 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 5. 校验安装包内容（"清单式检查"必须配"事实检查"）
@@ -188,18 +300,42 @@ log "校验安装包"
 shopt -s nullglob
 PKGS=("$BUILD_DIR"/*.deb "$BUILD_DIR"/*.rpm)
 [ ${#PKGS[@]} -gt 0 ] || fail "没有产出任何安装包"
+# ⚠️ 清单先落临时文件再匹配，不要 `dpkg-deb -c | grep -q`：
+#    grep -q 一命中就退出 ⇒ 给上游 tar 发 SIGPIPE ⇒ dpkg-deb 报 "tar subprocess was killed
+#    by signal (Broken pipe)" 且清单被截断 ⇒ **假失败**（实测踩过）。
+LIST="$(mktemp)"
 for f in "${PKGS[@]}"; do
     case "$f" in
         *.deb)
-            dpkg-deb -c "$f" | grep -q '/opt/egtools/EGtoolsFrontend$' || fail "$f 里没有前端"
-            dpkg-deb -c "$f" | grep -q 'EGpdf2df/libOpenCvSharpExtern.so' || fail "$f 里缺 OpenCV 原生库"
+            dpkg-deb -c "$f" > "$LIST" 2>/dev/null
+            grep -q 'opt/egtools/EGtoolsFrontend$' "$LIST" \
+                || fail "$f 里没有前端可执行文件"
+            grep -q 'opt/egtools/EGtoolsFrontend.runtimeconfig.json' "$LIST" \
+                || fail "$f 里缺前端 runtimeconfig.json（hostfxr 内嵌调用必需）"
+            grep -q 'opt/egtools/EGpdf2excel/EGpdf2excel$' "$LIST" \
+                || fail "$f 里缺内核 apphost（EGpdf2excel/EGpdf2excel）"
+            # ⚠️ 权限也是交付内容：内核 apphost 必须是 0755。实测踩过 ——
+            #    install(DIRECTORY) 默认不保留源权限、drvfs 又不保存权限 ⇒ 包里成了 0777。
+            grep -qE '^-rwxr-xr-x .*opt/egtools/EGpdf2excel/EGpdf2excel$' "$LIST" \
+                || fail "$f 里内核 apphost 权限不是 0755 —— 交付缺陷（装后可能 126，或成为 world-writable）：
+       $(grep 'opt/egtools/EGpdf2excel/EGpdf2excel$' "$LIST" | tr -s ' ')"
+            grep -q 'EGpdf2df/libOpenCvSharpExtern.so' "$LIST" \
+                || fail "$f 里缺 OpenCV 原生库"
+            grep -q 'EGpdf2df/libMuPDFWrapper.so' "$LIST" \
+                || fail "$f 里缺 MuPDF 原生库"
             ;;
         *.rpm)
-            rpm -qlp "$f" 2>/dev/null | grep -q '/opt/egtools/EGtoolsFrontend$' || fail "$f 里没有前端"
+            rpm -qlp "$f" 2>/dev/null > "$LIST"
+            grep -q 'opt/egtools/EGtoolsFrontend$' "$LIST" \
+                || fail "$f 里没有前端可执行文件"
+            grep -q 'EGpdf2df/libOpenCvSharpExtern.so' "$LIST" \
+                || fail "$f 里缺 OpenCV 原生库"
             ;;
     esac
-    printf '  OK  %s  (%.1f MB)\n' "$(basename "$f")" "$(echo "scale=1; $(stat -c%s "$f")/1048576" | bc)"
+    printf '  OK  %s  (%s MB)\n' "$(basename "$f")" \
+        "$(awk -v b="$(stat -c%s "$f")" 'BEGIN{printf "%.1f", b/1048576}')"
 done
+rm -f "$LIST"
 
 log "完成"
 echo "安装包："

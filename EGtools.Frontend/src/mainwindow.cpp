@@ -1079,7 +1079,10 @@ QString MainWindow::cliExe(const QString& name) const
     add(QDir(appDir).filePath(QStringLiteral("../") + name)); // {app}/<name>/<name>.exe (siblings)
 
     for (const QString& c : candidates)
-        if (QFileInfo::exists(c)) return c;
+        // ⚠️ 必须用 isUsableKernelExe 而不是 QFileInfo::exists：Linux 的安装布局
+        //    `/opt/egtools/EGpdf2excel` 既是**目录**又和可执行文件名同形，exists() 会把
+        //    目录当程序返回 ⇒ 运行时 execvp 报 Permission denied（126）。见 kernelclient.cpp。
+        if (KernelClient::isUsableKernelExe(c)) return c;
     return candidates.isEmpty() ? exe : candidates.first();
 }
 

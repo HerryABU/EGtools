@@ -176,9 +176,17 @@ endif()
 # 布局（装到 /opt/egtools）必须让 `KernelClient` 的自动发现命中：内核放在
 # **前端同级的 <name>/<name>**（与 Windows 的 DIST 布局一致，见 mainwindow 的 cliExe 探测）。
 #
-# ⚠️ 依赖不手写包名：Debian 用 CPACK_DEBIAN_PACKAGE_SHLIBDEPS（dpkg-shlibdeps 从二进制
-#    反推，含 Qt6Pdf），RPM 用 CPACK_RPM_PACKAGE_AUTOREQ —— 手写发行版包名极易写错
-#    （t64 变体、qt6-pdf 的拆分方式各发行版不同），写错会让包**装不上**。
+# ⚠️⚠️ 依赖**不要**交给 dpkg-shlibdeps / rpm autoreq 自动推（2026-10-13 实测踩坑）：
+#    本包是 **self-contained 捆绑**（三个 .NET 内核自带整套运行时与私有 .so，
+#    还有 libOpenCvSharpExtern.so / libMuPDFWrapper.so）。自动推会把**捆绑内的私有库**
+#    也当成"外部依赖"去找，于是 `dpkg-shlibdeps: error: cannot find library
+#    liblttng-ust.so.0` ⇒ **CPackDeb 直接报错、包都出不来**。
+#    正确模型：捆绑的东西不算依赖，只有**必须由发行版提供**的（Qt6 运行库）才算。
+#    所以由 build_linux.sh 从**直接 DT_NEEDED**（readelf -d，不是 ldd 的传递闭包）
+#    反推，并在构建机上用 `dpkg -S` 解出**本发行版的真实包名**后通过 -D 传进来
+#    （如 libqt6widgets6t64 —— t64 后缀随发行版变，手写必错）。
+#    RPM 侧直接声明 soname 能力（libQt6Widgets.so.6()(64bit)）—— 这正是 rpm 自报的形式，
+#    天然跨发行版，不必知道对方把 Qt 装在哪个包名里。
 # ===========================================================================
 if(UNIX AND NOT APPLE)
     set(CPACK_PACKAGING_INSTALL_PREFIX "/opt/egtools")
@@ -211,18 +219,53 @@ if(UNIX AND NOT APPLE)
         endif()
     endforeach()
 
-    # 桌面集成 + 图标 + 启动器符号链接（postinst/post 里创建 /usr/bin/egtools）。
+    # ⚠️⚠️ 内核的可执行文件（apphost）**必须有 exec 位**，这里显式 chmod，不能指望源目录：
+    #    `install(DIRECTORY)` **默认不保留源权限**，而内核目录是 Windows 侧交叉发布的产物
+    #    （NTFS 没有 exec 位）⇒ 实测装完后 `/opt/egtools/EGpdf2excel/EGpdf2excel` 是 0644，
+    #    直接执行报 126（Permission denied），前端也会因此走不成命令行通道。
+    #    用 install(CODE)（括号实参，免转义）而不是 install(PROGRAMS)：后者要逐个列文件且会丢目录结构。
+    install(CODE [=[
+        # ⚠️ 必须带上 $ENV{DESTDIR}：CPack 是"把 DESTDIR 指向暂存目录 + 前缀仍是 /opt/egtools"
+        #    这样安装的，直接用 CMAKE_INSTALL_PREFIX 会去 chmod 真实的 /opt/egtools
+        #    ⇒ 非 root 时 file() 直接报 "Failed to set permissions"（实测）。
+        set(_root "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+        set(_kernels EGpdf2excel EGexcel2df EGpdf2df)
+        foreach(_k IN LISTS _kernels)
+            set(_bin "${_root}/${_k}/${_k}")
+            if(EXISTS "${_bin}")
+                file(CHMOD "${_bin}"
+                     PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                                 GROUP_READ GROUP_EXECUTE
+                                 WORLD_READ WORLD_EXECUTE)
+            endif()
+        endforeach()
+    ]=])
+    # 桌面集成 + 图标（启动器符号链接 /usr/bin/egtools 由 postinst/post 创建）。
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/egtools.desktop"
             DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/res/app_icon.png"
             DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
             RENAME egtools.png)
 
-    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)          # 自动算依赖（含 Qt6）
+    # 依赖：**关掉**自动推导（理由见本节顶部的长注释），只认外部传入的实测结果。
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
+    set(CPACK_RPM_PACKAGE_AUTOREQ OFF)
+    # 兜底默认值（仅在直接跑 cpack、没经 build_linux.sh 时生效）：
+    # 这是 Ubuntu 24.04 上的实测结果，其它发行版请用 build_linux.sh 生成。
+    if(NOT DEFINED CPACK_DEBIAN_PACKAGE_DEPENDS)
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS
+            "libc6,libgcc-s1,libstdc++6,libqt6core6t64,libqt6gui6t64,libqt6widgets6t64,libqt6openglwidgets6t64,libqt6pdf6")
+        message(WARNING
+            "未提供实测的 CPACK_DEBIAN_PACKAGE_DEPENDS，使用 Ubuntu 24.04 的兜底值。"
+            "换发行版请改走 build_linux.sh（它会按本机实测反推包名）。")
+    endif()
+    if(NOT DEFINED CPACK_RPM_PACKAGE_REQUIRES)
+        set(CPACK_RPM_PACKAGE_REQUIRES
+            "libQt6Core.so.6()(64bit),libQt6Gui.so.6()(64bit),libQt6Widgets.so.6()(64bit),libQt6OpenGLWidgets.so.6()(64bit),libQt6Pdf.so.6()(64bit)")
+    endif()
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/deb/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/deb/postrm")
     set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
-    set(CPACK_RPM_PACKAGE_AUTOREQ ON)
     set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm/post")
     set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm/postun")
     set(CPACK_RPM_PACKAGE_LICENSE "AGPL-3.0")
