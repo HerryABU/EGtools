@@ -61,7 +61,14 @@ public:
 
     // 内核器目录探测（.dll 与 .exe 同目录）。
     static QString kernelDir(const QString& kernel);
-    // 定位 hostfxr 库（不依赖 nethost；见 .cpp 里的搜索顺序说明）。
+    // hostfxr 候选链（按使用优先级排序、去重）：① exe 旁 ② 机器 .NET 安装（版本降序）
+    // ③ 随包分发的内核目录（self-contained 版，兜底）。
+    // ⚠️ 为什么是"链"而不是"一个"：不同大版本的 hostfxr 能力不同（实测 .NET 10 拒绝
+    //    framework-dependent 组件初始化，6.x 可以），且随包分发的那份是 self-contained、
+    //    永远初始化不了 ⇒ 必须由 initRuntime 逐个试、跳过不能用的。见 .cpp 里的长说明。
+    static QStringList hostFxrCandidates();
+    // 定位 hostfxr 库（不依赖 nethost）；返回候选链上优先级最高的那个，仅供展示/兼容。
+    // **判断"内嵌是否可用"请用 embeddedAvailable()**，不要用这个是不是空。
     static QString findHostFxr();
 
     // ---- 平台差异（移植 Linux/macOS 时唯二要注意的地方）------------------

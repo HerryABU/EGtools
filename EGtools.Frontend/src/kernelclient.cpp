@@ -14,6 +14,7 @@
 #include <QTemporaryFile>
 #include <QThread>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -262,33 +263,35 @@ bool KernelClient::isUsableKernelExe(const QString& path)
 #endif
 }
 
-// 找 hostfxr 库：不依赖 nethost（那是 SDK 期产物，用户机上通常没有）。
-// 顺序：① 应用目录旁（可随包分发）② DOTNET_ROOT ③ 平台特有的其他位置
-//      ④ 由 `dotnet` 可执行文件反推安装根；然后在 host/fxr/<版本>/ 里取**版本最高**的。
-QString KernelClient::findHostFxr()
+// ---------------------------------------------------------------------------
+// hostfxr 候选链（按**使用优先级**排序、已去重）
+//
+// 为什么不是"选一个最好的"而是返回一条链：
+//   ① 随包分发的 hostfxr 是 **self-contained 版**（self-contained 发布把 hostfxr 放在内核
+//      目录里）。它连机器上的共享框架都**不会去搜**（COREHOST_TRACE 里 "Gathering FX
+//      locations" 次数为 0）⇒ 用它初始化我们那份 framework-dependent 的宿主配置**必然失败**
+//      （实测 hr=0x80008096 / "Initialization for framework-dependent components is not
+//      supported"）。所以它**绝不能优先**，只在机器上完全找不到 .NET 时兜底。
+//   ② 机器上不同大版本的 hostfxr 能力不同：实测同一台机器、同一份配置，
+//      **.NET 10 的 hostfxr 拒绝** framework-dependent 组件初始化（同样 hr=0x80008096），
+//      而 **6.0.36 的能成功**（内嵌 rc=0、实时日志 127 行、两路结果一致）。
+//      ⇒ 必须能**跳过**不能用的那个（由 initRuntime 逐个试），否则"机器上装了 .NET 10 就
+//        连 6.x/8.x/9.x 一起用不上"，内嵌通道会被整条废掉。
+//   ③ 目标机若根本没装 .NET：内嵌做不到，由命令行后端接管（设计内行为，见 run() 的 Auto 回退）。
+// ---------------------------------------------------------------------------
+QStringList KernelClient::hostFxrCandidates()
 {
     const QString fxrName = hostFxrFileName();
     const QString appDir = QCoreApplication::applicationDirPath();
-    const QString beside = QDir(appDir).filePath(fxrName);
-    if (QFileInfo::exists(beside)) return beside;
+    QStringList out;
+    auto add = [&](const QString& p) {
+        if (!p.isEmpty() && !out.contains(p) && QFileInfo::exists(p)) out << p;
+    };
 
-    // ② 随包分发的**内核目录**：self-contained 发布把 hostfxr 放在**内核目录里**
-    //    （`<appDir>/EGpdf2excel/libhostfxr.so`），不是前端目录旁。
-    //    ⚠️ 不探这里，装好的包在没装 .NET 运行时的机器上会永远"内嵌不可用 → 回退命令行"，
-    //       看起来功能正常其实少了整条内嵌通道（实测就是这样退化的）。
-    {
-        QStringList kdirs;
-        if (!g_cliDir.isEmpty()) kdirs << g_cliDir;
-        const QStringList names{QStringLiteral("EGpdf2excel"), QStringLiteral("EGexcel2df"),
-                                QStringLiteral("EGpdf2df")};
-        for (const QString& k : names) kdirs << QDir(appDir).filePath(k);
-        for (const QString& d : kdirs)
-        {
-            const QString c = QDir(d).filePath(fxrName);
-            if (QFileInfo::exists(c)) return c;
-        }
-    }
+    // ① 应用目录旁（随包分发时可放；测试里也用它钉住某个特定 hostfxr）。
+    add(QDir(appDir).filePath(fxrName));
 
+    // ② 机器上的 .NET 安装（每个根下按**版本降序**）——能服务 framework-dependent 组件的那类。
     QStringList roots;
     const QByteArray envRoot = qgetenv("DOTNET_ROOT");
     if (!envRoot.isEmpty()) roots << QString::fromLocal8Bit(envRoot);
@@ -322,34 +325,59 @@ QString KernelClient::findHostFxr()
     }
 #endif
 
+    // 目录名即版本号；按段比排序（字符串比较会在 10 < 9 上翻车）。
+    auto verParts = [](const QString& v) {
+        QList<int> p; for (const QString& s : v.split(QLatin1Char('.'))) p << s.toInt();
+        while (p.size() < 3) p << 0; return p;
+    };
     for (const QString& root : roots)
     {
         if (root.isEmpty()) continue;
         const QString fxrRoot = QDir(root).filePath(QStringLiteral("host/fxr"));
         if (!QFileInfo::exists(fxrRoot)) continue;
-        QString best;
-        QDirIterator it(fxrRoot, QStringList() << fxrName,
-                        QDir::Files, QDirIterator::Subdirectories);
+        QList<QPair<QList<int>, QString>> found;
+        QDirIterator it(fxrRoot, QStringList() << fxrName, QDir::Files, QDirIterator::Subdirectories);
         while (it.hasNext())
         {
             const QString cand = it.next();
-            // 目录名即版本号，取最大者（按段比：10.x > 9.x > 8.x，字符串比较会在 10 < 9 上翻车）
-            const QString ver = QFileInfo(cand).dir().dirName();
-            auto parts = [](const QString& v) {
-                QList<int> p; for (const QString& s : v.split(QLatin1Char('.'))) p << s.toInt();
-                while (p.size() < 3) p << 0; return p;
-            };
-            if (best.isEmpty() || parts(ver) > parts(QFileInfo(best).dir().dirName())) best = cand;
+            found.append(qMakePair(verParts(QFileInfo(cand).dir().dirName()), cand));
         }
-        if (!best.isEmpty()) return best;
+        // 版本高的先试（新版本没有已知缺陷时才想用它）。
+        std::stable_sort(found.begin(), found.end(),
+                         [](const QPair<QList<int>, QString>& a, const QPair<QList<int>, QString>& b) {
+                             return a.first > b.first;
+                         });
+        for (const auto& f : found) add(f.second);
     }
-    return QString();
+
+    // ③ 最后兜底：随包分发的内核目录（self-contained 版，见本节开头 ①）。
+    {
+        QStringList kdirs;
+        if (!g_cliDir.isEmpty()) kdirs << g_cliDir;
+        const QStringList names{QStringLiteral("EGpdf2excel"), QStringLiteral("EGexcel2df"),
+                                QStringLiteral("EGpdf2df")};
+        for (const QString& k : names) kdirs << QDir(appDir).filePath(k);
+        for (const QString& d : kdirs) add(QDir(d).filePath(fxrName));
+    }
+    return out;
+}
+
+// 找 hostfxr 库（不依赖 nethost —— 那是 SDK 期产物，用户机上通常没有）。
+// 兼容旧语义：返回链上优先级最高的那个；真正的初始化见 initRuntime（它会逐个试）。
+QString KernelClient::findHostFxr()
+{
+    const QStringList c = hostFxrCandidates();
+    return c.isEmpty() ? QString() : c.first();
 }
 
 // ---------------------------------------------------------------------------
 // hostfxr 初始化（进程内只做一次）
 // ---------------------------------------------------------------------------
-static bool initRuntime(QString* why)
+// hostfxr 初始化（进程内只做一次）：**逐个候选试**，取第一个能真正初始化成功的。
+// 为什么要试而不是"选一个"：见 hostFxrCandidates 的说明 —— 机器上同时装了 6.x/8.x/9.x 与
+// 10.x 时，只有低版本那份能服务 framework-dependent 组件；随包分发的 self-contained 那份
+// 则从来不行。每个失败候选的代价只有几十毫秒。
+static bool initRuntime(const QString& runtimeConfigPath, QString* why)
 {
     if (g_runtimeReady) return true;
     if (!g_runtimeError.isEmpty()) { if (why) *why = g_runtimeError; return false; }
@@ -360,45 +388,16 @@ static bool initRuntime(QString* why)
         return false;
     };
 
-    const QString fxr = KernelClient::findHostFxr();
-    if (fxr.isEmpty())
+    const QStringList cands = KernelClient::hostFxrCandidates();
+    if (cands.isEmpty())
         return fail(QStringLiteral("未找到 %1（需要目标机安装 .NET 运行时）").arg(KernelClient::hostFxrFileName()));
 
-    g_hostfxrLib = new QLibrary(fxr);
-    if (!g_hostfxrLib->load())
-        return fail(QStringLiteral("%1 加载失败: %2").arg(KernelClient::hostFxrFileName(), g_hostfxrLib->errorString()));
-
-    // 只校验必要导出是否齐全；真正初始化在 ensureRuntimeFor（要用某个内核的 runtimeconfig）。
-    if (!g_hostfxrLib->resolve("hostfxr_initialize_for_runtime_config")
-        || !g_hostfxrLib->resolve("hostfxr_get_runtime_delegate")
-        || !g_hostfxrLib->resolve("hostfxr_close"))
-        return fail(QStringLiteral("%1 缺少所需导出（版本过旧？）").arg(KernelClient::hostFxrFileName()));
-
-    g_hostfxrPath = fxr;
-    return true;
-}
-
-// 真正按"某个内核的 runtimeconfig"初始化（首次调用时绑定；之后复用同一 runtime）。
-static bool ensureRuntimeFor(const QString& runtimeConfigPath, QString* why)
-{
-    QMutexLocker lk(&g_mutex);
-    if (g_runtimeReady) return true;
-    if (!initRuntime(why)) return false;
-
-    auto initFn = reinterpret_cast<hfx::initialize_for_runtime_config_fn>(
-        g_hostfxrLib->resolve("hostfxr_initialize_for_runtime_config"));
-    auto setPropFn = reinterpret_cast<hfx::set_runtime_property_value_fn>(
-        g_hostfxrLib->resolve("hostfxr_set_runtime_property_value"));
-    auto getDelegFn = reinterpret_cast<hfx::get_runtime_delegate_fn>(
-        g_hostfxrLib->resolve("hostfxr_get_runtime_delegate"));
-
-    // ⚠️ 本工具的内核 target net9.0，但机器上可能只装了更新的主版本（本机就是只有 10.x）。
-    // 命令行侧靠 `dotnet --roll-forward LatestMajor` 才跑得起来；内嵌侧必须在**第一次**
-    // hostfxr 初始化之前就把等价开关设好。
-    // 不要"先正常试一次、失败再带开关重试"：实测那样虽然第二次 init 返回成功，
-    // 但随后加载程序集会莫名其妙地失败（hdt_load_assembly / 取类型都报 0x80131522
-    // COR_E_TYPELOAD），而同一份 DLL 在托管侧用默认 ALC 加载完全正常 —— 说明是
-    // "先失败一次"污染出来的坏状态。故这里一次性设好再 init。
+    // ⚠️ 本工具的内核 target net9.0，但机器上可能只装了更新的主版本（本机就是 6/8/10）。
+    //    命令行侧靠 `dotnet --roll-forward LatestMajor` 才跑得起来；内嵌侧必须在**第一次**
+    //    hostfxr 初始化之前就把等价开关设好。
+    //    不要"先正常试一次、失败再带开关重试"：实测那样虽然第二次 init 返回成功，但随后
+    //    加载程序集会莫名其妙地失败（hdt_load_assembly / 取类型都报 0x80131522 COR_E_TYPELOAD）
+    //    —— 那是"先失败一次"污染出来的坏状态。故这里一次性设好，再依次试候选。
     if (!qEnvironmentVariableIsSet("DOTNET_ROLL_FORWARD"))
         qputenv("DOTNET_ROLL_FORWARD", "LatestMajor");
 
@@ -408,44 +407,83 @@ static bool ensureRuntimeFor(const QString& runtimeConfigPath, QString* why)
     const auto hostPath = hfx::Native(QDir::toNativeSeparators(QCoreApplication::applicationFilePath()));
     params.host_path = hostPath.c_str();
     params.dotnet_root = nullptr;
-
     // ⚠️ 路径必须按平台字符类型传（Windows = UTF-16），见 hfx::char_t 的说明。
     const auto cfg = hfx::Native(QDir::toNativeSeparators(runtimeConfigPath));
-    hfx::handle_t ctx = nullptr;
-    int rc = initFn(cfg.c_str(), &params, &ctx);
-    if (rc != 0 || ctx == nullptr)
+
+    QStringList attempts;   // 失败明细：全失败时一次性报出来，省得逐个手工试
+    for (const QString& fxr : cands)
     {
-        g_runtimeError = QStringLiteral("hostfxr 初始化失败 (hr=0x%1): %2")
-                             .arg(static_cast<quint32>(rc), 8, 16).arg(runtimeConfigPath);
-        if (why) *why = g_runtimeError;
-        return false;
+        QLibrary* lib = new QLibrary(fxr);
+        if (!lib->load())
+        {
+            attempts << QStringLiteral("%1 → 加载失败").arg(fxr);
+            delete lib;
+            continue;
+        }
+        if (!lib->resolve("hostfxr_initialize_for_runtime_config")
+            || !lib->resolve("hostfxr_get_runtime_delegate")
+            || !lib->resolve("hostfxr_close"))
+        {
+            attempts << QStringLiteral("%1 → 缺少所需导出（版本过旧？）").arg(fxr);
+            lib->unload();
+            delete lib;
+            continue;
+        }
+        auto closeFn = reinterpret_cast<hfx::close_fn>(lib->resolve("hostfxr_close"));
+        auto initFn  = reinterpret_cast<hfx::initialize_for_runtime_config_fn>(
+            lib->resolve("hostfxr_initialize_for_runtime_config"));
+
+        hfx::handle_t ctx = nullptr;
+        const int rc = initFn(cfg.c_str(), &params, &ctx);
+        if (rc != 0 || ctx == nullptr)
+        {
+            if (ctx) closeFn(ctx);
+            attempts << QStringLiteral("%1 → hr=0x%2").arg(fxr).arg(static_cast<quint32>(rc), 8, 16);
+            lib->unload();
+            delete lib;
+            continue;
+        }
+
+        auto getDelegFn = reinterpret_cast<hfx::get_runtime_delegate_fn>(
+            lib->resolve("hostfxr_get_runtime_delegate"));
+        void* p = nullptr;
+        const int rc2 = getDelegFn(ctx, hfx::hdt_load_assembly_and_get_function_pointer, &p);
+        if (rc2 != 0 || p == nullptr)
+        {
+            closeFn(ctx);
+            attempts << QStringLiteral("%1 → get_runtime_delegate hr=0x%2")
+                            .arg(fxr).arg(static_cast<quint32>(rc2), 8, 16);
+            lib->unload();
+            delete lib;
+            continue;
+        }
+
+        // 成功：把这份 hostfxr 与上下文固定下来（后续所有调用都走它）。
+        g_hostfxrLib = lib;
+        g_hostfxrPath = fxr;
+        g_closeFn = closeFn;
+        g_loadFn = reinterpret_cast<hfx::load_assembly_and_get_function_pointer_fn>(p);
+
+        // 备用路径的两个委托：取不到就置空（只有主路径失败时才会用到）。
+        void* pa = nullptr; void* pf = nullptr;
+        if (getDelegFn(ctx, hfx::hdt_load_assembly, &pa) == 0) g_asmLoadFn = reinterpret_cast<hfx::load_assembly_fn>(pa);
+        if (getDelegFn(ctx, hfx::hdt_get_function_pointer, &pf) == 0) g_fnPtrFn = reinterpret_cast<hfx::get_function_pointer_fn>(pf);
+        g_ctx = ctx;
+        g_runtimeReady = true;
+        return true;
     }
 
-    // 说明：曾经在这里把 APP_CONTEXT_BASE_DIRECTORY 设成内核目录，想让依赖从内核目录解析。
-    // 实测这会让"已按 runtimeconfig/deps.json 算好的默认 ALC 基目录"与运行时属性不一致，
-    // 之后按路径加载内核程序集会失败（COR_E_TYPELOAD）。deps.json 本身已经让依赖解析到
-    // 内核目录，不需要这个属性，故不设。
-    (void)setPropFn;
+    return fail(QStringLiteral("所有 %1 候选都无法初始化 —— %2")
+                    .arg(KernelClient::hostFxrFileName(), attempts.join(QStringLiteral("；"))));
+}
 
-    void* p = nullptr;
-    rc = getDelegFn(ctx, hfx::hdt_load_assembly_and_get_function_pointer, &p);
-    if (rc != 0 || p == nullptr)
-    {
-        g_closeFn(ctx);
-        g_runtimeError = QStringLiteral("hostfxr_get_runtime_delegate 失败 (hr=0x%1)")
-                             .arg(static_cast<quint32>(rc), 8, 16);
-        if (why) *why = g_runtimeError;
-        return false;
-    }
-    g_loadFn = reinterpret_cast<hfx::load_assembly_and_get_function_pointer_fn>(p);
-
-    // 备用路径的两个委托：取不到就置空（只有主路径失败时才会用到）。
-    void* pa = nullptr; void* pf = nullptr;
-    if (getDelegFn(ctx, hfx::hdt_load_assembly, &pa) == 0) g_asmLoadFn = reinterpret_cast<hfx::load_assembly_fn>(pa);
-    if (getDelegFn(ctx, hfx::hdt_get_function_pointer, &pf) == 0) g_fnPtrFn = reinterpret_cast<hfx::get_function_pointer_fn>(pf);
-    g_ctx = ctx;
-    g_runtimeReady = true;
-    return true;
+// 真正按"某个内核的 runtimeconfig"初始化（首次调用时绑定；之后复用同一 runtime）。
+// 具体选哪份 hostfxr、以及"为什么必须逐个试"全在 initRuntime 里（含 hostFxrCandidates 的说明）。
+static bool ensureRuntimeFor(const QString& runtimeConfigPath, QString* why)
+{
+    QMutexLocker lk(&g_mutex);
+    if (g_runtimeReady) return true;
+    return initRuntime(runtimeConfigPath, why);
 }
 
 // 取某个内核的导出函数指针。
@@ -555,7 +593,9 @@ bool KernelClient::embeddedAvailable(const QString& kernel, QString* why)
         if (why) *why = QStringLiteral("未找到 %1.runtimeconfig.json（内嵌需要它）").arg(kernel);
         return false;
     }
-    if (findHostFxr().isEmpty())
+    // ⚠️ 别再用 findHostFxr() 判"可用"：它只返回**候选之一**的路径，而候选里可能包含
+    //    随包分发的 self-contained hostfxr（那份永远初始化不了，见 hostFxrCandidates）。
+    if (hostFxrCandidates().isEmpty())
     {
         if (why) *why = QStringLiteral("未找到 %1（目标机需安装 .NET 运行时）").arg(KernelClient::hostFxrFileName());
         return false;
@@ -572,9 +612,14 @@ QString KernelClient::describe(const QString& kernel)
 {
     QString why;
     const bool ok = embeddedAvailable(kernel, &why);
-    const QString host = findHostFxr();
+    // 候选链上可能有多份 hostfxr（其中还可能有**初始化不了**的那份，如 .NET 10 或随包分发的
+    // self-contained 版）⇒ 这里只说"找到了哪些候选"，真正的可用性由首次调用的逐个试探决定。
+    const QStringList c = hostFxrCandidates();
     return ok
-        ? QStringLiteral("%1 内嵌可用（hostfxr: %2）").arg(kernel, host)
+        ? QStringLiteral("%1 内嵌可用（hostfxr: %2%3）")
+              .arg(kernel,
+                   c.isEmpty() ? QString() : c.first(),
+                   c.size() > 1 ? QStringLiteral("，另有 %1 个候选").arg(c.size() - 1) : QString())
         : QStringLiteral("%1 内嵌不可用：%2").arg(kernel, why);
 }
 

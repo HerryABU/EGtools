@@ -58,6 +58,8 @@ ELF_WANT="3e00"; [ "$ARCH" = "arm64" ] && ELF_WANT="b700"
 DIST_DEFAULT="$ROOT/DIST-linux"
 [ "$ARCH" != "x64" ] && DIST_DEFAULT="$ROOT/DIST-linux-$ARCH"
 DIST="${EGTOOLS_LINUX_DIST:-$DIST_DEFAULT}"
+# 前端构建目录（与 build_linux.sh 保持一致）—— kernelclient_test 等开发期测试产物在这里。
+BUILD_DIR="${EGTOOLS_LINUX_BUILD:-$ROOT/EGtools.Frontend/build-linux}"
 
 PASS=0; FAIL=0; SKIP=0
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; PASS=$((PASS+1)); }
@@ -403,11 +405,32 @@ else
     if [ -n "$TEST_PDF" ] && [ -f "$TEST_PDF" ]; then
         if QT_QPA_PLATFORM=offscreen timeout 300 /opt/egtools/EGtoolsFrontend \
                 --test-render --pdf "$TEST_PDF" > "$LOG_DIR/installed_render.log" 2>&1; then
-            ok "装好的前端能驱动内核（自动发现 + 内嵌 hostfxr）"
+            ok "装好的前端能驱动内核（自动发现；内嵌不可用时自动回退命令行，两条路结果一致）"
             grep -aE '内核|内嵌|pageWidthPt' "$LOG_DIR/installed_render.log" | head -3 | sed 's/^/        /'
         else
             bad "装好的前端驱动内核失败：tail -20 .build_trash/wsl/installed_render.log"
             tail -20 "$LOG_DIR/installed_render.log" | sed 's/^/        /'
+        fi
+
+        # ⚠️ 上面那条**不能**证明"内嵌通道可用"：界面上的"内嵌可用"只代表"找到了 hostfxr 候选"，
+        #    而其中随包分发的那份是 **self-contained 版**，用它初始化 framework-dependent 的宿主
+        #    配置**必然失败**（实测 hr=0x80008096），随后静默回退命令行 —— 看起来一切正常。
+        #    唯一的真证据是 kernelclient_test：同一请求分别走内嵌与命令行，并比对两边结果。
+        KCT="$BUILD_DIR/kernelclient_test"
+        if [ -x "$KCT" ]; then
+            printf '{\n  "baseline": "%s",\n  "target": "%s",\n  "output": "%s/kct_self.pdf"\n}\n' \
+                "$TEST_PDF" "$TEST_PDF" "$LOG_DIR" > "$LOG_DIR/kct_req.json"
+            if timeout 1200 "$KCT" "$DIST/EGpdf2df" "$LOG_DIR/kct_req.json" EGpdf2df \
+                    > "$LOG_DIR/kct.log" 2>&1; then
+                ok "内嵌通道可用：内嵌与命令行结果一致（$(grep -aoE 'graphic=[0-9]+ text=[0-9]+' "$LOG_DIR/kct.log" | head -1)）"
+            elif grep -aqE '内嵌不可用|所有 .* 候选都无法初始化|未找到 .*hostfxr' "$LOG_DIR/kct.log"; then
+                skip "内嵌通道：本机没有可用的 hostfxr（未装 .NET 运行时）—— 按设计回退命令行"
+            else
+                bad "内嵌通道异常：tail -20 .build_trash/wsl/kct.log"
+                tail -20 "$LOG_DIR/kct.log" | sed 's/^/        /'
+            fi
+        else
+            skip "内嵌通道：未构建 kernelclient_test（跑一次 build_linux.sh 即会构建）"
         fi
     fi
 fi
