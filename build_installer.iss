@@ -27,6 +27,25 @@
 #define MyAppURL "https://github.com/HerryABU/EGtools"
 #define MyQtExeName "EGtoolsFrontend.exe"
 
+; ---------------------------------------------------------------------------
+; 架构参数（由 build_all.ps1 通过 ISCC 的 /D 传入）：
+;   x64   → /DMyArch=x64   /DDistDir=DIST        /DOutSuffix=x64
+;   arm64 → /DMyArch=arm64 /DDistDir=DIST-arm64  /DOutSuffix=arm64
+; ⚠️ 三个都必须**成组**传：架构标识决定包能装在哪种机器上，DistDir 决定装什么内容，
+;    漏一个就会做出"标着 arm64 却装着 x64 文件"的包（装上去能装完、一跑就崩）。
+; ⚠️ 这里给默认值，是为了让 `ISCC build_installer.iss` 单独跑（不带 /D）仍然出 x64 包 ——
+;    与以前的行为一致。
+; ---------------------------------------------------------------------------
+#ifndef MyArch
+  #define MyArch "x64"
+#endif
+#ifndef DistDir
+  #define DistDir "DIST"
+#endif
+#ifndef OutSuffix
+  #define OutSuffix "x64"
+#endif
+
 [Setup]
 ; NOTE: AppId must stay stable once published so in-place updates work (same
 ; identity -> Inno offers "Update"; [Files] use 'ignoreversion' so every payload
@@ -48,8 +67,10 @@ VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
 VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}
 
-ArchitecturesInstallIn64BitMode=x64
-ArchitecturesAllowed=x64
+; ⚠️ 这两个必须跟目标架构一致：写成 x64 的包**装不进 arm64 的安装模式**，
+;    反之亦然（Inno 会直接拒绝安装，或按 32/64 位模式装错目录）。
+ArchitecturesInstallIn64BitMode={#MyArch}
+ArchitecturesAllowed={#MyArch}
 PrivilegesRequired=admin
 ; Let a STANDARD USER install without elevation (a per-user install under
 ; %LOCALAPPDATA%\Programs) either from the wizard or with /CURRENTUSER. The
@@ -62,8 +83,8 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=installer
-OutputBaseFilename={#MyAppName}-{#MyAppVersion}-x64
-SetupIconFile=DIST\app.ico
+OutputBaseFilename={#MyAppName}-{#MyAppVersion}-{#OutSuffix}
+SetupIconFile={#DistDir}\app.ico
 UninstallDisplayIcon={app}\{#MyQtExeName},0
 Compression=lzma2
 SolidCompression=yes
@@ -73,16 +94,16 @@ ChangesEnvironment=yes
 [Files]
 ; Qt 6 front-end (self-contained: exe + Qt runtime DLLs + plugins\platforms\qwindows.dll
 ; + MSVC runtime). This is the main GUI.
-Source: "DIST\EGtoolsFrontend\*"; DestDir: "{app}\EGtoolsFrontend"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#DistDir}\EGtoolsFrontend\*"; DestDir: "{app}\EGtoolsFrontend"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; CLI kernels (self-contained .NET 9). Installed as siblings so the Qt front-end
 ; finds them automatically, and usable standalone from any prompt.
-Source: "DIST\EGpdf2excel\*"; DestDir: "{app}\EGpdf2excel"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "DIST\EGexcel2df\*"; DestDir: "{app}\EGexcel2df"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "DIST\EGpdf2df\*"; DestDir: "{app}\EGpdf2df"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#DistDir}\EGpdf2excel\*"; DestDir: "{app}\EGpdf2excel"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#DistDir}\EGexcel2df\*"; DestDir: "{app}\EGexcel2df"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#DistDir}\EGpdf2df\*"; DestDir: "{app}\EGpdf2df"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Documentation.
-Source: "DIST\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#DistDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; App icon (installer / shortcut icon).
-Source: "DIST\app.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DistDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\EGtoolsFrontend\{#MyQtExeName}"; WorkingDir: "{app}\EGtoolsFrontend"; IconFilename: "{app}\app.ico"

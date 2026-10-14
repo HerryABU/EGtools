@@ -97,6 +97,7 @@ redist/*
 
 # -------- Published / packaged deliverables (regenerable) --------
 DIST/
+DIST-arm64/
 DIST-linux/
 DIST-linux-arm64/
 installer/
