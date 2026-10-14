@@ -34,6 +34,10 @@ $qtBuildDir = if ($Arch -eq 'x64') { "$root\EGtools.Frontend\build" }
 $PE_EXPECT = if ($Arch -eq 'x64') { 0x8664 } else { 0xAA64 }
 # 安装包产物名后缀。
 $instSuffix = $Arch
+# ⚠️ 传给 Inno 的**架构标识**与产物名后缀**不是同一个字符串**：
+#    文件名用 "x64"/"arm64" 好读；而 Inno 6.4 起把旧标识 "x64" 标为 deprecated
+#    （构建时警告并自动替换为 "x64os"）⇒ 这里显式映射成规范标识，语义不变。
+$archId = if ($Arch -eq 'x64') { 'x64os' } else { 'arm64' }
 
 # ---------------------------------------------------------------------------
 # VC++ 运行时可再发行目录（按架构）
@@ -504,7 +508,27 @@ foreach ($d in @("$DIST\EGpdf2excel", "$DIST\EGexcel2df", "$DIST\EGpdf2df")) {
 # into EGtoolsFrontend.exe via res/app_icon.rc). build_installer.iss uses this as
 # SetupIconFile, so Explorer / Start menu / installer all show the same icon.
 Copy-Item "$root\EGtools.Frontend\res\app_icon.ico" "$DIST\app.ico" -Force
-if (-not (Test-Path "$DIST\docs")){ Copy-Item "$root\docs" "$DIST\docs" -Recurse -Force }
+# ⚠️⚠️ 文档必须**每次构建都同步**，不能"只在 DIST\docs 不存在时拷一次"（2026-10-14 修正）。
+#    实测踩过：docs/ 里三份文档早已重写，而 DIST\docs 里还是 2026-08 那份
+#    —— 安装包于是继续携带**过时文档**（当时它描述的 GUI 甚至已被移除），
+#    而开始菜单还直接链接到它，用户看到的就是错的说明。
+#    做法：先把握目标里"源中已不存在"的旧文件移入 .build_trash（改名不受
+#    safe-delete 守卫影响），再整体 -Force 覆盖。
+$docsSrc = "$root\docs"
+$docsDst = "$DIST\docs"
+if (Test-Path $docsSrc) {
+    New-Item -ItemType Directory -Path $docsDst -Force | Out-Null
+    Get-ChildItem $docsDst -File -EA SilentlyContinue | Where-Object {
+        -not (Test-Path (Join-Path $docsSrc $_.Name))
+    } | ForEach-Object {
+        Move-Item -LiteralPath $_.FullName -Destination "$trash\docs_stale_$($_.Name)_$stamp" -Force -EA SilentlyContinue
+    }
+    Copy-Item "$docsSrc\*" $docsDst -Recurse -Force
+    # 日志里报**真实目标路径**（别写死 "DIST\docs" —— arm64 走的是 DIST-arm64，会误导排查）
+    Write-Host ("OK  docs -> $docsDst (" + (Get-ChildItem $docsDst -File | Measure-Object).Count + " files)")
+} else {
+    Write-Warning 'docs/ not found — the installer will ship without documentation.'
+}
 
 # ---- 7. Verify exes exist **并断言架构** ----
 # ⚠️ "文件存在"骗人：交叉编译最阴的失效是把别的架构的产物当成本架构的。
@@ -564,7 +588,7 @@ Step 'Compile installer (ISCC)'
 $iscc = 'C:\Users\QBZ95\AppData\Local\Programs\Inno Setup 6\ISCC.exe'
 # 架构通过 /D 传给 iss（iss 里用 {#MyArch} / {#DistDir} / {#OutSuffix}）——
 # 这样同一个 .iss 能出 x64 与 arm64 两个包，不用维护两份。
-& $iscc "/DMyArch=$Arch" "/DDistDir=$DIST" "/DOutSuffix=$instSuffix" "$root\build_installer.iss"
+& $iscc "/DMyArch=$archId" "/DDistDir=$DIST" "/DOutSuffix=$instSuffix" "$root\build_installer.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed (arch=$Arch)" }
 $out = "$root\installer\EGtools-4.3.0-$instSuffix.exe"
 if (-not (Test-Path $out)) { throw "Installer not produced: $out" }

@@ -29,15 +29,20 @@
 
 ; ---------------------------------------------------------------------------
 ; 架构参数（由 build_all.ps1 通过 ISCC 的 /D 传入）：
-;   x64   → /DMyArch=x64   /DDistDir=DIST        /DOutSuffix=x64
+;   x64   → /DMyArch=x64os /DDistDir=DIST        /DOutSuffix=x64
 ;   arm64 → /DMyArch=arm64 /DDistDir=DIST-arm64  /DOutSuffix=arm64
 ; ⚠️ 三个都必须**成组**传：架构标识决定包能装在哪种机器上，DistDir 决定装什么内容，
 ;    漏一个就会做出"标着 arm64 却装着 x64 文件"的包（装上去能装完、一跑就崩）。
 ; ⚠️ 这里给默认值，是为了让 `ISCC build_installer.iss` 单独跑（不带 /D）仍然出 x64 包 ——
 ;    与以前的行为一致。
+; ⚠️ 值用 Inno 的**规范标识**：Inno 6.4 起把旧写法 "x64" 标为 deprecated（构建时警告并
+;    自动替换成 "x64os"）。这里显式写 "x64os"，语义完全一致 ——
+;      x64os  = 真正的 x64 系统（Windows on ARM 上即使能跑 x64 模拟也**不**装，请用 arm64 包）
+;      arm64  = Windows on ARM
+;    ⇒ 两个包互不越界，避免"装完打不开"。
 ; ---------------------------------------------------------------------------
 #ifndef MyArch
-  #define MyArch "x64"
+  #define MyArch "x64os"
 #endif
 #ifndef DistDir
   #define DistDir "DIST"

@@ -1,7 +1,7 @@
 # 告别手工核图：基于 .NET + MuPDFCore 的 CAD 等轴测 PDF 材料表提取与新旧版本对比实战
 
-> 关键词：C# / .NET、CAD 等轴测图、PDF 矢量文本提取、MuPDFCore、Excel 差异比对、WinUI 3
-> 项目：EGtools（AGPL-3.0 开源，含 GUI + 两个 CLI）
+> 关键词：C# / .NET、CAD 等轴测图、PDF 矢量文本提取、MuPDFCore、Excel 差异比对、Qt 6
+> 项目：EGtools（AGPL-3.0 开源，含 Qt 6 GUI + 三个 CLI）
 
 ---
 
@@ -33,7 +33,8 @@
 | **EGexcel2df.Engine**（DLL） | 两份 Excel → 变化清单的核心引擎 |
 | **EGpdf2excel**（CLI） | 上述 PDF 引擎的命令行前端 |
 | **EGexcel2df**（CLI） | 上述对比引擎的命令行前端 |
-| **EGtools**（WinUI 3 GUI） | 把两个引擎串起来，支持拖拽、批量、pipeline，中英文双语 |
+| **EGpdf2df**（CLI） | 两份图纸 PDF 的差异比对（图形 + 文字两路独立） |
+| **EGtools.Frontend**（Qt 6 GUI） | 把三个 CLI 串起来：框选提取、批量、图纸比对、差异预览，中英文界面 |
 
 关键决策：**用 MuPDFCore（PyMuPDF / C++ 同源引擎）做位置文本提取**，不用 PdfPig——后者的 CMap 处理在我们的中文样本上会乱码。跨语言做参考实现时，**务必保证引擎同源**，否则中文解析结果对不齐。
 
@@ -179,17 +180,17 @@ static List<ChangeRec> Compare(List<Dictionary<string, string>> oldRows,
 
 1. **绝不降级为 OCR / 像素比对**。CAD PDF 的文本是矢量的、可复制的，直接读 `MuPDFStructuredTextPage` 才是正道；OCR 既慢又丢坐标，下游无法对齐列。本文所有提取都基于**可编辑矢量文本**，无损、可复制。
 2. **中文别用错引擎**。PdfPig 的 CMap 在我们的样本上把中文解成乱码；换成 MuPDF 同源的 MuPDFCore 后正常。跨语言（Python / Node / C++）做参考实现时，务必保证引擎同源。
-3. **WinUI 3 非打包部署的 `0xC000027B` 崩溃**。self-contained 会把 `Microsoft.ui.xaml.dll` 等松散框架 DLL 塞进 app 目录；若目标机已注册更新的 WindowsAppRuntime，bootstrap 解析到系统包，进程里同时加载两个不兼容版本 → 原生断言**静默崩溃**（无窗口、无日志）。我们改回 **framework-dependent**（只吃系统单一运行时）解决。
-4. **`dotnet publish` 会丢 `PRI / XBF`**。非打包 WinUI 3 靠 app 的 `*.pri` + 松散 `*.xbf` 解析 `ms-appx:///Xxx.xaml`；`dotnet build` 有，但 `publish` 会丢掉 → 发布后 `LoadComponent` 抛 `XamlParseException`。修复：加一个 `AfterTargets="Publish"` 的 target 把 `*.xbf` 和 `*.pri` 拷回发布目录。**排查口诀：bin 能跑、DIST 不能跑 = publish 丢资源**。
+3. **（历史）WinUI 3 非打包部署的 `0xC000027B` 崩溃**。self-contained 会把 `Microsoft.ui.xaml.dll` 等松散框架 DLL 塞进 app 目录；若目标机已注册更新的 WindowsAppRuntime，bootstrap 解析到系统包，进程里同时加载两个不兼容版本 → 原生断言**静默崩溃**（无窗口、无日志）。当时改回 **framework-dependent**（只吃系统单一运行时）解决。**注：这个 WinUI 前端后来已被 Qt 6 前端整体取代**，本条保留作为"框架版本冲突会静默崩"的记录。
+4. **（历史）`dotnet publish` 会丢 `PRI / XBF`**。非打包 WinUI 3 靠 app 的 `*.pri` + 松散 `*.xbf` 解析 `ms-appx:///Xxx.xaml`；`dotnet build` 有，但 `publish` 会丢掉 → 发布后 `LoadComponent` 抛 `XamlParseException`。修复：加一个 `AfterTargets="Publish"` 的 target 把 `*.xbf` 和 `*.pri` 拷回发布目录。**排查口诀依然成立：bin 能跑、DIST 不能跑 = publish 丢资源**（换成 Qt 前端后又以别的形式踩了同一类坑：`install(DIRECTORY)` 不保留权限、publish 只有 bin 正常）。
 5. **输出编码**。CSV 写 `UTF-8 BOM`（`\uFEFF`），Excel 打开中文才不乱码；XLSX 数字列务必用 `InvariantCulture`，否则某些区域设置下 `1.5` 变成 `1,5` 导致下游解析失败。
 
 ---
 
 ## 六、结语与互动
 
-工具已开源（AGPL-3.0），包含 WinUI 3 GUI 与两个独立 CLI，支持中英文界面、批量与一键 pipeline。把"读图 — 提取 — 对比"从小时级降到秒级，审图的人只需要看一眼变化清单。
+工具已开源（AGPL-3.0），包含 Qt 6 GUI 与三个独立 CLI（材料表提取 / Excel 版本对比 / 图纸 PDF 差异），中英文界面、支持批量。把"读图 — 提取 — 对比"从小时级降到秒级，审图的人只需要看一眼变化清单。
 
-如果你也在处理工程图纸 / 等轴测 PDF，欢迎在评论区聊聊你们的方案：是用 OCR、iText、PdfPig 还是 MuPDF？遇到中文乱码、列对不齐、版本对比怎么做的？如果觉得本文的"位置提取 + 词表重分词"思路有用，点个赞或收藏，后续我再写 GUI（WinUI 3）那部分的部署坑与无头环境调试技巧。
+如果你也在处理工程图纸 / 等轴测 PDF，欢迎在评论区聊聊你们的方案：是用 OCR、iText、PdfPig 还是 MuPDF？遇到中文乱码、列对不齐、版本对比怎么做的？如果觉得本文的"位置提取 + 词表重分词"思路有用，点个赞或收藏，后续我再写 Qt 前端那部分的跨平台部署坑（Windows x64 / arm64 与 Linux 打包）与无头环境调试技巧。
 
 ---
 
