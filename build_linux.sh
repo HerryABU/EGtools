@@ -151,6 +151,50 @@ dep_scan_targets() {
     done
 }
 
+# ⚠️⚠️ **第二类依赖盲区**：.NET 运行时用 **dlopen**（而不是 ELF 的 DT_NEEDED）加载的库。
+#    典型 = **libicu**（全球化）与 **libssl/libcrypto**（加密）。
+#    它们不在任何一条 DT_NEEDED 里 ⇒ 按 ELF 反推**永远抓不到** ⇒ 只会在**干净机**上暴露，
+#    而且报错比缺 .so 更致命：**启动即 FailFast**
+#      `Process terminated. Couldn't find a valid ICU package installed on the system.`
+#    ⚠️ 本项目处理**土耳其语**图纸（著名的 Turkish-I 大小写问题），依赖 ICU 的 locale 规则
+#       ⇒ **不能**用 `InvariantGlobalization` 绕过（会改变大小写/排序语义）。
+#    实测：arm64 chroot（minbase）就是被这条卡住的；x64 开发机因发行版自带 libicu 而看不出来。
+runtime_dlopen_soname_prefixes() {
+    printf '%s\n' libicuuc.so libicui18n.so libicudata.so libssl.so libcrypto.so
+}
+soname_impl_path() {   # soname 前缀 → 带版本号的实际文件全路径
+    local p="$1" d n
+    for d in /usr/lib/*-linux-gnu /lib/*-linux-gnu /usr/lib64 /lib64 /usr/lib /lib; do
+        for n in "$d/$p".*; do
+            [ -e "$n" ] && { readlink -f "$n"; return; }
+        done
+    done
+}
+deb_runtime_dlopen_deps() {
+    local p path pkg out=""
+    while read -r p; do
+        path="$(soname_impl_path "$p")"
+        [ -n "$path" ] || continue
+        pkg="$(dpkg -S "$path" 2>/dev/null | head -1 | cut -d: -f1 | sed 's/:[a-z0-9]*$//')"
+        [ -n "$pkg" ] && out="$out${out:+,}$pkg"
+    done < <(runtime_dlopen_soname_prefixes)
+    printf '%s' "$out" | tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -
+}
+rpm_runtime_dlopen_requires() {
+    local p path n out=""
+    while read -r p; do
+        path="$(soname_impl_path "$p")"
+        [ -n "$path" ] || continue
+        # ⚠️ 必须取 **SONAME** 而不是文件名：Ubuntu 上实体是 `libicuuc.so.74.2`，
+        #    SONAME 才是 `libicuuc.so.74` —— 而 RPM 的能力名用的是 SONAME。
+        #    （DT_NEEDED 里本来就是 SONAME，所以 direct_needed 那条路没这个问题。）
+        n="$(readelf -d "$path" 2>/dev/null | awk -F'[][]' '/SONAME/{print $2}')"
+        [ -n "$n" ] || n="$(basename "$path")"
+        out="$out${out:+,}${n}()(64bit)"
+    done < <(runtime_dlopen_soname_prefixes)
+    printf '%s' "$out"
+}
+
 # ---------------------------------------------------------------------------
 # 0. 前置检查（缺什么先报清楚，别等构建到一半才炸）
 # ---------------------------------------------------------------------------
@@ -368,12 +412,18 @@ DEP_ARGS=()
 if command -v readelf >/dev/null; then
     if [ "$DO_DEB" = 1 ]; then
         DEB_DEP="$(deb_depends_for "${DEP_TARGETS[@]}")"
+        DLOPEN_DEP="$(deb_runtime_dlopen_deps)"        # .NET dlopen 的（libicu/libssl）—— 见上方说明
+        [ -n "$DLOPEN_DEP" ] && DEB_DEP="${DEB_DEP:+$DEB_DEP,}$DLOPEN_DEP"
+        DEB_DEP="$(printf '%s' "$DEB_DEP" | tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -)"
         [ -n "$DEB_DEP" ] || fail "无法反推 deb 依赖（readelf/dpkg -S 没给出结果）—— 不要用空的 Depends 出包"
         echo "  deb Depends : $DEB_DEP"
         DEP_ARGS+=("-D" "CPACK_DEBIAN_PACKAGE_DEPENDS=$DEB_DEP")
     fi
     if [ "$DO_RPM" = 1 ]; then
         RPM_REQ="$(rpm_requires_for "${DEP_TARGETS[@]}")"
+        RPM_DLOPEN="$(rpm_runtime_dlopen_requires)"
+        [ -n "$RPM_DLOPEN" ] && RPM_REQ="${RPM_REQ:+$RPM_REQ,}$RPM_DLOPEN"
+        RPM_REQ="$(printf '%s' "$RPM_REQ" | tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -)"
         [ -n "$RPM_REQ" ] || fail "无法反推 rpm 依赖"
         echo "  rpm Requires: $RPM_REQ"
         DEP_ARGS+=("-D" "CPACK_RPM_PACKAGE_REQUIRES=$RPM_REQ")

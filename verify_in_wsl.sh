@@ -297,6 +297,22 @@ if [ -x "$DIST/EGtoolsFrontend/EGtoolsFrontend" ]; then
             #    libpango / libfreetype / libX11…），dlopen 会解析全部 DT_NEEDED ⇒
             #    漏掉就只在**干净机**上炸（开发机装了 qt6-base-dev 顺带带进来，看不出来）。
             DEB_DEP_LINE="$(dpkg-deb -I "$DEB" 2>/dev/null | sed -n 's/^ Depends: //p' | tr -d ' ')"
+            # ⚠️⚠️ 启动级依赖：.NET 运行时是 **dlopen** libicu/libssl 的（不在任何 DT_NEEDED 里）
+            #    ⇒ 按 ELF 反推抓不到，必须显式检查。漏了的表现是**启动即 FailFast**：
+            #      Process terminated. Couldn't find a valid ICU package installed on the system.
+            #    ⚠️ 本项目处理土耳其语图纸，依赖 ICU 的 locale 规则 ⇒ 不能用 InvariantGlobalization 绕。
+            ICU_PKG="$( (dpkg -S "$(readlink -f /usr/lib/*-linux-gnu/libicuuc.so* 2>/dev/null | head -1)" 2>/dev/null || true) | head -1 | cut -d: -f1)"
+            [ -n "$ICU_PKG" ] || ICU_PKG="libicu*"
+            case ",$DEB_DEP_LINE," in
+                *",$ICU_PKG,"*) ok "deb 的 Depends 含 ICU（$ICU_PKG）—— .NET 全球化能在干净机启动" ;;
+                *"libicu"*)     ok "deb 的 Depends 含 ICU" ;;
+                *) bad "deb 的 Depends **缺 ICU** —— 干净机上 .NET 启动即 FailFast（'Couldn't find a valid ICU package'）" ;;
+            esac
+            case "$DEB_DEP_LINE" in
+                *libssl*|*libcrypto*) ok "deb 的 Depends 含 OpenSSL" ;;
+                *) echo "  --  Depends 未见 libssl（若不用加密路径可忽略）" ;;
+            esac
+
             UNCOVERED=""
             for so in "$DIST/EGpdf2df/libOpenCvSharpExtern.so" "$DIST/EGpdf2df/libMuPDFWrapper.so"; do
                 [ -f "$so" ] || continue
