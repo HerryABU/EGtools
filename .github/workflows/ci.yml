@@ -91,9 +91,14 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
-          # ⚠️ 不要加 modules: 'qtpdf'！aqt 无此模块（install-qt-action#352:
-          #    "The packages ['qtpdf'] were not found"）。Qt 6.11 的 QtPdf 在
-          #    win64_msvc2022_64 基础包里已含（本机 Qt6Pdf.dll 实证），无需单独装。
+          # ⚠️⚠️ Qt 6.11 on Windows 必须用 aqtinstall **git master**：
+          #    install-qt-action@v4 默认 aqtversion==3.3.* 不含 Qt 6.11 Windows 支持
+          #    修复（miurahr/aqtinstall#1000，2026-03 合并但从未发版）⇒ Python exit 1。
+          #    实测 Cockatrice/CaveWhere 同坑，解法就是 aqtsource 指向 git。
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git'
+          # ⚠️ QtPdf 在 6.11 是独立 addon（本机 Qt6Pdf.dll 来自该模块），
+          #    git master 版 aqt 认 'qtpdf'；3.3.* 不认（issue #352）。
+          modules: 'qtpdf'
           cache: true
 
       # Inno Setup 用 chocolatey 静默安装；build_all.ps1 的 Find-Iscc 会按
@@ -125,10 +130,20 @@ jobs:
         if: failure()
         shell: pwsh
         run: |
-          Write-Host "::error::Windows 构建失败，日志尾部："
+          Write-Host "::group::Windows 构建日志尾部"
           if (Test-Path build_ci.log) {
-            Get-Content build_ci.log -Tail 80 | ForEach-Object { "  | $_" }
+            Get-Content build_ci.log -Tail 80
           } else { "（无日志文件，失败可能在 Qt/依赖安装阶段）" }
+          Write-Host "::endgroup::"
+
+      - name: 上传 Windows 构建日志（失败排查用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-windows-x64
+          path: build_ci.log
+          if-no-files-found: warn
+          retention-days: 7
 
       # 事实检查：不是只看"文件存在"，而是真启动 + 安装包体积 + 架构断言。
       # build_all.ps1 内部已做；这里再做一层独立的产物校验，防止脚本被改坏。
@@ -276,8 +291,18 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          echo "::error::arm64 构建失败，日志尾部："
-          tail -80 /tmp/egtools-arm64-build.log 2>/dev/null | sed 's/^/  | /' || echo "（无日志文件）"
+          echo "::group::arm64 构建日志尾部"
+          tail -80 /tmp/egtools-arm64-build.log 2>/dev/null || echo "（无日志文件）"
+          echo "::endgroup::"
+
+      - name: 上传 arm64 构建日志（失败排查用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-linux-arm64
+          path: /tmp/egtools-arm64-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: 校验产物（e_machine 必须是 b700 / aarch64）
         shell: bash
