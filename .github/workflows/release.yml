@@ -1,10 +1,13 @@
 name: Release
 
-# 打 v* tag 时：先完整构建（复用 ci.yml 的 workflow_call），再把各平台安装包
+# 打版本 tag 时：先完整构建（复用 ci.yml 的 workflow_call），再把各平台安装包
 # 附到 GitHub Release 上。CI 是权威门禁——构建不过就不会发布。
+#
+# ⚠️ 仓库历史 tag 是 `4.2.1`/`3.0.0`（无 v 前缀），故必须兼容两种写法：
+#    4.3.0  与  v4.3.0  都触发；版本解析时统一剥掉可选的 v。
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', '[0-9]*']
   workflow_dispatch:
 
 concurrency:
@@ -34,11 +37,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
-          echo "tag version: $tag"
           iss=$(grep -oP '(?<=#define MyAppVersion ")[^"]+' build_installer.iss | head -1)
-          [ "$tag" = "$iss" ] || { echo "::error::tag($tag) 与源码版本($iss) 不一致"; exit 1; }
-          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"   # 兼容 `4.3.0` 与 `v4.3.0`
+            echo "tag version: $tag"
+            [ "$tag" = "$iss" ] || { echo "::error::tag($tag) 与源码版本($iss) 不一致"; exit 1; }
+            echo "version=$tag" >> "$GITHUB_OUTPUT"
+          else
+            # workflow_dispatch 手动触发：GITHUB_REF_NAME 是分支名，直接用源码版本
+            echo "手动触发，使用源码版本: $iss"
+            echo "version=$iss" >> "$GITHUB_OUTPUT"
+          fi
 
   publish:
     name: 发布 GitHub Release
