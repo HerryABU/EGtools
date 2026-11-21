@@ -95,8 +95,11 @@ fail() { printf '\n[FAIL] %s\n' "$*" >&2; exit 1; }
 # 所以：只取二进制的**直接 DT_NEEDED**（不是 ldd 的传递闭包），在构建机上解成真实包名。
 # ---------------------------------------------------------------------------
 lib_path_of() {   # soname → 规范化绝对路径（/lib→/usr/lib 的合并式 usr 会让 dpkg -S 失配）
+    # ⚠️ 必须按**构建机架构**找库目录：写死 x86_64-linux-gnu 时，在 aarch64 上
+    #    所有依赖都定位不到 ⇒ deb_depends_for 得空 ⇒ "无法反推 deb 依赖" 打包失败
+    #    （实测 ubuntu-24.04-arm runner：exit 1，无明确原因）。用通配符覆盖两种架构。
     local n="$1" d
-    for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /lib64 /usr/lib; do
+    for d in /usr/lib/*-linux-gnu /lib/*-linux-gnu /usr/lib64 /lib64 /usr/lib /lib; do
         if [ -e "$d/$n" ]; then readlink -f "$d/$n"; return; fi
     done
 }

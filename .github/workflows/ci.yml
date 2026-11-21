@@ -80,8 +80,9 @@ jobs:
 
       # ⚠️ 必须带 qtpdf 模块：预览渲染的唯一路径是 Qt PDF（PDFium），
       # CMakeLists 里 find_package(Qt6 COMPONENTS ... Pdf) 是硬依赖。
-      # 装到 C:\Qt 是为了与 build_all.ps1 的默认 Qt 根一致（脚本也支持
-      # EGTOOLS_QT_ROOT 覆盖，这里两者都给，避免任一环节路径漂移）。
+      # ⚠️ install-qt-action@v4 的输入是 `dir`（不是 install-dir），且装到
+      #    <dir>/Qt/<version>/<arch>（多一层 Qt）⇒ 必须用 action 的 output
+      #    `qt-root-dir` 把真实路径传给 build_all.ps1（EGTOOLS_QT_ROOT）。
       - name: 安装 Qt 6.11.2 (msvc2022_64 + QtPdf)
         id: qt
         uses: jurplel/install-qt-action@v4
@@ -91,7 +92,6 @@ jobs:
           target: 'desktop'
           arch: 'win64_msvc2022_64'
           modules: 'qtpdf'
-          install-dir: 'C:\Qt'
           cache: true
 
       # Inno Setup 用 chocolatey 静默安装；build_all.ps1 的 Find-Iscc 会按
@@ -102,10 +102,26 @@ jobs:
       - name: 构建（含两级自证 + ISCC 出包）
         shell: pwsh
         env:
-          EGTOOLS_QT_ROOT: 'C:\Qt\6.11.2\msvc2022_64'
+          # 用 action 的真实安装根（可能带版本/架构子目录），不要硬编码
+          EGTOOLS_QT_ROOT: ${{ steps.qt.outputs.qt-root-dir }}
         run: |
-          .\build_all.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # action 同时设 QT_ROOT_DIR 环境变量；output 为空时用它兜底
+          if (-not $env:EGTOOLS_QT_ROOT) { $env:EGTOOLS_QT_ROOT = $env:QT_ROOT_DIR }
+          "Qt root: $env:EGTOOLS_QT_ROOT"
+          if (-not (Test-Path "$env:EGTOOLS_QT_ROOT\lib\cmake\Qt6\Qt6Config.cmake")) {
+            Write-Host "::error::Qt6 CMake 配置不存在：$env:EGTOOLS_QT_ROOT（前端会跳过 → 出空包）"
+            throw "Qt6 CMake 配置不存在（QT_ROOT_DIR=$env:QT_ROOT_DIR, output=$env:EGTOOLS_QT_ROOT）"
+          }
+          # ⚠️ 不能用 Tee-Object/管道包构建：管道会吞 $LASTEXITCODE（项目踩过的坑）。
+          #    用 cmd 风格重定向到文件，退出码直接来自脚本本身。
+          .\build_all.ps1 *> build_ci.log
+          $rc = $LASTEXITCODE
+          Get-Content build_ci.log -Tail 200   # 保留日志可见
+          if ($rc -ne 0) {
+            Write-Host "::error::Windows 构建失败(exit=$rc)，日志尾部："
+            Get-Content build_ci.log -Tail 60 | ForEach-Object { "  | $_" }
+            exit $rc
+          }
 
       # 事实检查：不是只看"文件存在"，而是真启动 + 安装包体积 + 架构断言。
       # build_all.ps1 内部已做；这里再做一层独立的产物校验，防止脚本被改坏。
@@ -240,7 +256,18 @@ jobs:
       - name: 构建 arm64（aarch64 原生）
         env:
           EGTOOLS_VERSION: ${{ needs.version-check.outputs.version }}
-        run: chmod +x build_linux.sh && ./build_linux.sh --arch arm64
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x build_linux.sh
+          # tee 保留实时输出；失败时把最后 60 行打到 annotation，避免"exit 1 无原因"
+          ./build_linux.sh --arch arm64 2>&1 | tee /tmp/egtools-arm64-build.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::arm64 构建失败(exit=$rc)，日志尾部："
+            tail -60 /tmp/egtools-arm64-build.log | sed 's/^/  | /'
+            exit "$rc"
+          fi
 
       - name: 校验产物（e_machine 必须是 b700 / aarch64）
         shell: bash
