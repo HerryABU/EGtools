@@ -138,3 +138,7 @@ tz/
 
 # 临时诊断工具（内容流解剖/渲染核对）
 _vgdump/
+
+# Python 缓存
+__pycache__/
+*.pyc
