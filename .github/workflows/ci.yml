@@ -121,7 +121,18 @@ jobs:
           }
           # ⚠️ 不能用 Tee-Object/管道包构建：管道会吞 $LASTEXITCODE（项目踩过的坑）。
           #    用重定向到文件，退出码直接来自脚本本身。
-          .\build_all.ps1 *> build_ci.log
+          # ⚠️ CI 实测：runner 预装 .NET SDK 11 会被 dotnet 选用（即使 setup-dotnet
+          #    装了 9），SDK 11 下 restore 带 RID 的 runtime pack 不被 publish --no-restore
+          #    认可 ⇒ NETSDK1112 "runtime pack for win-x64 was not downloaded"。
+          #    这里临时生成 global.json 钉 9.x（不入库，避免影响本地 SDK 10 构建）。
+          @'
+          {"sdk":{"version":"9.0.0","rollForward":"latestFeature","allowPrerelease":false}}
+          '@ | Set-Content -Path global.json -Encoding utf8
+          $v = & dotnet --version
+          "dotnet SDK in use: $v"
+          if (-not $v.StartsWith('9.')) { throw "需要 .NET SDK 9.x，实际 $v（NETSDK1112 风险）" }
+          # 用 -Clean 强制清 obj/bin 后全新 restore，避免增量缓存短路
+          .\build_all.ps1 -Clean *> build_ci.log
           $rc = $LASTEXITCODE
           Get-Content build_ci.log
           exit $rc
@@ -206,7 +217,8 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build g++ binutils file \
             qt6-base-dev qt6-pdf-dev \
-            dpkg-dev rpm
+            dpkg-dev rpm \
+            libavcodec60 libavformat60 libavutil58 libswscale7 libtesseract5
 
       - name: 构建（含 ELF 架构断言 + deb/rpm 内容校验）
         env:
@@ -273,7 +285,8 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build g++ binutils file \
             qt6-base-dev qt6-pdf-dev \
-            dpkg-dev rpm
+            dpkg-dev rpm \
+            libavcodec60 libavformat60 libavutil58 libswscale7 libtesseract5
 
       - name: 构建 arm64（aarch64 原生）
         env:
