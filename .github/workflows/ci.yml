@@ -106,11 +106,22 @@ jobs:
       - name: 安装 Inno Setup 6
         run: choco install innosetup --yes --no-progress
 
+      # ⚠️ CMake+Ninja 要完整的 MSVC 环境（含 SDK 的 rc.exe/mt.exe）。
+      #    build_all.ps1 的手动探测只设了 cl/link，CI 上缺 rc/mt ⇒
+      #    CMakeTestCXXCompiler 报 CMAKE_MT-NOTFOUND / "RC Pass 1 ... no such file"。
+      #    用官方 action 一次性设好，再让 build_all.ps1 跳过它自己的探测。
+      - name: 设置 MSVC 环境（x64 Host）
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: 构建（含两级自证 + ISCC 出包）
         shell: pwsh
         env:
           # 用 action 的真实安装根（可能带版本/架构子目录），不要硬编码
           EGTOOLS_QT_ROOT: ${{ steps.qt.outputs.qt-root-dir }}
+          # MSVC 环境已由 ilammy/msvc-dev-cmd 设好（含 rc/mt），跳过脚本的手动探测
+          EGTOOLS_MSVC_ENV_READY: '1'
         run: |
           # action 同时设 QT_ROOT_DIR 环境变量；output 为空时用它兜底
           if (-not $env:EGTOOLS_QT_ROOT) { $env:EGTOOLS_QT_ROOT = $env:QT_ROOT_DIR }
