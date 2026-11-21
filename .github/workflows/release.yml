@@ -1,0 +1,81 @@
+name: Release
+
+# 打 v* tag 时：先完整构建（复用 ci.yml 的 workflow_call），再把各平台安装包
+# 附到 GitHub Release 上。CI 是权威门禁——构建不过就不会发布。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 完整构建（复用 CI）
+    uses: ./.github/workflows/ci.yml
+    with:
+      windows_arm64: false   # arm64 需自托管 runner，发布时按需单独触发 CI
+
+  verify:
+    name: 核对 tag 与源码版本
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解析并比对版本
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag version: $tag"
+          iss=$(grep -oP '(?<=#define MyAppVersion ")[^"]+' build_installer.iss | head -1)
+          [ "$tag" = "$iss" ] || { echo "::error::tag($tag) 与源码版本($iss) 不一致"; exit 1; }
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: 发布 GitHub Release
+    needs: [build, verify]
+    runs-on: ubuntu-latest
+    steps:
+      # 只下载 pkg-* 安装包 artifact；dist-*（完整目录）仅留档、不发布。
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: release
+          merge-multiple: true   # 展平到 release/，避免每层 artifact 目录
+
+      - name: 核对发布产物齐全（至少三平台）
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -lh release/
+          required=(
+            "release/EGtools-$VERSION-x64.exe"
+            "release/egtools-$VERSION-x64.deb"
+            "release/egtools-$VERSION-x64.rpm"
+            "release/egtools-$VERSION-arm64.deb"
+            "release/egtools-$VERSION-arm64.rpm"
+          )
+          for f in "${required[@]}"; do
+            [ -f "$f" ] || { echo "::error::发布产物缺失: $f"; exit 1; }
+          done
+          total=$(find release -type f | wc -l)
+          echo "发布产物 $total 个，必需 5 个全部就位"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: EGtools ${{ needs.verify.outputs.version }}
+          generate_release_notes: true
+          files: release/*
+          fail_on_unmatched_files: true

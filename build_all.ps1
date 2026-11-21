@@ -250,7 +250,28 @@ foreach ($d in @('EGpdf2excel','EGexcel2df','EGpdf2df')) {
 # no longer packaged). windeployqt copies the required Qt runtime DLLs, the
 # qwindows platform plugin and the MSVC runtime next to the exe, so the folder
 # runs on a clean machine with no Qt / VC++ redist installed.
+# ① Qt 根：允许 CI 用环境变量覆盖（CI 上 Qt 由 install-qt-action 装到 runner 临时目录）。
+#    本机默认仍是 C:\Qt\6.11.2\...，行为不变。
+if ($env:EGTOOLS_QT_ROOT) { $qtRoot = $env:EGTOOLS_QT_ROOT }
+# ② CMake：本机硬编码 VS 自带那一份（保留原行为）；CI 上该路径不存在，
+#    回退到 PATH 里的 cmake（setup-cmake / VS 环境会提供）。
 $qtCmake = 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+if (-not (Test-Path $qtCmake)) {
+    $cmakeCmd = Get-Command cmake -EA SilentlyContinue
+    if ($cmakeCmd) { $qtCmake = $cmakeCmd.Source }
+}
+# ③ Inno Setup 查找函数（实现见下方 ISCC 编译段）—— 此处仅声明。
+function Find-Iscc {
+    $cands = @(
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+        'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+        'C:\Program Files\Inno Setup 6\ISCC.exe'
+    )
+    foreach ($c in $cands) { if (Test-Path $c) { return $c } }
+    $isccCmd = Get-Command ISCC.exe -EA SilentlyContinue
+    if ($isccCmd) { return $isccCmd.Source }
+    return $null
+}
 if ((Test-Path "$qtRoot\lib\cmake\Qt6\Qt6Config.cmake") -and (Test-Path $qtCmake)) {
     Step 'Build EGtools.Frontend (Qt 6)'
     # The Ninja generator (unlike the VS generator) does NOT auto-locate MSVC, so the
@@ -585,7 +606,8 @@ if ($Arch -eq 'arm64') {
 
 # ---- 8. Recompile installer from fresh DIST ----
 Step 'Compile installer (ISCC)'
-$iscc = 'C:\Users\QBZ95\AppData\Local\Programs\Inno Setup 6\ISCC.exe'
+$iscc = Find-Iscc
+if (-not $iscc) { throw '找不到 Inno Setup 6 的 ISCC.exe（CI 需先安装 Inno Setup 6）。' }
 # 架构通过 /D 传给 iss（iss 里用 {#MyArch} / {#DistDir} / {#OutSuffix}）——
 # 这样同一个 .iss 能出 x64 与 arm64 两个包，不用维护两份。
 & $iscc "/DMyArch=$archId" "/DDistDir=$DIST" "/DOutSuffix=$instSuffix" "$root\build_installer.iss"

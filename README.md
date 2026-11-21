@@ -3,6 +3,7 @@
 **工程图纸材料表提取与对比工具集** · A toolkit for extracting and comparing engineering drawing material tables
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![CI](https://github.com/HerryABU/EGtools/actions/workflows/ci.yml/badge.svg)](https://github.com/HerryABU/EGtools/actions/workflows/ci.yml)
 ![Platform: Windows x64 / arm64](https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20arm64-0078D4)
 ![Platform: Linux x64 / arm64](https://img.shields.io/badge/Platform-Linux%20x64%20%7C%20arm64-FCC624)
 
