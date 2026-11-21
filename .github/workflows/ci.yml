@@ -91,7 +91,9 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
-          modules: 'qtpdf'
+          # ⚠️ 不要加 modules: 'qtpdf'！aqt 无此模块（install-qt-action#352:
+          #    "The packages ['qtpdf'] were not found"）。Qt 6.11 的 QtPdf 在
+          #    win64_msvc2022_64 基础包里已含（本机 Qt6Pdf.dll 实证），无需单独装。
           cache: true
 
       # Inno Setup 用 chocolatey 静默安装；build_all.ps1 的 Find-Iscc 会按
@@ -113,15 +115,20 @@ jobs:
             throw "Qt6 CMake 配置不存在（QT_ROOT_DIR=$env:QT_ROOT_DIR, output=$env:EGTOOLS_QT_ROOT）"
           }
           # ⚠️ 不能用 Tee-Object/管道包构建：管道会吞 $LASTEXITCODE（项目踩过的坑）。
-          #    用 cmd 风格重定向到文件，退出码直接来自脚本本身。
+          #    用重定向到文件，退出码直接来自脚本本身。
           .\build_all.ps1 *> build_ci.log
           $rc = $LASTEXITCODE
-          Get-Content build_ci.log -Tail 200   # 保留日志可见
-          if ($rc -ne 0) {
-            Write-Host "::error::Windows 构建失败(exit=$rc)，日志尾部："
-            Get-Content build_ci.log -Tail 60 | ForEach-Object { "  | $_" }
-            exit $rc
-          }
+          Get-Content build_ci.log
+          exit $rc
+
+      - name: Windows 失败诊断
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "::error::Windows 构建失败，日志尾部："
+          if (Test-Path build_ci.log) {
+            Get-Content build_ci.log -Tail 80 | ForEach-Object { "  | $_" }
+          } else { "（无日志文件，失败可能在 Qt/依赖安装阶段）" }
 
       # 事实检查：不是只看"文件存在"，而是真启动 + 安装包体积 + 架构断言。
       # build_all.ps1 内部已做；这里再做一层独立的产物校验，防止脚本被改坏。
@@ -258,16 +265,19 @@ jobs:
           EGTOOLS_VERSION: ${{ needs.version-check.outputs.version }}
         shell: bash
         run: |
-          set -o pipefail
           chmod +x build_linux.sh
-          # tee 保留实时输出；失败时把最后 60 行打到 annotation，避免"exit 1 无原因"
-          ./build_linux.sh --arch arm64 2>&1 | tee /tmp/egtools-arm64-build.log
-          rc=${PIPESTATUS[0]}
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::arm64 构建失败(exit=$rc)，日志尾部："
-            tail -60 /tmp/egtools-arm64-build.log | sed 's/^/  | /'
-            exit "$rc"
-          fi
+          # 直接运行（退出码=脚本退出码，不被管道吞）；日志同时写文件供失败步骤读取
+          ./build_linux.sh --arch arm64 > /tmp/egtools-arm64-build.log 2>&1
+          rc=$?
+          cat /tmp/egtools-arm64-build.log
+          exit $rc
+
+      - name: arm64 失败诊断
+        if: failure()
+        shell: bash
+        run: |
+          echo "::error::arm64 构建失败，日志尾部："
+          tail -80 /tmp/egtools-arm64-build.log 2>/dev/null | sed 's/^/  | /' || echo "（无日志文件）"
 
       - name: 校验产物（e_machine 必须是 b700 / aarch64）
         shell: bash
