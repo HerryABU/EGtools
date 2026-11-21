@@ -16,6 +16,10 @@ build_linux.sh          text eol=lf
 EGtools.Frontend/packaging/deb/*    text eol=lf
 EGtools.Frontend/packaging/rpm/*    text eol=lf
 
+# GitHub Actions：runner 是 Linux，强制 LF（CRLF 在部分动作里会导致解析/执行异常）。
+*.yml                   text eol=lf
+*.yaml                  text eol=lf
+
 # Windows 脚本：保持 CRLF（PowerShell 两种都能跑，但 CRLF 更符合本机习惯）。
 *.ps1                   text eol=crlf
 *.bat                   text eol=crlf
