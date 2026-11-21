@@ -203,10 +203,14 @@ if ($Clean) {
 # Shut down any lingering MSBuild/compiler servers so their file handles release.
 & $dotnet build-server shutdown | Out-Null
 
-# ---- 1. Explicit restore for every project (/p: form) ----
-Step 'Restore all projects (explicit, /p: form)'
+# ---- 1. Explicit restore for every project ----
+# ⚠️⚠️ 必须带 `--runtime $RID`（不只是 /p:RuntimeIdentifier）：SDK 9 下只用
+#    /p:RuntimeIdentifier 的 restore **不会下载 runtime pack**，随后 publish
+#    --no-restore 报 NETSDK1112 "runtime pack for win-x64 was not downloaded"
+#    （CI 实测：本机 SDK 10 侥幸能过，CI SDK 9.0.321 必挂）。两种形式都给最稳。
+Step 'Restore all projects (explicit, --runtime)'
 foreach ($p in $projects) {
-    & $dotnet restore "$root\$p" /p:Configuration=Release /p:RuntimeIdentifier=$RID
+    & $dotnet restore "$root\$p" --runtime $RID /p:Configuration=Release /p:RuntimeIdentifier=$RID
     if ($LASTEXITCODE -ne 0) { throw "Restore failed: $p" }
 }
 
@@ -219,15 +223,15 @@ foreach ($p in @('EGtools.Core\EGtools.Core.csproj','EGpdf2excel.Engine\EGpdf2ex
 
 # ---- 3. Publish CLIs (fully self-contained) ----
 Step 'Publish EGpdf2excel'
-& $dotnet publish "$root\EGpdf2excel\EGpdf2excel.csproj" /p:Configuration=Release /p:RuntimeIdentifier=$RID /p:SelfContained=true /p:PublishTrimmed=false --no-restore -m:1 -nodeReuse:false -o "$DIST\EGpdf2excel"
+& $dotnet publish "$root\EGpdf2excel\EGpdf2excel.csproj" /p:Configuration=Release /p:RuntimeIdentifier=$RID /p:SelfContained=true /p:PublishTrimmed=false -m:1 -nodeReuse:false -o "$DIST\EGpdf2excel"
 if ($LASTEXITCODE -ne 0) { throw "EGpdf2excel publish failed" }
 
 Step 'Publish EGexcel2df'
-& $dotnet publish "$root\EGexcel2df\EGexcel2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=$RID /p:SelfContained=true /p:PublishTrimmed=false --no-restore -m:1 -nodeReuse:false -o "$DIST\EGexcel2df"
+& $dotnet publish "$root\EGexcel2df\EGexcel2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=$RID /p:SelfContained=true /p:PublishTrimmed=false -m:1 -nodeReuse:false -o "$DIST\EGexcel2df"
 if ($LASTEXITCODE -ne 0) { throw "EGexcel2df publish failed" }
 
 Step 'Publish EGpdf2df'
-& $dotnet publish "$root\EGpdf2df\EGpdf2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=$RID /p:SelfContained=true /p:PublishTrimmed=false --no-restore -m:1 -nodeReuse:false -o "$DIST\EGpdf2df"
+& $dotnet publish "$root\EGpdf2df\EGpdf2df.csproj" /p:Configuration=Release /p:RuntimeIdentifier=$RID /p:SelfContained=true /p:PublishTrimmed=false -m:1 -nodeReuse:false -o "$DIST\EGpdf2df"
 if ($LASTEXITCODE -ne 0) { throw "EGpdf2df publish failed" }
 
 # ---- 3b. 交付目录里不留符号文件（*.pdb）----
