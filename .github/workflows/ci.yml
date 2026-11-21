@@ -125,9 +125,8 @@ jobs:
           #    装了 9），SDK 11 下 restore 带 RID 的 runtime pack 不被 publish --no-restore
           #    认可 ⇒ NETSDK1112 "runtime pack for win-x64 was not downloaded"。
           #    这里临时生成 global.json 钉 9.x（不入库，避免影响本地 SDK 10 构建）。
-          @'
-          {"sdk":{"version":"9.0.0","rollForward":"latestFeature","allowPrerelease":false}}
-          '@ | Set-Content -Path global.json -Encoding utf8
+          # ⚠️ 不能用 @'...'@ here-string：结束符 ' 必须在列 0，缩进会语法错；用单行字符串。
+          '{"sdk":{"version":"9.0.0","rollForward":"latestFeature","allowPrerelease":false}}' | Set-Content -Path global.json -Encoding ascii
           $v = & dotnet --version
           "dotnet SDK in use: $v"
           if (-not $v.StartsWith('9.')) { throw "需要 .NET SDK 9.x，实际 $v（NETSDK1112 风险）" }
