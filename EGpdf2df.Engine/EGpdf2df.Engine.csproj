@@ -21,7 +21,7 @@
     <PackageReference Include="MuPDFCore" Version="2.0.1" />
     <!-- OpenCV: image registration (ORB + homography) and graphic diff (SSIM /
          absdiff). MIT-licensed, AGPL3-compatible. -->
-    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+    <PackageReference Include="OpenCvSharp4" Version="4.14.0.20261127" />
     <!-- 原生 OpenCV 按**平台**分包：两个包**同时引用**是安全的 —— 它们的资产都在
          `runtimes/<rid>/native/` 下（且包内 build/*.props 只对 .NET Framework 生效），
          所以 `-r win-x64` 只带 OpenCvSharpExtern.dll、`-r linux-x64` 只带
@@ -42,15 +42,15 @@
          ⚠️ 换版本必须**五处同步**（托管 + win-x64 + win-arm64 + linux-x64 + linux-arm64），否则托管层与原生层符号对不上。
          ⚠️ arm64 的包名都是**普通版**（**没有** official 版）：
             · `OpenCvSharp4.runtime.linux-arm64` —— 依赖基线是新的（libtiff.so.6 / libtesseract.so.5 /
-              libavcodec.so.60 / libgtk-3.so.0），与 official.linux-x64 4.13 同批，Ubuntu 24.04 兼容。
+              libavcodec.so.60 / libgtk-3.so.0），与 official.linux-x64 4.14 同批，Ubuntu 24.04 兼容。
             · `OpenCvSharp4.runtime.win-arm64` —— 里面那个 `OpenCvSharpExtern.dll` 是真 **ARM64** PE。
          ⚠️ **Windows arm64 必须单独引这个包**：`OpenCvSharp4.runtime.win` 的 runtimes 下**只有 win-x64**，
             所以 `-r win-arm64` 发出来只有托管的 `OpenCvSharp.dll`、**没有原生库** ⇒ 一碰 Cv2.* 就
             `DllNotFoundException`（与 linux-arm64 当初的表现完全一样，且 publish 照样"成功"）。 -->
-    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
-    <PackageReference Include="OpenCvSharp4.runtime.win-arm64" Version="4.13.0.20260627" />
-    <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64" Version="4.13.0.20260627" />
-    <PackageReference Include="OpenCvSharp4.runtime.linux-arm64" Version="4.13.0.20260627" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.14.0.20261127" />
+    <PackageReference Include="OpenCvSharp4.runtime.win-arm64" Version="4.14.0.20261127" />
+    <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64" Version="4.14.0.20261127" />
+    <PackageReference Include="OpenCvSharp4.runtime.linux-arm64" Version="4.14.0.20261127" />
     <!-- iText7: write the diff as a VECTOR PDF (preserve the original drawing's native
          vector content, then append a vector annotation layer). AGPL-3.0 — same license
          family as this project, so the combined work stays AGPL-3.0. -->
