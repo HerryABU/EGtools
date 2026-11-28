@@ -1,10 +1,10 @@
-; EGtools v4.3.0 — Inno Setup 6 installer script (Qt 6 front-end)
+; EGtools v4.4.0 — Inno Setup 6 installer script (Qt 6 front-end)
 ; Author / Signer: HerryABU
 ;
 ; Compile with Inno Setup 6 (ISCC.exe). From this script's folder:
 ;   ISCC.exe build_installer.iss
 ;
-; Output: EGtools-4.3.0-x64.exe  (in the script's Output folder)
+; Output: EGtools-4.4.0-x64.exe  (in the script's Output folder)
 ;
 ; WHAT IS SHIPPED
 ;   The graphical front-end is EGtools.Frontend (Qt 6.11.2, msvc2022_64). It is
@@ -22,7 +22,7 @@
 ;   any prompt.
 
 #define MyAppName "EGtools"
-#define MyAppVersion "4.3.0"
+#define MyAppVersion "4.4.0"
 #define MyAppPublisher "HerryABU"
 #define MyAppURL "https://github.com/HerryABU/EGtools"
 #define MyQtExeName "EGtoolsFrontend.exe"

@@ -7,9 +7,9 @@
     <RootNamespace>EGpdf2df.Engine</RootNamespace>
     <AssemblyName>EGpdf2df.Engine</AssemblyName>
     <GenerateProgramFile>false</GenerateProgramFile>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>4.4.0</Version>
+    <AssemblyVersion>4.4.0.0</AssemblyVersion>
+    <FileVersion>4.4.0.0</FileVersion>
     <Company>HerryABU</Company>
     <Product>EGtools</Product>
     <Copyright>Copyright © 2026 HerryABU</Copyright>

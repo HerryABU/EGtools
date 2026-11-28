@@ -616,7 +616,7 @@ if (-not $iscc) { throw '找不到 Inno Setup 6 的 ISCC.exe（CI 需先安装 I
 # 这样同一个 .iss 能出 x64 与 arm64 两个包，不用维护两份。
 & $iscc "/DMyArch=$archId" "/DDistDir=$DIST" "/DOutSuffix=$instSuffix" "$root\build_installer.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed (arch=$Arch)" }
-$out = "$root\installer\EGtools-4.3.0-$instSuffix.exe"
+$out = "$root\installer\EGtools-4.4.0-$instSuffix.exe"
 if (-not (Test-Path $out)) { throw "Installer not produced: $out" }
 Start-Sleep -Seconds 2
 $size = (Get-Item $out).Length

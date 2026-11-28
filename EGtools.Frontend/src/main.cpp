@@ -100,9 +100,9 @@ int main(int argc, char** argv)
     // 版本里带上构建配置：`EGtoolsFrontend.exe --version` 即可自证是 Release 还是 Debug。
 #ifdef EGTOOLS_BUILD_CONFIG
     QCoreApplication::setApplicationVersion(
-        QStringLiteral("1.0.0 (%1)").arg(QStringLiteral(EGTOOLS_BUILD_CONFIG)));
+        QStringLiteral("4.4.0 (%1)").arg(QStringLiteral(EGTOOLS_BUILD_CONFIG)));
 #else
-    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("4.4.0"));
 #endif
     // Window / taskbar / Start-menu icon (embedded Qt resource). The EXE file
     // icon itself is embedded separately via res/app_icon.rc.

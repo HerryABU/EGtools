@@ -195,7 +195,7 @@ if(UNIX AND NOT APPLE)
     set(CPACK_PACKAGE_CONTACT "HerryABU")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
         "工程图纸材料表提取与对比工具集（PDF 材料表 / 图纸差异 / 等轴测图比对）")
-    set(CPACK_PACKAGE_VERSION "4.3.0")
+    set(CPACK_PACKAGE_VERSION "4.4.0")
     set(CPACK_GENERATOR "DEB;RPM")
 
     # rpath 用 $ORIGIN：让二进制优先从**自己所在目录**解析 Qt 库（随包分发时必需）。

@@ -9,9 +9,9 @@
     <AssemblyName>EGexcel2df</AssemblyName>
     <RootNamespace>EGexcel2df</RootNamespace>
     <GenerateProgramFile>false</GenerateProgramFile>
-    <Version>4.2.1</Version>
-    <AssemblyVersion>4.2.1.0</AssemblyVersion>
-    <FileVersion>4.2.1.0</FileVersion>
+    <Version>4.4.0</Version>
+    <AssemblyVersion>4.4.0.0</AssemblyVersion>
+    <FileVersion>4.4.0.0</FileVersion>
     <Company>HerryABU</Company>
     <Product>EGtools</Product>
     <Copyright>Copyright © 2026 HerryABU</Copyright>

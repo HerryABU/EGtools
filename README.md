@@ -510,11 +510,11 @@ EGtools/
 
 | 位置 | 当前值 |
 | --- | --- |
-| 安装包 / CPack / Linux 包 | **4.3.0** |
-| 三个 CLI 内核自报（`EGpdf2excel --version`） | 4.2.1 |
-| Qt 前端自报（`EGtoolsFrontend.exe --version`） | 1.0.0 (Release) |
+| 安装包 / CPack / Linux 包 | **4.4.0** |
+| 三个 CLI 内核自报（`EGpdf2excel --version`） | 4.4.0 |
+| Qt 前端自报（`EGtoolsFrontend.exe --version`） | 4.4.0 (Release) |
 
-> ⚠️ 三处历史上未统一：安装包与发布产物用 **4.3.0**，而 .NET 内核程序集里仍是 4.2.1、Qt 前端是 1.0.0。升级版本号时需要同步：`build_installer.iss` 的 `MyAppVersion`、`build_all.ps1` 末尾的产物名、`EGtools.Frontend/CMakeLists.txt` 的 `CPACK_PACKAGE_VERSION`，以及各 `.csproj` 的 `Version` / `FileVersion`。
+> ✅ 自 4.4.0 起三处版本已统一为 **4.4.0**：安装包/CPack、.NET 内核程序集、Qt 前端。升级时同步：`build_installer.iss` 的 `MyAppVersion`、`build_all.ps1` 末尾产物名、`build_linux.sh` 的 `EGTOOLS_VERSION`、`EGtools.Frontend/CMakeLists.txt` 的 `CPACK_PACKAGE_VERSION`、各 `.csproj` 的 `Version`/`FileVersion`，以及 `EGtools.Frontend/src` 里的前端版本字符串。
 
 ---
 

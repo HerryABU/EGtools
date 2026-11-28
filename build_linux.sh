@@ -35,7 +35,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="${EGTOOLS_VERSION:-4.3.0}"
+VERSION="${EGTOOLS_VERSION:-4.4.0}"
 ARCH="${EGTOOLS_ARCH:-x64}"
 # ELF 的 e_machine 期望值（用于断言产物架构 —— 交叉编译最怕"静默产出错架构"）。
 ARCH_ELF_X64="3e00"

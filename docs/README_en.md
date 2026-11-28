@@ -336,15 +336,15 @@ It targets **CAD isometric PDFs** and works best when the text is **copyable vec
 
 | Item | Value |
 | --- | --- |
-| Installer / release version | **4.3.0** |
-| CLI kernel self-reported version (`EGpdf2excel --version`) | 4.2.1 |
-| GUI self-reported version (`EGtoolsFrontend --version`) | 1.0.0 (Release) |
+| Installer / release version | **4.4.0** |
+| CLI kernel self-reported version (`EGpdf2excel --version`) | 4.4.0 |
+| GUI self-reported version (`EGtoolsFrontend --version`) | 4.4.0 (Release) |
 | Author / signer | HerryABU |
 | License | **AGPL-3.0** |
 | Runtime dependencies | **None externally** — the kernels are .NET 9 **self-contained**, Qt and VC++ runtimes ship with the package |
 | Supported platforms | Windows 10 1809+ / 11 (x64, arm64), Linux x64 (deb / rpm) |
 
-> ⚠️ The three version numbers have historically not been unified: the installer and release artefacts use **4.3.0**, while the kernel assemblies still self-report 4.2.1 and the GUI 1.0.0. Treat the installer version (4.3.0) as the public release version; future releases will unify all three.
+> ✅ Since 4.4.0 all three version numbers are unified at **4.4.0**: installer/release artefacts, kernel assemblies, and GUI.
 
 ---
 
